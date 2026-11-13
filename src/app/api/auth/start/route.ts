@@ -1,14 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { saveOAuthState } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-export async function GET() {
-  const appUrl = process.env.APP_URL || "http://localhost:3000";
+export async function GET(request: NextRequest) {
+  const appUrl = process.env.APP_URL || request.nextUrl.origin;
   const clientId = process.env.SUPABASE_OAUTH_CLIENT_ID;
   const clientSecret = process.env.SUPABASE_OAUTH_CLIENT_SECRET;
-  if (!clientId || !clientSecret) return NextResponse.redirect(new URL("/?error=OAuth%20is%20not%20configured", appUrl));
+  if (!process.env.APP_URL || !clientId || !clientSecret) {
+    return NextResponse.redirect(new URL("/?error=Supabase%20OAuth%20is%20not%20configured", appUrl));
+  }
 
   const state = randomBytes(24).toString("base64url");
   const verifier = randomBytes(32).toString("base64url");
