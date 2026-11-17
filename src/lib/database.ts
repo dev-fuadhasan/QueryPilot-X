@@ -60,3 +60,37 @@ export async function getPostgresTables(connectionString: string): Promise<Table
     await client.end().catch(() => undefined);
   }
 }
+
+export type SchemaTable = { name: string; columns: { name: string; type: string }[] };
+
+export const schemaSql = "SELECT c.table_name, c.column_name, c.data_type FROM information_schema.columns c JOIN information_schema.tables t ON c.table_schema = t.table_schema AND c.table_name = t.table_name WHERE c.table_schema = 'public' AND t.table_type IN ('BASE TABLE', 'VIEW') ORDER BY c.table_name, c.ordinal_position LIMIT 600";
+
+export function groupSchema(rows: Record<string, unknown>[]): SchemaTable[] {
+  const tables = new Map<string, SchemaTable["columns"]>();
+  for (const row of rows) {
+    if (typeof row.table_name !== "string" || typeof row.column_name !== "string") continue;
+    if (!tables.has(row.table_name) && tables.size >= 35) break;
+    if (!tables.has(row.table_name)) tables.set(row.table_name, []);
+    tables.get(row.table_name)?.push({ name: row.column_name, type: String(row.data_type || "text") });
+  }
+  return [...tables].map(([name, columns]) => ({ name, columns }));
+}
+
+export async function queryPostgres(connectionString: string, sql: string): Promise<Record<string, unknown>[]> {
+  const client = new Client({
+    connectionString,
+    ssl: { rejectUnauthorized: true },
+    connectionTimeoutMillis: 6500,
+    query_timeout: 15000
+  });
+  try {
+    await client.connect();
+    await client.query("BEGIN READ ONLY");
+    await client.query("SET LOCAL statement_timeout = '12000ms'");
+    const result = await client.query(sql);
+    await client.query("ROLLBACK");
+    return result.rows as Record<string, unknown>[];
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
