@@ -7,7 +7,7 @@ import DatasetsPanel, { type Table } from "./DatasetsPanel";
 import { downloadHtml, printReport } from "../lib/export";
 import type { AnalysisResponse, AnalysisResult, ChartDetails, Clarification, Figure } from "../lib/types";
 
-type Props = { tables: Table[]; loading: boolean; onRefresh: () => void; projectName: string; aiEnabled: boolean };
+type Props = { tables: Table[]; loading: boolean; onRefresh: () => void; projectName: string; projectRef: string; aiEnabled: boolean };
 type Message = { role: "user" | "assistant"; text: string };
 const palette = ["#42627d", "#789cb3", "#9bbcc5", "#bd8e7d", "#769d8e", "#d1b17f"];
 
@@ -42,7 +42,7 @@ function ChartPreview({ report, chart }: { report: AnalysisResult; chart: ChartD
   return <p className="figure-fallback-note">This figure needs the Matplotlib plotting service. The query values are available in the table below.</p>;
 }
 
-export default function SmartWorkspace({ tables, loading, onRefresh, projectName, aiEnabled }: Props) {
+export default function SmartWorkspace({ tables, loading, onRefresh, projectName, projectRef, aiEnabled }: Props) {
   const [tab, setTab] = useState<"analysis" | "datasets">("analysis");
   const [selectedTable, setSelectedTable] = useState("all");
   const [question, setQuestion] = useState("");
@@ -55,6 +55,24 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
   const [error, setError] = useState("");
   const chartRef = useRef<HTMLDivElement>(null);
   const chatBottom = useRef<HTMLDivElement>(null);
+
+  function selectAnalysisTable(value: string) {
+    if (value !== "all" && !tables.some(table => table.name === value)) return;
+    setSelectedTable(value);
+    window.sessionStorage.setItem("querypilot:selected-table:" + projectRef, value);
+    setReport(null);
+    setClarification(null);
+    setFigures([]);
+    setPlotStatus("idle");
+    setError("");
+  }
+
+  useEffect(() => {
+    if (loading) return;
+    const saved = window.sessionStorage.getItem("querypilot:selected-table:" + projectRef);
+    const next = saved && (saved === "all" || tables.some(table => table.name === saved)) ? saved : "all";
+    setSelectedTable(next);
+  }, [loading, projectRef, tables]);
 
   useEffect(() => {
     if (!report?.charts.length) { setFigures([]); setPlotStatus("idle"); return; }
@@ -78,7 +96,7 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
     return () => controller.abort();
   }, [report]);
 
-  async function ask(text: string, silent = false) {
+  async function ask(text: string, silent = false, scopeOverride?: string) {
     const prompt = text.trim();
     if (!prompt || busy) return;
     if (!silent) setMessages(current => [...current, { role: "user", text: prompt }]);
@@ -89,7 +107,7 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
     setClarification(null);
     setTab("analysis");
     try {
-      const response = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: prompt, table: selectedTable }) });
+      const response = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: prompt, table: scopeOverride || selectedTable }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Analysis failed.");
       const result = data as AnalysisResponse;
@@ -98,7 +116,7 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
         setMessages(current => [...current, { role: "assistant", text: "Choose a detail in the analysis workspace on the left." }]);
       } else {
         setReport(result);
-        setMessages(current => [...current, { role: "assistant", text: result.interpretation }]);
+        setMessages(current => [...current, { role: "assistant", text: "Analyzed " + result.tableName + ". " + result.interpretation }]);
       }
     } catch (problem) {
       const message = problem instanceof Error ? problem.message : "Unable to complete the analysis.";
@@ -112,6 +130,12 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
 
   function selectOption(option: string) {
     if (!clarification || busy) return;
+    if (clarification.kind === "table" && tables.some(table => table.name === option)) {
+      const original = clarification.originalQuestion;
+      selectAnalysisTable(option);
+      void ask(original, true, option);
+      return;
+    }
     const index = clarification.options.indexOf(option);
     const selected = clarification.optionQueries?.[index] || clarification.originalQuestion + ". Clarification: " + option;
     void ask(selected, true);
@@ -134,13 +158,13 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
   return <div className="smart-workspace">
     <main className="analysis-canvas">
       <header className="canvas-top">
-        <div><div className="canvas-kicker">SMART DATA ANALYSIS & VISUALIZATION</div><h1>Analysis workspace</h1><p>Connected to {projectName}</p></div>
+        <div className="canvas-heading"><h1>Analysis workspace</h1><p>Connected to {projectName}</p></div>
         <div className="canvas-controls">
-          <div className="canvas-scope"><label htmlFor="analysis-scope">Analyze table</label><select id="analysis-scope" value={selectedTable} disabled={busy} onChange={event => { setSelectedTable(event.target.value); setReport(null); setClarification(null); setError(""); }}><option value="all">All tables</option>{tables.map(table => <option key={table.name} value={table.name}>{table.name}</option>)}</select></div>
+          <div className="canvas-scope"><label htmlFor="analysis-scope">Analyze table</label><select id="analysis-scope" value={selectedTable} disabled={busy} onChange={event => selectAnalysisTable(event.target.value)}><option value="all">All tables</option>{tables.map(table => <option key={table.name} value={table.name}>{table.name}</option>)}</select></div>
           <div className="canvas-tabs"><button type="button" className={tab === "analysis" ? "selected" : ""} onClick={() => setTab("analysis")}><BarChart3 size={15}/> Analysis</button><button type="button" className={tab === "datasets" ? "selected" : ""} onClick={() => setTab("datasets")}><Database size={15}/> Datasets</button></div>
         </div>
       </header>
-      {tab === "datasets" ? <div className="canvas-datasets"><DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh}/></div> : <div className="canvas-results">
+      {tab === "datasets" ? <div className="canvas-datasets"><DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh} selectedTable={selectedTable} onSelectTable={selectAnalysisTable}/></div> : <div className="canvas-results">
         {error && <div className="analysis-error" role="alert">{error}</div>}
         {busy && <div className="work-status"><LoaderCircle className="spinning" size={25}/><div><strong>Analyzing the selected data</strong><p>Checking available columns and running a read-only query.</p></div></div>}
         {!busy && clarification && <div className="choice-card"><span className="choice-label">ONE MORE DETAIL</span><h2>{clarification.question}</h2><p>Choose the option that best matches your request.</p><div className="choice-list">{clarification.options.map(option => <button type="button" key={option} onClick={() => selectOption(option)}>{option}<ArrowRight size={16}/></button>)}</div></div>}
@@ -148,7 +172,7 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
         {!busy && report && <div className="generated-report">
           <section className="answer-card">
             <div className="answer-top"><span className="report-eyebrow"><CheckCircle2 size={14}/> ANALYSIS COMPLETE</span><div className="export-actions"><button onClick={download} type="button" disabled={plotStatus === "loading"}><Download size={15}/> HTML</button><button onClick={print} type="button" disabled={plotStatus === "loading"}><FileDown size={15}/> PDF</button></div></div>
-            <h2>{report.title}</h2>
+            <h2>{report.title}</h2><p className="report-dataset-source">Dataset: <strong>{report.tableName}</strong></p>
             {report.leadValue !== "—" && <div className="answer-metric"><strong>{report.leadValue}</strong><span>{report.leadLabel}</span></div>}
             <p className="answer-interpretation">{report.interpretation}</p>
           </section>

@@ -76,6 +76,7 @@ export async function buildClarification(question: string, plan: ClarificationPl
     if (options.length < 2) throw new Error("Please select a specific table using the Analyze table selector.");
     return {
       type: "clarification",
+      kind: "table",
       question: "Which connected dataset should I analyze?",
       options: options.slice(0, 8).map(table => table.name),
       optionQueries: options.slice(0, 8).map(table => withChoice(question, "Use the authorized table public." + safeName(table.name) + " for this analysis.")),

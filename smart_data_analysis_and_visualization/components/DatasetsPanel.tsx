@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { CheckCircle2, Columns3, Database, RefreshCw, Search, ShieldCheck, Table2 } from "lucide-react";
 
 export type Table = { name: string; columns: string[] };
@@ -9,22 +9,19 @@ type Props = {
   tables: Table[];
   loading: boolean;
   onRefresh: () => void;
+  selectedTable: string;
+  onSelectTable: (name: string) => void;
 };
 
-export default function DatasetsPanel({ tables, loading, onRefresh }: Props) {
-  const [selected, setSelected] = useState("");
+export default function DatasetsPanel({ tables, loading, onRefresh, selectedTable, onSelectTable }: Props) {
   const [search, setSearch] = useState("");
-  const current = tables.find(table => table.name === selected) || tables[0];
+  const current = tables.find(table => table.name === selectedTable);
   const filtered = tables.filter(table => table.name.toLowerCase().includes(search.toLowerCase()));
   const columns = tables.reduce((total, table) => total + table.columns.length, 0);
 
-  useEffect(() => {
-    if (tables.length && !tables.some(table => table.name === selected)) setSelected(tables[0].name);
-  }, [tables, selected]);
 
   return (
     <section className="datasets-panel">
-      <div className="section-eyebrow">SMART DATA ANALYSIS & VISUALIZATION</div>
       <div className="section-heading">
         <div>
           <h1>Connected datasets</h1>
@@ -51,7 +48,7 @@ export default function DatasetsPanel({ tables, loading, onRefresh }: Props) {
           {!loading && !tables.length && <p className="empty-message">No readable tables were found.</p>}
           {!loading && tables.length > 0 && filtered.length === 0 && <p className="empty-message">No tables match your search.</p>}
           {filtered.map(table => (
-            <button key={table.name} className={"dataset-row " + (current?.name === table.name ? "selected" : "")} type="button" onClick={() => setSelected(table.name)}>
+            <button key={table.name} className={"dataset-row " + (selectedTable === table.name ? "selected" : "")} type="button" onClick={() => onSelectTable(table.name)}>
               <span className="dataset-icon"><Table2 size={18}/></span>
               <span className="dataset-name"><strong>{table.name}</strong><small>{table.columns.length} columns</small></span>
               <span className="dataset-chevron">›</span>
@@ -69,7 +66,7 @@ export default function DatasetsPanel({ tables, loading, onRefresh }: Props) {
                 {current.columns.map((column, index) => <div className="column-row" key={column}><span>{column}</span><small>{String(index + 1).padStart(2, "0")}</small></div>)}
               </div>
             </>
-          ) : <p className="empty-message">Select a table to view its columns.</p>}
+          ) : <p className="empty-message">Select a dataset to view its columns and use it for analysis.</p>}
         </div>
       </div>
       <p className="module-note">This panel shows the authorized table and column names. Open Analysis to query the selected data.</p>

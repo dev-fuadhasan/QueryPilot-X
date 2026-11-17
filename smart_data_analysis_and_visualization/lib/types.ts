@@ -20,6 +20,7 @@ export type AnalysisResult = {
 };
 export type Clarification = {
   type: "clarification";
+  kind?: "table" | "metric" | "dimension" | "period" | "value";
   question: string;
   options: string[];
   optionQueries?: string[];
