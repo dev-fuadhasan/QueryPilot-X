@@ -1,4 +1,3 @@
-# QueryPilot
+# QueryPilot 
 
-Under development
-Comming soon............
+Under development....  
