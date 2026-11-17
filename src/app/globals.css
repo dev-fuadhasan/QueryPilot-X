@@ -226,3 +226,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
 .figure-fallback-note{color:#8b96a3;line-height:1.75;font-size:12px;min-height:100px;display:grid;place-items:center}
 
 .export-actions button:disabled{opacity:.45;cursor:not-allowed}
+
+.canvas-top{align-items:center}
+.canvas-heading{display:flex;flex-direction:column;justify-content:center;gap:6px;min-width:180px}
+.canvas-heading h1{margin:0;line-height:1.2}
+.canvas-heading p{margin:0;line-height:1.4}
+.report-dataset-source{margin:4px 0 12px;font-size:11px;color:#697786}
+.report-dataset-source strong{font-weight:700;color:#33485a}
+@media(max-width:720px){.canvas-heading{width:100%}.canvas-top{align-items:center}}

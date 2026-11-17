@@ -7,6 +7,7 @@ import { safeSql } from "@features/smart_data_analysis_and_visualization/lib/sql
 import { createReport } from "@features/smart_data_analysis_and_visualization/lib/report";
 import { suggestFigures } from "@features/smart_data_analysis_and_visualization/lib/figures";
 import { buildClarification } from "@features/smart_data_analysis_and_visualization/lib/clarifications";
+import { resolveTableScope } from "@features/smart_data_analysis_and_visualization/lib/tableScope";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -28,15 +29,29 @@ export async function POST(request: NextRequest) {
     const schema = groupSchema(await run(schemaSql));
     if (!schema.length) throw new Error("No readable public tables were found.");
     const requestedTable = typeof args?.table === "string" ? args.table : "all";
-    const selected = requestedTable === "all" ? schema : schema.filter(table => table.name === requestedTable);
-    if (!selected.length) throw new Error("The selected table is not available in this database.");
+    const scope = resolveTableScope(question, schema, requestedTable);
+    if (scope.kind === "clarify") {
+      const response = NextResponse.json({
+        type: "clarification",
+        kind: "table",
+        question: "Which connected dataset should I use for this question?",
+        options: scope.options,
+        originalQuestion: question
+      }, { headers: { "Cache-Control": "no-store" } });
+      if (connection.refreshed) {
+        const { issuedAt, ...saved } = session;
+        saveSession(response, saved);
+      }
+      return response;
+    }
+    const selected = [scope.table];
     const plan = await planQuestion(question, selected);
     const response = plan.action === "clarify"
       ? NextResponse.json(await buildClarification(question, plan, selected, run), { headers: { "Cache-Control": "no-store" } })
       : await (async () => {
         const sql = safeSql(plan.sql || "", selected);
         const rows = await run("SELECT * FROM (" + sql + ") AS querypilot_result LIMIT 101");
-        const report = createReport(question, sql, rows, requestedTable === "all" ? "authorized tables" : requestedTable);
+        const report = createReport(question, sql, rows, scope.table.name);
         const ai = await interpretReport(question, report.facts, report.columns.map(col => col.name));
         if (ai.interpretation) report.interpretation = ai.interpretation;
         report.charts = suggestFigures(question, report.columns, report.rows, ai.figures);

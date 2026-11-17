@@ -224,7 +224,7 @@ export default function Home() {
             </div>
           </header>
           <div className="workspace-body">
-            <main className="main-panel smart-main"><SmartWorkspace tables={tables} loading={loadingTables} onRefresh={() => void loadTables()} projectName={session.projectName || "Supabase project"} aiEnabled={session.aiEnabled}/></main>
+            <main className="main-panel smart-main"><SmartWorkspace tables={tables} loading={loadingTables} onRefresh={() => void loadTables()} projectName={session.projectName || "Supabase project"} projectRef={session.projectRef || "connected-project"} aiEnabled={session.aiEnabled}/></main>
           </div>
         </div>
       )}
