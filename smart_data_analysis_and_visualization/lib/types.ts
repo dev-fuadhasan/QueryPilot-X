@@ -1,17 +1,20 @@
 export type Column = { name: string; type: "number" | "date" | "text" };
-export type ChartType = "bar" | "line" | "pie" | "area" | "scatter" | "none";
-export type ChartDetails = { type: ChartType; x: string; y: string };
+export type ChartType = "bar" | "horizontal_bar" | "line" | "area" | "pie" | "donut" | "scatter" | "histogram" | "box" | "violin" | "heatmap" | "stacked_bar" | "grouped_bar" | "kde" | "lollipop" | "waterfall";
+export type ChartDetails = { type: ChartType; title: string; x: string; y: string; extra?: string[] };
+export type Figure = { title: string; type: ChartType; image: string };
 export type AnalysisResult = {
   type: "result";
   question: string;
   title: string;
-  summary: string;
-  findings: string[];
+  leadValue: string;
+  leadLabel: string;
+  interpretation: string;
+  facts: string[];
   sql: string;
   columns: Column[];
   rows: Record<string, unknown>[];
   truncated: boolean;
-  chart: ChartDetails;
+  charts: ChartDetails[];
   tableName: string;
   createdAt: string;
 };

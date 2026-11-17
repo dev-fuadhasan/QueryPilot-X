@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { readSession, sameOrigin, saveSession } from "@/lib/session";
 import { groupSchema, queryPostgres, schemaSql } from "@/lib/database";
 import { queryOAuth, refreshSession } from "@/lib/supabase";
-import { planQuestion } from "@features/smart_data_analysis_and_visualization/lib/ai";
+import { planQuestion, interpretReport } from "@features/smart_data_analysis_and_visualization/lib/ai";
 import { safeSql } from "@features/smart_data_analysis_and_visualization/lib/sql";
 import { createReport } from "@features/smart_data_analysis_and_visualization/lib/report";
+import { suggestFigures } from "@features/smart_data_analysis_and_visualization/lib/figures";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -34,7 +35,11 @@ export async function POST(request: NextRequest) {
       : await (async () => {
         const sql = safeSql(plan.sql || "", selected);
         const rows = await run("SELECT * FROM (" + sql + ") AS querypilot_result LIMIT 101");
-        return NextResponse.json(createReport(question, sql, rows, requestedTable === "all" ? "authorized tables" : requestedTable), { headers: { "Cache-Control": "no-store" } });
+        const report = createReport(question, sql, rows, requestedTable === "all" ? "authorized tables" : requestedTable);
+        const ai = await interpretReport(question, report.facts, report.columns.map(col => col.name));
+        if (ai.interpretation) report.interpretation = ai.interpretation;
+        report.charts = suggestFigures(question, report.columns, report.rows, ai.figures);
+        return NextResponse.json(report, { headers: { "Cache-Control": "no-store" } });
       })();
     if (connection.refreshed) {
       const { issuedAt, ...saved } = session;

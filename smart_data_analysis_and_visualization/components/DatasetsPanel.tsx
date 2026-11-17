@@ -72,7 +72,7 @@ export default function DatasetsPanel({ tables, loading, onRefresh }: Props) {
           ) : <p className="empty-message">Select a table to view its columns.</p>}
         </div>
       </div>
-      <p className="module-note">Only dataset and column names are displayed. Analysis and visualization tools will be added to this module later.</p>
+      <p className="module-note">This panel shows the authorized table and column names. Open Analysis to query the selected data.</p>
     </section>
   );
 }

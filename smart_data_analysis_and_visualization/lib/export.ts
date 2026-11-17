@@ -1,35 +1,41 @@
-import type { AnalysisResult } from "./types";
+import type { AnalysisResult, Figure } from "./types";
 
-const escape = (value: unknown) => String(value === null || value === undefined ? "—" : value)
-  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-
-export function reportHtml(report: AnalysisResult, chartSvg = "") {
-  const headers = report.columns.map(col => "<th>" + escape(col.name.replace(/_/g, " ")) + "</th>").join("");
-  const cells = report.rows.map(row => "<tr>" + report.columns.map(col => "<td>" + escape(row[col.name]) + "</td>").join("") + "</tr>").join("");
-  const findings = report.findings.map(finding => "<li>" + escape(finding) + "</li>").join("");
-  const figure = chartSvg ? "<section><h2>Visualization</h2><div class='chart'>" + chartSvg + "</div></section>" : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>QueryPilot Report</title><style>
-  *{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;max-width:1000px;margin:44px auto;padding:0 30px;color:#20232a;line-height:1.6}h1{font-size:30px;letter-spacing:-.5px;margin-bottom:7px}h2{font-size:17px;margin-top:34px}h3{margin-top:28px}.brand{font-size:12px;font-weight:bold;letter-spacing:1.8px;color:#4b6488}.muted{color:#76808c;font-size:12px}.intro{padding:16px 18px;background:#f5f7f9;border:1px solid #e6eaee;border-radius:9px;margin-top:20px}table{width:100%;border-collapse:collapse;font-size:11px;min-width:580px}td,th{padding:10px;border-bottom:1px solid #e7eaf0;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#f3f5f8}table{break-inside:auto}tr{break-inside:avoid}pre{padding:16px;background:#f4f6f8;white-space:pre-wrap;overflow-wrap:anywhere;border-radius:8px;font-size:11px}.chart svg{width:100%;max-height:310px}.table-wrap{overflow:auto}.actions{margin-top:20px}.actions button{padding:10px 15px;border:0;background:#1c2430;color:#fff;border-radius:6px;cursor:pointer}@media print{body{margin:0;padding:0 10px;max-width:none}.actions{display:none}h2{break-after:avoid}thead{display:table-header-group}}@page{size:A4;margin:15mm}
-  </style></head><body><div class="brand">QUERYPILOT</div><h1>${escape(report.title)}</h1><p class="muted">Generated ${escape(new Date(report.createdAt).toLocaleString())} · Source: ${escape(report.tableName)}</p><p><strong>Question:</strong> ${escape(report.question)}</p><div class="intro">${escape(report.summary)}</div><section><h2>Key findings</h2><ul>${findings || "<li>No numerical findings were available for these results.</li>"}</ul></section>${figure}<section><h2>Query results</h2><div class="table-wrap"><table><thead><tr>${headers}</tr></thead><tbody>${cells}</tbody></table></div></section><section><h2>Executed SQL</h2><pre>${escape(report.sql)}</pre></section><p class="muted">This report summarizes the displayed results only. Check filters, units and data quality before making decisions.</p><div class="actions"><button onclick="window.print()">Print / Save as PDF</button></div></body></html>`;
+function escape(value: unknown) {
+  return String(value === null || value === undefined ? "—" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-export function downloadHtml(report: AnalysisResult, chartSvg = "") {
-  const file = new Blob([reportHtml(report, chartSvg)], { type: "text/html;charset=utf-8" });
-  const url = URL.createObjectURL(file);
+export function reportHtml(report: AnalysisResult, figures: Figure[] = [], fallbackSvgs: string[] = []) {
+  const headers = report.columns.map(col => `<th>${escape(col.name.replace(/_/g, " "))}</th>`).join("");
+  const cells = report.rows.map(row => "<tr>" + report.columns.map(col => "<td>" + escape(row[col.name]) + "</td>").join("") + "</tr>").join("");
+  const charts = report.charts.map((chart, index) => {
+    const figure = figures.find(item => item.type === chart.type && item.title === chart.title);
+    const source = figure ? `<img src="${escape(figure.image)}" alt="${escape(chart.title)}">` : fallbackSvgs[index] || "<p>View this figure in the QueryPilot workspace.</p>";
+    return `<article class="figure"><h3>${escape(chart.title)}</h3>${source}</article>`;
+  }).join("");
+  const metric = report.leadValue !== "—" ? `<div class="metric"><strong>${escape(report.leadValue)}</strong><span>${escape(report.leadLabel)}</span></div>` : "";
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${escape(report.title)} — QueryPilot</title><style>
+  *{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;max-width:1050px;margin:35px auto;padding:0 27px;color:#253749;line-height:1.6}.brand{font-size:12px;font-weight:750;letter-spacing:2px;color:#536e84}h1{font-size:30px;margin:15px 0 5px}h2{font-size:18px;margin-top:32px}h3{font-size:14px}.meta{color:#8793a0;font-size:11px}.answer{border:1px solid #e3e9ef;background:#f9fbfc;border-radius:11px;padding:22px 24px;margin:18px 0}.metric{display:flex;align-items:baseline;gap:15px;margin:15px 0}.metric strong{font-size:40px;letter-spacing:-1px}.metric span{font-size:12px;color:#758493}.summary{font-size:15px;color:#455867;margin:13px 0}.figures{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}.figure{break-inside:avoid;border:1px solid #edf0f3;padding:12px;border-radius:9px}.figure img{display:block;width:100%;max-height:330px;object-fit:contain}.figure svg{width:100%;height:auto;max-height:310px}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:11px}th,td{padding:9px 11px;border-bottom:1px solid #e9edf1;text-align:left;overflow-wrap:anywhere}th{background:#f5f7f9}pre{background:#f4f6f8;padding:13px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px}.actions{margin:24px 0}.actions button{padding:10px 16px;background:#243b51;color:white;border:0;border-radius:7px;cursor:pointer}@media print{body{margin:0;padding:0 7px}.actions{display:none}.figure{page-break-inside:avoid}thead{display:table-header-group}}@page{size:A4;margin:15mm}
+  </style></head><body><div class="brand">QUERYPILOT</div><p class="meta">${escape(new Date(report.createdAt).toLocaleString())} · ${escape(report.tableName)}</p><div class="answer"><p class="meta">${escape(report.question)}</p><h1>${escape(report.title)}</h1>${metric}<p class="summary">${escape(report.interpretation)}</p></div>${charts ? `<section><h2>Figures</h2><div class="figures">${charts}</div></section>` : ""}<section><h2>Supporting data</h2><div class="table-wrap"><table><thead><tr>${headers}</tr></thead><tbody>${cells}</tbody></table></div></section><section><h2>Executed SQL</h2><pre>${escape(report.sql)}</pre></section><div class="actions"><button onclick="window.print()">Print / Save as PDF</button></div></body></html>`;
+}
+
+export function downloadHtml(report: AnalysisResult, figures: Figure[] = [], fallbackSvgs: string[] = []) {
+  const blob = new Blob([reportHtml(report, figures, fallbackSvgs)], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = "QueryPilot_Report_" + new Date(report.createdAt).toISOString().slice(0, 10) + ".html";
+  link.download = "QueryPilot_Report_" + report.createdAt.slice(0, 10) + ".html";
   document.body.append(link);
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
 }
 
-export function printReport(report: AnalysisResult, chartSvg = "") {
+export function printReport(report: AnalysisResult, figures: Figure[] = [], fallbackSvgs: string[] = []) {
   const target = window.open("", "_blank");
-  if (!target) throw new Error("Allow pop-ups to open the printable report.");
+  if (!target) throw new Error("Allow pop-ups for the printable report.");
   target.document.open();
-  target.document.write(reportHtml(report, chartSvg));
+  target.document.write(reportHtml(report, figures, fallbackSvgs));
   target.document.close();
   target.focus();
 }

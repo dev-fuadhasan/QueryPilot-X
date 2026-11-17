@@ -57,6 +57,10 @@ export async function planQuestion(question: string, schema: SchemaTable[]): Pro
       "Never invent columns, data, time trends or metrics. Only use tables/columns listed.",
       "If a chart or dashboard is requested, return a category or date column and one or two meaningful numeric aggregate columns.",
       "Use actual date columns for time trends and ORDER BY date. Do not treat identifiers as metrics.",
+      "For a question such as Did revenue drop, compare two actual periods using a date or month column and an aggregated numeric revenue measure. Return both periods so the application can compute the observed change.",
+      "Do not answer whether sales or revenue dropped using one total without a prior period. If the table lacks a real time field, ask the user to clarify or explain via a clarification choice.",
+      "For comparison requests, select the relevant numeric metric and the requested real dimension. For distributions, select observed numeric values rather than an arbitrary count.",
+      "When possible, return a category/date plus all numeric measures needed for requested multiple charts. Do not invent metrics just to fit a chart.",
       "Avoid unaggregated personal information and avoid SELECT *. Prefer aggregates and limit row-level results to 100.",
       "Numeric-looking currency text may contain commas and symbols. Use NULLIF(regexp_replace(column, '[^0-9.]', '', 'g'), '')::numeric when comparing those values numerically.",
       "No data modifications, procedures, system catalogs, hidden schemas, additional statements, SQL comments or Markdown.",
@@ -72,4 +76,31 @@ export async function planQuestion(question: string, schema: SchemaTable[]): Pro
   }
   if (result.action === "query" && typeof result.sql === "string") return { action: "query", sql: result.sql };
   throw new Error("Could not produce a safe SQL query. Please rephrase your question.");
+}
+
+export async function interpretReport(question: string, facts: string[], columns: string[]): Promise<{ interpretation: string; figures: string[] }> {
+  if (!facts.length) return { interpretation: "", figures: [] };
+  try {
+    const response = await complete([
+      { role: "system", content: [
+        "You are the reporting editor for QueryPilot, a read-only data analysis app.",
+        "Write one or two concise, natural English sentences answering the question directly from verified facts.",
+        "Use only the numeric facts provided. Do not guess currency, dates, causal explanations, missing values or anything not in the facts.",
+        "If asked whether something dropped or rose, answer yes or no only when the facts support a previous/current comparison.",
+        "Prefer concrete values. No introductory filler, no reference to result row counts, no generic disclaimers.",
+        "Choose at most three relevant figure types from bar, horizontal_bar, line, area, pie, donut, scatter, histogram, box, violin, heatmap, stacked_bar, grouped_bar, kde, lollipop, waterfall.",
+        'Reply JSON only: {"interpretation":"one or two short sentences","figures":["line"]}.'
+      ].join("\n") },
+      { role: "user", content: JSON.stringify({ question: question.slice(0, 650), verifiedFacts: facts.slice(0, 5), availableColumns: columns.slice(0, 30) }) }
+    ]);
+    const interpretation = typeof response.interpretation === "string" ? response.interpretation.trim().slice(0, 380) : "";
+    const figures = Array.isArray(response.figures) ? response.figures.filter((s): s is string => typeof s === "string").slice(0, 3) : [];
+    const reference = facts.join(" ");
+    const numbers = interpretation.match(/\b\d[\d,.]*\b/g) || [];
+    const allowed = reference.match(/\b\d[\d,.]*\b/g) || [];
+    const verified = numbers.every(n => allowed.includes(n));
+    return { interpretation: verified ? interpretation : "", figures };
+  } catch {
+    return { interpretation: "", figures: [] };
+  }
 }
