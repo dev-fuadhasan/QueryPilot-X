@@ -1,6 +1,7 @@
 import type { SchemaTable } from "@/lib/database";
 
-type Plan = { action: "query" | "clarify"; sql?: string; question?: string; options?: string[] };
+export type ClarificationPlan = { action: "clarify"; kind: "table" | "metric" | "dimension" | "period" | "value"; question: string; table?: string; column?: string; candidates?: string[] };
+type Plan = { action: "query"; sql: string } | ClarificationPlan;
 type Message = { role: "system" | "user"; content: string };
 
 export function aiReady() {
@@ -51,8 +52,16 @@ export async function planQuestion(question: string, schema: SchemaTable[]): Pro
       "Return one valid JSON object and no other text.",
       "Use exactly one of these shapes:",
       '{"action":"query","sql":"SELECT ..."}',
-      '{"action":"clarify","question":"a specific question","options":["option 1","option 2"]}',
-      "Choose clarify only if an essential field or meaning is ambiguous. Offer two to four clear options that exist in the schema.",
+      '{"action":"clarify","kind":"metric","question":"Which metric?","candidates":["exact_column_1","exact_column_2"]}',
+      '{"action":"clarify","kind":"dimension","question":"Which grouping field?","candidates":["exact_column_1","exact_column_2"]}',
+      '{"action":"clarify","kind":"period","question":"Which time column?","candidates":["exact_date_column_1","exact_date_column_2"]}',
+      '{"action":"clarify","kind":"table","question":"Which table?","candidates":["exact_table_1","exact_table_2"]}',
+      '{"action":"clarify","kind":"value","question":"Which actual category value?","table":"exact_table_name","column":"exact_column_name"}',
+      "Clarify only if the answer truly depends on an ambiguous table, metric, dimension, time column, or category value and there are multiple existing choices in the selected schema.",
+      "For metric, dimension, period and table clarifications, candidates must be exact real names in the supplied schema, not labels or invented examples.",
+      "For value clarifications, identify the exact real table and column but NEVER invent or list row values. The server will fetch permitted distinct values from the selected table.",
+      "Never invent time periods, product names, regions, category choices, or metrics. If there is one clearly relevant field, generate the query directly.",
+      "The user may have supplied an earlier verified selection after the question; use that exact table, field, or literal value rather than asking the same clarification again.",
       "Create one PostgreSQL SELECT query. Fully qualify all real tables as public.table_name.",
       "Never invent columns, data, time trends or metrics. Only use tables/columns listed.",
       "If a chart or dashboard is requested, return a category or date column and one or two meaningful numeric aggregate columns.",
@@ -70,9 +79,17 @@ export async function planQuestion(question: string, schema: SchemaTable[]): Pro
     { role: "user", content: question }
   ]);
   if (result.action === "clarify") {
-    const options = Array.isArray(result.options) ? result.options.filter((v): v is string => typeof v === "string" && v.length > 0 && v.length < 150).slice(0, 4) : [];
-    if (options.length < 2 || typeof result.question !== "string") throw new Error("Please give a little more detail about your question.");
-    return { action: "clarify", question: result.question.slice(0, 350), options };
+    const kinds = ["table", "metric", "dimension", "period", "value"] as const;
+    const kind = kinds.find(item => item === result.kind);
+    if (!kind) throw new Error("The AI could not identify a verifiable clarification. Please specify the table or column you mean.");
+    const candidates = Array.isArray(result.candidates) ? result.candidates.filter((v): v is string => typeof v === "string" && v.length > 0 && v.length <= 120).slice(0, 10) : [];
+    return {
+      action: "clarify", kind,
+      question: typeof result.question === "string" ? result.question.slice(0, 300) : "Which dataset field do you mean?",
+      table: typeof result.table === "string" ? result.table.slice(0, 120) : undefined,
+      column: typeof result.column === "string" ? result.column.slice(0, 120) : undefined,
+      candidates
+    };
   }
   if (result.action === "query" && typeof result.sql === "string") return { action: "query", sql: result.sql };
   throw new Error("Could not produce a safe SQL query. Please rephrase your question.");
