@@ -1,15 +1,15 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
-import { ArrowRight, BarChart3, CheckCircle2, Database, Download, FileDown, FileText, LoaderCircle, MessageSquare, RefreshCw, Send, ShieldCheck, Table2 } from "lucide-react";
+import { ArrowRight, BarChart3, CheckCircle2, Database, Download, FileDown, LoaderCircle, MessageSquare, Send, ShieldCheck } from "lucide-react";
 import DatasetsPanel, { type Table } from "./DatasetsPanel";
 import { downloadHtml, printReport } from "../lib/export";
-import type { AnalysisResponse, AnalysisResult, Clarification } from "../lib/types";
+import type { AnalysisResponse, AnalysisResult, ChartDetails, Clarification, Figure } from "../lib/types";
 
 type Props = { tables: Table[]; loading: boolean; onRefresh: () => void; projectName: string; aiEnabled: boolean };
 type Message = { role: "user" | "assistant"; text: string };
-const colors = ["#26394d", "#577c9d", "#99bacd", "#ccd8e1", "#879aab", "#b6c6d3"];
+const palette = ["#42627d", "#789cb3", "#9bbcc5", "#bd8e7d", "#769d8e", "#d1b17f"];
 
 function asText(value: unknown) {
   if (value === null || value === undefined) return "—";
@@ -17,33 +17,29 @@ function asText(value: unknown) {
   return String(value);
 }
 
-function ChartView({ report }: { report: AnalysisResult }) {
-  const chart = report.chart;
-  if (chart.type === "none") return null;
-  const data = report.rows.map(row => ({ ...row, [chart.y]: Number(row[chart.y]), ...(chart.type === "scatter" ? { [chart.x]: Number(row[chart.x]) } : {}) }));
-  if (!data.length) return null;
-  if (chart.type === "pie") return (
-    <ResponsiveContainer width="100%" height={280}>
-      <PieChart><Tooltip/><Pie data={data} dataKey={chart.y} nameKey={chart.x} cx="50%" cy="50%" outerRadius={94} label>
-        {data.map((_, index) => <Cell key={index} fill={colors[index % colors.length]}/>)}
-      </Pie><Legend/></PieChart>
-    </ResponsiveContainer>
-  );
-  if (chart.type === "scatter") return (
-    <ResponsiveContainer width="100%" height={280}>
-      <ScatterChart margin={{ left: 4, right: 16, top: 12, bottom: 12 }}><CartesianGrid stroke="#eef0f3"/><XAxis dataKey={chart.x} type="number" name={chart.x}/><YAxis dataKey={chart.y} type="number" name={chart.y}/><Tooltip cursor={{ strokeDasharray: "3 3" }}/><Scatter data={data} fill={colors[1]}/></ScatterChart>
-    </ResponsiveContainer>
-  );
-  const axis = <><CartesianGrid stroke="#eef0f3" strokeDasharray="3 3"/><XAxis dataKey={chart.x} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} minTickGap={14}/><YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} width={52}/><Tooltip/></>;
-  if (chart.type === "line") return (
-    <ResponsiveContainer width="100%" height={280}><LineChart data={data} margin={{ left: 4, right: 16, top: 12, bottom: 14 }}>{axis}<Line type="monotone" dataKey={chart.y} stroke={colors[1]} strokeWidth={2.5} dot={{ r: 3 }}/></LineChart></ResponsiveContainer>
-  );
-  if (chart.type === "area") return (
-    <ResponsiveContainer width="100%" height={280}><AreaChart data={data} margin={{ left: 4, right: 16, top: 12, bottom: 14 }}>{axis}<Area type="monotone" dataKey={chart.y} fill="#d7e3ea" stroke={colors[1]} strokeWidth={2}/></AreaChart></ResponsiveContainer>
-  );
-  return (
-    <ResponsiveContainer width="100%" height={280}><BarChart data={data} margin={{ left: 4, right: 16, top: 12, bottom: 14 }}>{axis}<Bar dataKey={chart.y} fill={colors[1]} radius={[4, 4, 0, 0]}/></BarChart></ResponsiveContainer>
-  );
+function ChartPreview({ report, chart }: { report: AnalysisResult; chart: ChartDetails }) {
+  if (!report.rows.length) return null;
+  let data = report.rows.map(row => ({ ...row, [chart.y]: Number(row[chart.y]), ...(chart.type === "scatter" ? { [chart.x]: Number(row[chart.x]) } : {}) }));
+  const view = chart.type;
+  if (view === "histogram") {
+    const values = data.map(row => Number(row[chart.y])).filter(Number.isFinite);
+    if (!values.length) return null;
+    const minimum = Math.min(...values);
+    const maximum = Math.max(...values);
+    const step = Math.max((maximum - minimum) / 8, 1e-9);
+    data = Array.from({ length: 8 }, (_, i) => ({ ...data[0], bin: (minimum + i * step).toFixed(2), count: values.filter(v => i === 7 ? v >= minimum + i * step : v >= minimum + i * step && v < minimum + (i + 1) * step).length }));
+  }
+  const axis = <><CartesianGrid stroke="#e9edf0" strokeDasharray="3 3"/><XAxis dataKey={view === "histogram" ? "bin" : chart.x} tick={{ fontSize: 10 }} tickLine={false} axisLine={false}/><YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false}/><Tooltip/></>;
+  if (view === "pie" || view === "donut") return <ResponsiveContainer width="100%" height={290}><PieChart><Pie data={data} dataKey={chart.y} nameKey={chart.x} cx="50%" cy="50%" outerRadius={94} innerRadius={view === "donut" ? 52 : 0} label>{data.map((_, i) => <Cell key={i} fill={palette[i % palette.length]}/>)}</Pie><Tooltip/><Legend/></PieChart></ResponsiveContainer>;
+  if (view === "scatter") return <ResponsiveContainer width="100%" height={290}><ScatterChart><CartesianGrid stroke="#eef1f4"/><XAxis type="number" dataKey={chart.x} name={chart.x}/><YAxis type="number" dataKey={chart.y} name={chart.y}/><Tooltip cursor={{ strokeDasharray: "3 3" }}/><Scatter data={data} fill={palette[1]}/></ScatterChart></ResponsiveContainer>;
+  if (view === "line" || view === "area") return <ResponsiveContainer width="100%" height={290}>{view === "line" ? <LineChart data={data} margin={{ top: 15, right: 20, left: 0, bottom: 15 }}>{axis}<Line type="monotone" stroke={palette[0]} dataKey={chart.y} strokeWidth={2.5} dot={{ r: 3 }}/></LineChart> : <AreaChart data={data} margin={{ top: 15, right: 20, left: 0, bottom: 15 }}>{axis}<Area type="monotone" dataKey={chart.y} stroke={palette[0]} fill="#dceaf0" strokeWidth={2}/></AreaChart>}</ResponsiveContainer>;
+  if (["bar", "horizontal_bar", "grouped_bar", "stacked_bar", "histogram", "lollipop"].includes(view)) {
+    const horizontal = view === "horizontal_bar";
+    const fields = ["grouped_bar", "stacked_bar"].includes(view) ? chart.extra || [chart.y] : [view === "histogram" ? "count" : chart.y];
+    const bars = fields.map((field, i) => <Bar key={field} dataKey={field} stackId={view === "stacked_bar" ? "stack" : undefined} fill={palette[i % palette.length]} radius={[3, 3, 0, 0]}/>);
+    return <ResponsiveContainer width="100%" height={290}><BarChart data={data} layout={horizontal ? "vertical" : "horizontal"} margin={{ top: 15, right: 20, left: 0, bottom: 15 }}><CartesianGrid stroke="#edf0f3" strokeDasharray="3 3"/>{horizontal ? <><XAxis type="number"/><YAxis width={95} type="category" dataKey={chart.x} tick={{ fontSize: 10 }}/></> : <><XAxis dataKey={view === "histogram" ? "bin" : chart.x} tick={{ fontSize: 10 }}/><YAxis tick={{ fontSize: 10 }}/></>}<Tooltip/>{bars}</BarChart></ResponsiveContainer>;
+  }
+  return <p className="figure-fallback-note">This figure needs the Matplotlib plotting service. The query values are available in the table below.</p>;
 }
 
 export default function SmartWorkspace({ tables, loading, onRefresh, projectName, aiEnabled }: Props) {
@@ -53,10 +49,34 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
   const [messages, setMessages] = useState<Message[]>([]);
   const [report, setReport] = useState<AnalysisResult | null>(null);
   const [clarification, setClarification] = useState<Clarification | null>(null);
+  const [figures, setFigures] = useState<Figure[]>([]);
+  const [plotStatus, setPlotStatus] = useState<"idle" | "loading" | "python" | "fallback">("idle");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const chartRef = useRef<HTMLDivElement>(null);
   const chatBottom = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!report?.charts.length) { setFigures([]); setPlotStatus("idle"); return; }
+    const controller = new AbortController();
+    setFigures([]);
+    setPlotStatus("loading");
+    fetch("/api/figures", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows: report.rows, charts: report.charts }),
+      signal: controller.signal
+    }).then(async response => {
+      if (!response.ok) throw new Error("Plotting service unavailable");
+      const data: { figures?: Figure[] } = await response.json();
+      if (!data.figures?.length) throw new Error("No matching figures");
+      setFigures(data.figures);
+      setPlotStatus("python");
+    }).catch(() => {
+      if (!controller.signal.aborted) setPlotStatus("fallback");
+    });
+    return () => controller.abort();
+  }, [report]);
 
   async function ask(text: string, silent = false) {
     const prompt = text.trim();
@@ -65,6 +85,7 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
     setQuestion("");
     setBusy(true);
     setError("");
+    setReport(null);
     setClarification(null);
     setTab("analysis");
     try {
@@ -73,17 +94,16 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
       if (!response.ok) throw new Error(data.error || "Analysis failed.");
       const result = data as AnalysisResponse;
       if (result.type === "clarification") {
-        setReport(null);
         setClarification(result);
-        setMessages(current => [...current, { role: "assistant", text: "Please choose an option in the left workspace." }]);
+        setMessages(current => [...current, { role: "assistant", text: "Choose a detail in the analysis workspace on the left." }]);
       } else {
         setReport(result);
-        setMessages(current => [...current, { role: "assistant", text: "Your report is ready on the left. I found " + result.rows.length + (result.truncated ? "+" : "") + " matching result rows." }]);
+        setMessages(current => [...current, { role: "assistant", text: result.interpretation }]);
       }
     } catch (problem) {
       const message = problem instanceof Error ? problem.message : "Unable to complete the analysis.";
       setError(message);
-      setMessages(current => [...current, { role: "assistant", text: "I couldn't complete the report. Please check the error shown on the left." }]);
+      setMessages(current => [...current, { role: "assistant", text: "I couldn't complete that analysis. The error is shown in the workspace." }]);
     } finally {
       setBusy(false);
       requestAnimationFrame(() => chatBottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
@@ -92,62 +112,56 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
 
   function selectOption(option: string) {
     if (!clarification || busy) return;
-    void ask(clarification.originalQuestion + ". My clarification: " + option, true);
+    void ask(clarification.originalQuestion + ". Clarification: " + option, true);
   }
 
-  function chartSvg() {
-    return chartRef.current?.querySelector("svg.recharts-surface")?.outerHTML || "";
+  function fallbackSvgs() {
+    return Array.from(chartRef.current?.querySelectorAll("svg.recharts-surface") || []).map(item => item.outerHTML);
   }
 
   function download() {
-    if (!report) return;
-    downloadHtml(report, chartSvg());
+    if (report) downloadHtml(report, figures, fallbackSvgs());
   }
 
   function print() {
     if (!report) return;
-    try { printReport(report, chartSvg()); }
-    catch (problem) { setError(problem instanceof Error ? problem.message : "Unable to open printable report."); }
+    try { printReport(report, figures, fallbackSvgs()); }
+    catch (problem) { setError(problem instanceof Error ? problem.message : "Could not open the printable report."); }
   }
 
-  return (
-    <div className="smart-workspace">
-      <main className="analysis-canvas">
-        <header className="canvas-top">
-          <div><div className="canvas-kicker">SMART DATA ANALYSIS & VISUALIZATION</div><h1>Analysis workspace</h1><p>Connected to {projectName}</p></div>
+  return <div className="smart-workspace">
+    <main className="analysis-canvas">
+      <header className="canvas-top">
+        <div><div className="canvas-kicker">SMART DATA ANALYSIS & VISUALIZATION</div><h1>Analysis workspace</h1><p>Connected to {projectName}</p></div>
+        <div className="canvas-controls">
+          <div className="canvas-scope"><label htmlFor="analysis-scope">Analyze table</label><select id="analysis-scope" value={selectedTable} disabled={busy} onChange={event => { setSelectedTable(event.target.value); setReport(null); setClarification(null); setError(""); }}><option value="all">All tables</option>{tables.map(table => <option key={table.name} value={table.name}>{table.name}</option>)}</select></div>
           <div className="canvas-tabs"><button type="button" className={tab === "analysis" ? "selected" : ""} onClick={() => setTab("analysis")}><BarChart3 size={15}/> Analysis</button><button type="button" className={tab === "datasets" ? "selected" : ""} onClick={() => setTab("datasets")}><Database size={15}/> Datasets</button></div>
-        </header>
-
-        {tab === "datasets" ? <div className="canvas-datasets"><DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh}/></div> : (
-          <div className="canvas-results">
-            <div className="scope-control"><label htmlFor="analysis-scope">Analyze table</label><select id="analysis-scope" value={selectedTable} disabled={busy} onChange={event => { setSelectedTable(event.target.value); setReport(null); setClarification(null); setError(""); }}><option value="all">All available tables</option>{tables.map(table => <option key={table.name} value={table.name}>{table.name}</option>)}</select><span><ShieldCheck size={14}/> Read only</span></div>
-
-            {error && <div className="analysis-error" role="alert">{error}</div>}
-            {busy && <div className="work-status"><LoaderCircle className="spinning" size={25}/><div><strong>Preparing your report</strong><p>Checking the schema, planning SQL, and reading authorized data.</p></div></div>}
-
-            {!busy && clarification && <div className="choice-card"><span className="choice-label">ONE MORE DETAIL</span><h2>{clarification.question}</h2><p>Select the interpretation you want. The choices stay here, outside the chatbox.</p><div className="choice-list">{clarification.options.map(option => <button type="button" key={option} onClick={() => selectOption(option)}>{option}<ArrowRight size={16}/></button>)}</div></div>}
-
-            {!busy && !clarification && !report && <div className="analysis-placeholder"><div className="placeholder-icon"><BarChart3 size={29}/></div><h2>Ask a question about your data</h2><p>Your analysis, tables and report will appear here. Use the chatbox on the right to ask a question.</p><div className="placeholder-pills"><span><Database size={14}/> {tables.length} connected tables</span><span><FileText size={14}/> HTML & PDF reports</span></div>{!aiEnabled && <div className="ai-setup">Add <strong>GROQ_API_KEY</strong> in Vercel to enable AI analysis.</div>}</div>}
-
-            {!busy && report && <div className="generated-report">
-              <div className="report-heading"><div><span className="report-eyebrow"><CheckCircle2 size={14}/> REPORT GENERATED</span><h2>{report.title}</h2><p>{report.summary}</p></div><div className="export-actions"><button type="button" onClick={download}><Download size={15}/> HTML</button><button type="button" onClick={print}><FileDown size={15}/> PDF</button></div></div>
-              <div className="report-section"><div className="report-section-head"><h3>Key findings</h3><span>{new Date(report.createdAt).toLocaleString()}</span></div>{report.findings.length ? <ul className="report-findings">{report.findings.map((finding, i) => <li key={i}>{finding}</li>)}</ul> : <p className="report-subtext">No numerical findings were identified from this result.</p>}</div>
-              {report.chart.type !== "none" && <div className="report-section"><div className="report-section-head"><h3>Visualization</h3><span>{report.chart.y.replace(/_/g, " ")} by {report.chart.x.replace(/_/g, " ")}</span></div><div className="analysis-chart" ref={chartRef}><ChartView report={report}/></div></div>}
-              <div className="report-section"><div className="report-section-head"><h3>Query results</h3><span>{report.rows.length}{report.truncated ? "+" : ""} rows</span></div><div className="report-table-scroll"><table><thead><tr>{report.columns.map(column => <th key={column.name}>{column.name.replace(/_/g, " ")}</th>)}</tr></thead><tbody>{report.rows.map((row, i) => <tr key={i}>{report.columns.map(column => <td key={column.name}>{asText(row[column.name])}</td>)}</tr>)}</tbody></table>{!report.rows.length && <p className="report-subtext">No matching records were returned.</p>}</div></div>
-              <details className="sql-details"><summary>View executed SQL</summary><pre>{report.sql}</pre></details><p className="report-notice">Results are read-only. Verify the data and interpretation before making decisions.</p>
-            </div>}
-          </div>
-        )}
-      </main>
-
-      <aside className="ai-chat"><header className="ai-chat-top"><div className="ai-avatar"><MessageSquare size={19}/></div><div><h2>QueryPilot AI</h2><p>Ask questions about your connected data</p></div><span className="ai-online"/></header>
-        <div className="ai-chat-history"><div className="chat-greeting"><div className="chat-greeting-icon"><BarChart3 size={19}/></div><h3>What would you like to know?</h3><p>Ask about counts, comparisons, patterns, charts or reports. Results appear in the analysis workspace.</p></div>
-          {messages.map((message, index) => <div className={"chat-message " + message.role} key={index}><span>{message.text}</span></div>)}
-          {busy && <div className="chat-loading"><LoaderCircle className="spinning" size={15}/> Analyzing your question...</div>}
-          <div ref={chatBottom}/>
         </div>
-        <form className="ai-chat-form" onSubmit={event => { event.preventDefault(); void ask(question); }}><textarea value={question} disabled={busy} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void ask(question); } }} placeholder="Ask a question about your data..." rows={3} maxLength={900}/><div className="ai-chat-form-bottom"><small>Enter to send · Shift + Enter for a new line</small><button type="submit" disabled={busy || !question.trim()} aria-label="Send message"><Send size={17}/></button></div></form>
-      </aside>
-    </div>
-  );
+      </header>
+      {tab === "datasets" ? <div className="canvas-datasets"><DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh}/></div> : <div className="canvas-results">
+        {error && <div className="analysis-error" role="alert">{error}</div>}
+        {busy && <div className="work-status"><LoaderCircle className="spinning" size={25}/><div><strong>Analyzing the selected data</strong><p>Checking available columns and running a read-only query.</p></div></div>}
+        {!busy && clarification && <div className="choice-card"><span className="choice-label">ONE MORE DETAIL</span><h2>{clarification.question}</h2><p>Choose the option that best matches your request.</p><div className="choice-list">{clarification.options.map(option => <button type="button" key={option} onClick={() => selectOption(option)}>{option}<ArrowRight size={16}/></button>)}</div></div>}
+        {!busy && !clarification && !report && <div className="analysis-placeholder"><div className="placeholder-icon"><BarChart3 size={29}/></div><h2>What would you like to analyze?</h2><p>Ask a question in the chatbox. Your answer, charts, and supporting data will appear here.</p><div className="placeholder-pills"><span><Database size={14}/> {tables.length} connected tables</span><span><ShieldCheck size={14}/> Read-only analysis</span></div>{!aiEnabled && <div className="ai-setup">Add <strong>GROQ_API_KEY</strong> in Vercel to enable AI analysis.</div>}</div>}
+        {!busy && report && <div className="generated-report">
+          <section className="answer-card">
+            <div className="answer-top"><span className="report-eyebrow"><CheckCircle2 size={14}/> ANALYSIS COMPLETE</span><div className="export-actions"><button onClick={download} type="button" disabled={plotStatus === "loading"}><Download size={15}/> HTML</button><button onClick={print} type="button" disabled={plotStatus === "loading"}><FileDown size={15}/> PDF</button></div></div>
+            <h2>{report.title}</h2>
+            {report.leadValue !== "—" && <div className="answer-metric"><strong>{report.leadValue}</strong><span>{report.leadLabel}</span></div>}
+            <p className="answer-interpretation">{report.interpretation}</p>
+          </section>
+          {report.charts.length > 0 && <section className="report-section"><div className="report-section-head"><h3>Figures</h3><span>{plotStatus === "python" ? "Matplotlib & Seaborn" : plotStatus === "loading" ? "Generating figures" : "Data visualizations"}</span></div><div className="report-figures" ref={chartRef}>{report.charts.map((chart, index) => {
+            const image = figures.find(item => item.type === chart.type && item.title === chart.title);
+            return <article className="figure-card" key={chart.type + index}><h4>{chart.title}</h4>{plotStatus === "loading" ? <div className="figure-loading"><LoaderCircle className="spinning" size={22}/> Building the figure</div> : image && plotStatus === "python" ? <img src={image.image} alt={image.title}/> : <ChartPreview report={report} chart={chart}/>}</article>;
+          })}</div></section>}
+          <section className="report-section"><div className="report-section-head"><h3>Supporting data</h3><span>{new Date(report.createdAt).toLocaleString()}</span></div>{report.columns.length ? <div className="report-table-scroll"><table><thead><tr>{report.columns.map(column => <th key={column.name}>{column.name.replace(/_/g, " ")}</th>)}</tr></thead><tbody>{report.rows.map((row, i) => <tr key={i}>{report.columns.map(column => <td key={column.name}>{asText(row[column.name])}</td>)}</tr>)}</tbody></table></div> : <p className="report-subtext">No matching data.</p>}{report.truncated && <p className="report-subtext">Preview limited to the first 100 returned records.</p>}</section>
+          <details className="sql-details"><summary>Executed read-only SQL</summary><pre>{report.sql}</pre></details>
+        </div>}
+      </div>}
+    </main>
+    <aside className="ai-chat"><header className="ai-chat-top"><div className="ai-avatar"><MessageSquare size={19}/></div><div><h2>QueryPilot AI</h2><p>Ask about your connected data</p></div><span className="ai-online"/></header>
+      <div className="ai-chat-history"><div className="chat-greeting"><div className="chat-greeting-icon"><BarChart3 size={19}/></div><h3>Ask your data anything</h3><p>Ask about revenue, performance, changes over time, comparisons or visualizations.</p></div>{messages.map((message, i) => <div className={"chat-message " + message.role} key={i}><span>{message.text}</span></div>)}{busy && <div className="chat-loading"><LoaderCircle className="spinning" size={15}/> Checking your data...</div>}<div ref={chatBottom}/></div>
+      <form className="ai-chat-form" onSubmit={event => { event.preventDefault(); void ask(question); }}><textarea value={question} disabled={busy} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void ask(question); } }} placeholder="Ask a question about your data..." rows={3} maxLength={900}/><div className="ai-chat-form-bottom"><small>Enter to send · Shift + Enter for new line</small><button type="submit" disabled={busy || !question.trim()} aria-label="Send message"><Send size={17}/></button></div></form>
+    </aside>
+  </div>;
 }

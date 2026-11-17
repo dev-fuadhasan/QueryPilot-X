@@ -212,20 +212,18 @@ export default function Home() {
         <div className="workspace">
           <header className="workspace-header">
             <div className="brand-inline"><div className="brand-mark"><Database size={18}/></div>Query<strong>Pilot</strong></div>
+            <nav className="header-modules" aria-label="Workspace modules">
+              <span className="header-workspace-label">WORKSPACE</span>
+              <span className="header-module selected" aria-current="page"><BarChart3 size={16}/> Smart data analysis</span>
+              <button type="button" className="header-module" disabled title="Daily analysis is being developed"><Bell size={16}/> Daily analysis <small>Soon</small></button>
+              <button type="button" className="header-module" disabled title="Fraud detection is being developed"><ShieldAlert size={16}/> Fraud detection <small>Soon</small></button>
+            </nav>
             <div className="header-actions"><span className="connection-status"><i/>{session.projectName || "Supabase project"}</span>
               <button className="small-button" onClick={() => { setManual(session.mode === "postgres"); setScreen("setup"); }}>Switch</button>
               <button className="icon-button" title="Disconnect" aria-label="Disconnect" disabled={busy} onClick={disconnect}><LogOut size={18}/></button>
             </div>
           </header>
-
           <div className="workspace-body">
-            <nav className="module-sidebar" aria-label="Project modules">
-              <div className="module-label">WORKSPACE</div>
-              <div className="module-link active"><BarChart3 size={17}/><span>Smart data analysis</span></div>
-              <div className="module-link disabled"><Bell size={17}/><span>Daily analysis</span><small>Soon</small></div>
-              <div className="module-link disabled"><ShieldAlert size={17}/><span>Fraud detection</span><small>Soon</small></div>
-              <div className="module-bottom"><ShieldCheck size={15}/> Read-only connection</div>
-            </nav>
             <main className="main-panel smart-main"><SmartWorkspace tables={tables} loading={loadingTables} onRefresh={() => void loadTables()} projectName={session.projectName || "Supabase project"} aiEnabled={session.aiEnabled}/></main>
           </div>
         </div>
