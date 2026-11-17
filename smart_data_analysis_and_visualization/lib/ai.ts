@@ -96,8 +96,8 @@ export async function interpretReport(question: string, facts: string[], columns
     const interpretation = typeof response.interpretation === "string" ? response.interpretation.trim().slice(0, 380) : "";
     const figures = Array.isArray(response.figures) ? response.figures.filter((s): s is string => typeof s === "string").slice(0, 3) : [];
     const reference = facts.join(" ");
-    const numbers = interpretation.match(/\b\d[\d,.]*\b/g) || [];
-    const allowed = reference.match(/\b\d[\d,.]*\b/g) || [];
+    const numbers: string[] = interpretation.match(/\b\d[\d,.]*\b/g) ?? [];
+    const allowed: string[] = reference.match(/\b\d[\d,.]*\b/g) ?? [];
     const verified = numbers.every(n => allowed.includes(n));
     return { interpretation: verified ? interpretation : "", figures };
   } catch {
