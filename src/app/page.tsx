@@ -2,13 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, BarChart3, Bell, Check, Database, Eye, EyeOff, LockKeyhole, LogOut, ShieldCheck, ShieldAlert } from "lucide-react";
-import DatasetsPanel, { type Table } from "@features/smart_data_analysis_and_visualization/components/DatasetsPanel";
+import type { Table } from "@features/smart_data_analysis_and_visualization/components/DatasetsPanel";
+import SmartWorkspace from "@features/smart_data_analysis_and_visualization/components/SmartWorkspace";
 
 type Project = { id: string; name: string };
 type Session = {
   connected: boolean;
   configured: boolean;
   oauthEnabled: boolean;
+  aiEnabled: boolean;
   projectName: string;
   projectRef: string;
   projects: Project[];
@@ -224,16 +226,7 @@ export default function Home() {
               <div className="module-link disabled"><ShieldAlert size={17}/><span>Fraud detection</span><small>Soon</small></div>
               <div className="module-bottom"><ShieldCheck size={15}/> Read-only connection</div>
             </nav>
-            <main className="main-panel"><DatasetsPanel tables={tables} loading={loadingTables} onRefresh={() => void loadTables()}/></main>
-            <aside className="details-panel">
-              <div className="aside-heading"><Database size={20}/><h2>Connection details</h2></div>
-              <div className="detail"><span>Project</span><strong>{session.projectName || "Supabase project"}</strong></div>
-              <div className="detail"><span>Project reference</span><strong className="reference">{session.projectRef || "Not selected"}</strong></div>
-              <div className="detail"><span>Connection method</span><strong>{session.mode === "oauth" ? "Supabase OAuth" : "PostgreSQL"}</strong></div>
-              <div className="detail"><span>Connected tables</span><strong>{tables.length}</strong></div>
-              <div className="detail"><span>Database access</span><strong className="read-only"><ShieldCheck size={14}/> Read only</strong></div>
-              <div className="aside-foot"><LockKeyhole size={15}/> Connection credentials are never shown in the browser.</div>
-            </aside>
+            <main className="main-panel smart-main"><SmartWorkspace tables={tables} loading={loadingTables} onRefresh={() => void loadTables()} projectName={session.projectName || "Supabase project"} aiEnabled={session.aiEnabled}/></main>
           </div>
         </div>
       )}
