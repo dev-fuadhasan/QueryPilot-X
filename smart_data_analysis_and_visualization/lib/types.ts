@@ -22,6 +22,7 @@ export type Clarification = {
   type: "clarification";
   question: string;
   options: string[];
+  optionQueries?: string[];
   originalQuestion: string;
 };
 export type AnalysisResponse = AnalysisResult | Clarification;

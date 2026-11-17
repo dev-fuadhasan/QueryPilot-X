@@ -6,6 +6,7 @@ import { planQuestion, interpretReport } from "@features/smart_data_analysis_and
 import { safeSql } from "@features/smart_data_analysis_and_visualization/lib/sql";
 import { createReport } from "@features/smart_data_analysis_and_visualization/lib/report";
 import { suggestFigures } from "@features/smart_data_analysis_and_visualization/lib/figures";
+import { buildClarification } from "@features/smart_data_analysis_and_visualization/lib/clarifications";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -31,7 +32,7 @@ export async function POST(request: NextRequest) {
     if (!selected.length) throw new Error("The selected table is not available in this database.");
     const plan = await planQuestion(question, selected);
     const response = plan.action === "clarify"
-      ? NextResponse.json({ type: "clarification", question: plan.question, options: plan.options, originalQuestion: question }, { headers: { "Cache-Control": "no-store" } })
+      ? NextResponse.json(await buildClarification(question, plan, selected, run), { headers: { "Cache-Control": "no-store" } })
       : await (async () => {
         const sql = safeSql(plan.sql || "", selected);
         const rows = await run("SELECT * FROM (" + sql + ") AS querypilot_result LIMIT 101");

@@ -112,7 +112,9 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
 
   function selectOption(option: string) {
     if (!clarification || busy) return;
-    void ask(clarification.originalQuestion + ". Clarification: " + option, true);
+    const index = clarification.options.indexOf(option);
+    const selected = clarification.optionQueries?.[index] || clarification.originalQuestion + ". Clarification: " + option;
+    void ask(selected, true);
   }
 
   function fallbackSvgs() {
