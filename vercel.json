@@ -2,7 +2,8 @@
   "services": {
     "web": {
       "root": "./",
-      "framework": "nextjs"
+      "framework": "nextjs",
+      "installCommand": "npm install"
     },
     "plots": {
       "root": "smart_data_analysis_and_visualization/plot_service",
@@ -11,7 +12,17 @@
     }
   },
   "rewrites": [
-    { "source": "/api/figures", "destination": { "service": "plots" } },
-    { "source": "/(.*)", "destination": { "service": "web" } }
+    {
+      "source": "/api/figures",
+      "destination": {
+        "service": "plots"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "web"
+      }
+    }
   ]
 }

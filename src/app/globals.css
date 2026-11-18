@@ -5,11 +5,7 @@ body{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-se
 button,input{font:inherit}
 button{cursor:pointer}
 button:disabled{cursor:not-allowed;opacity:.55}
-<<<<<<< HEAD
 button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid #6f83df;outline-offset:3px}
-=======
-button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid #6f83df;outline-offset:3px}
->>>>>>> saikat
 .app{min-height:100dvh;position:relative}
 .top-brand{position:absolute;left:4.3%;top:30px;display:flex;align-items:center;gap:9px;font-size:19px;font-weight:500;letter-spacing:-.6px}
 .top-brand strong,.brand-inline strong{font-weight:800}
@@ -100,10 +96,7 @@ button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid #6f83
 .module-sidebar{width:235px;flex-shrink:0;background:#fff;border-right:1px solid var(--border);padding:30px 13px;display:flex;flex-direction:column;gap:6px}
 .module-label{font-size:10px;font-weight:750;color:#a0a6ae;letter-spacing:1.4px;margin:0 12px 15px}
 .module-link{display:flex;align-items:center;gap:11px;padding:12px 12px;border-radius:9px;color:#68707e;font-size:12px;white-space:nowrap}
-<<<<<<< HEAD
-=======
 .module-link{border:0;background:transparent;width:100%;text-align:left}
->>>>>>> saikat
 .module-link span{flex:1}
 .module-link.active{background:#f1f3f6;color:#22262b;font-weight:700}
 .module-link.disabled{opacity:.62}
@@ -158,7 +151,6 @@ button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid #6f83
 @media(max-width:1150px){.details-panel{display:none}.module-sidebar{width:215px}}
 @media(max-width:800px){.workspace{overflow:auto;height:auto;min-height:100dvh}.workspace-body{flex-direction:column;overflow:visible}.module-sidebar{width:100%;flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--border);padding:12px 14px}.module-label,.module-bottom{display:none}.module-link{min-width:max-content}.main-panel{overflow:visible;padding:22px}.section-heading h1{font-size:25px}.dataset-content{grid-template-columns:1fr}.details-panel{display:none}.stat-card{min-height:115px;padding:14px}}
 @media(max-width:500px){.section-heading{align-items:flex-start}.stat-grid{gap:7px}.stat-card{padding:12px;min-height:110px}.stat-card strong{font-size:19px}.stat-card .stat-connected{font-size:11px}.stat-card .stat-connected svg{display:none}.module-link{padding:10px 7px;font-size:11px;gap:6px}.module-link small{font-size:8px}.module-sidebar{gap:4px}.main-panel{padding:18px}.section-heading h1{font-size:23px}.secondary-button{padding:9px;font-size:10px}}
-<<<<<<< HEAD
 .smart-main{padding:0;overflow:hidden;display:flex;min-height:0}
 .smart-workspace{display:grid;grid-template-columns:minmax(0,1fr) 350px;width:100%;height:100%;min-height:0}
 .analysis-canvas{overflow-y:auto;min-width:0;background:#fafbfc;display:flex;flex-direction:column}
@@ -243,7 +235,7 @@ button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid #6f83
 .report-dataset-source{margin:4px 0 12px;font-size:11px;color:#697786}
 .report-dataset-source strong{font-weight:700;color:#33485a}
 @media(max-width:720px){.canvas-heading{width:100%}.canvas-top{align-items:center}}
-=======
+
 .analysis-dashboard{max-width:1180px;margin:0 auto}
 .analysis-toolbar-actions{display:flex;gap:8px;align-items:center}.pdf-status{color:#237e57;background:#eff9f3;border:1px solid #d5efdf;border-radius:9px;padding:12px;font-size:11px;margin-bottom:14px}.history-entry{display:flex;align-items:center;gap:10px;border-bottom:1px solid #f0f1f3}.history-entry>button:first-child{border-bottom:0}.history-download{border:1px solid #e1e5e9!important;border-radius:7px!important;padding:7px 9px!important;width:auto!important;align-items:center!important;flex-direction:row!important;white-space:nowrap!important;color:#68717c!important}
 .analysis-toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}
@@ -273,4 +265,3 @@ button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid #6f83
 @media(max-width:1100px){.analysis-stat-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:650px){.analysis-grid{grid-template-columns:1fr}.analysis-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.report-meta span{border-left:0;padding-left:0;width:100%}.history-card button{align-items:flex-start;flex-direction:column;gap:5px}}
 @media(max-width:900px){.trend-grid{grid-template-columns:1fr}}
->>>>>>> saikat

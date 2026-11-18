@@ -2,9 +2,6 @@ import type { NextConfig } from "next";
 
 const config: NextConfig = {
   reactStrictMode: true,
-<<<<<<< HEAD
-  poweredByHeader: false
-=======
   poweredByHeader: false,
   serverExternalPackages: ["pdfkit"],
   outputFileTracingIncludes: {
@@ -13,7 +10,6 @@ const config: NextConfig = {
       "./node_modules/pdfkit/js/standard-fonts/**"
     ]
   }
->>>>>>> saikat
 };
 
 export default config;

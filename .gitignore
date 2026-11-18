@@ -3,8 +3,6 @@ node_modules
 .env.local
 .env
 *.tsbuildinfo
-<<<<<<< HEAD
-=======
 .local-data/
 *.sqlite
 *.sqlite-shm
@@ -12,5 +10,4 @@ node_modules
 daily_data_analysis_and_notification/generated-reports/
 .local-data/reports/
 Generated PDFs/*.pdf
->>>>>>> saikat
 next-env.d.ts
