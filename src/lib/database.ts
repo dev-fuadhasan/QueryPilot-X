@@ -2,6 +2,14 @@ import { Client } from "pg";
 
 export type Table = { name: string; columns: string[] };
 
+<<<<<<< HEAD
+=======
+function quoteIdentifier(value: string) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) throw new Error("Invalid database identifier.");
+  return `"${value.replace(/"/g, `""`)}"`;
+}
+
+>>>>>>> saikat
 export function validateSupabaseUri(value: string, projectRef?: string) {
   if (value.length > 1500) throw new Error("Connection string is too long.");
 
@@ -55,12 +63,17 @@ export async function getPostgresTables(connectionString: string): Promise<Table
       if (!tables.has(row.table_name)) tables.set(row.table_name, []);
       tables.get(row.table_name)?.push(row.column_name);
     }
+<<<<<<< HEAD
+=======
+
+>>>>>>> saikat
     return [...tables].map(([name, columns]) => ({ name, columns }));
   } finally {
     await client.end().catch(() => undefined);
   }
 }
 
+<<<<<<< HEAD
 export type SchemaTable = { name: string; columns: { name: string; type: string }[] };
 
 export const schemaSql = "SELECT c.table_name, c.column_name, c.data_type FROM information_schema.columns c JOIN information_schema.tables t ON c.table_schema = t.table_schema AND c.table_name = t.table_name WHERE c.table_schema = 'public' AND t.table_type IN ('BASE TABLE', 'VIEW') ORDER BY c.table_name, c.ordinal_position LIMIT 600";
@@ -77,19 +90,33 @@ export function groupSchema(rows: Record<string, unknown>[]): SchemaTable[] {
 }
 
 export async function queryPostgres(connectionString: string, sql: string): Promise<Record<string, unknown>[]> {
+=======
+export async function getPostgresRows(connectionString: string, table: string) {
+>>>>>>> saikat
   const client = new Client({
     connectionString,
     ssl: { rejectUnauthorized: true },
     connectionTimeoutMillis: 6500,
+<<<<<<< HEAD
     query_timeout: 15000
+=======
+    query_timeout: 12000
+>>>>>>> saikat
   });
   try {
     await client.connect();
     await client.query("BEGIN READ ONLY");
+<<<<<<< HEAD
     await client.query("SET LOCAL statement_timeout = '12000ms'");
     const result = await client.query(sql);
     await client.query("ROLLBACK");
     return result.rows as Record<string, unknown>[];
+=======
+    await client.query("SET LOCAL statement_timeout = '9000ms'");
+    const result = await client.query(`SELECT * FROM public.${quoteIdentifier(table)} LIMIT 10000`);
+    await client.query("ROLLBACK");
+    return result.rows as Array<Record<string, unknown>>;
+>>>>>>> saikat
   } finally {
     await client.end().catch(() => undefined);
   }

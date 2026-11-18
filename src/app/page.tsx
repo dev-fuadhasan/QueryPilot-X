@@ -2,22 +2,34 @@
 
 import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, BarChart3, Bell, Check, Database, Eye, EyeOff, LockKeyhole, LogOut, ShieldCheck, ShieldAlert } from "lucide-react";
+<<<<<<< HEAD
 import type { Table } from "@features/smart_data_analysis_and_visualization/components/DatasetsPanel";
 import SmartWorkspace from "@features/smart_data_analysis_and_visualization/components/SmartWorkspace";
+=======
+import DatasetsPanel, { type Table } from "@features/smart_data_analysis_and_visualization/components/DatasetsPanel";
+import DailyAnalysisDashboard from "@features/daily_data_analysis_and_notification/components/DailyAnalysisDashboard";
+>>>>>>> saikat
 
 type Project = { id: string; name: string };
 type Session = {
   connected: boolean;
   configured: boolean;
   oauthEnabled: boolean;
+<<<<<<< HEAD
   aiEnabled: boolean;
+=======
+>>>>>>> saikat
   projectName: string;
   projectRef: string;
   projects: Project[];
   mode: "oauth" | "postgres" | null;
 };
 
+<<<<<<< HEAD
 type Screen = "home" | "setup" | "dashboard";
+=======
+type Screen = "home" | "setup" | "dashboard" | "daily-analysis";
+>>>>>>> saikat
 
 export default function Home() {
   const [session, setSession] = useState<Session | null>(null);
@@ -147,7 +159,11 @@ export default function Home() {
 
   return (
     <div className="app">
+<<<<<<< HEAD
       {screen !== "dashboard" && <header className="top-brand"><div className="brand-mark"><Database size={19}/></div><span>Query<strong>Pilot</strong></span></header>}
+=======
+      {(screen === "home" || screen === "setup") && <header className="top-brand"><div className="brand-mark"><Database size={19}/></div><span>Query<strong>Pilot</strong></span></header>}
+>>>>>>> saikat
 
       {!session && <div className="loading-screen"><Database size={30}/><p>Loading QueryPilot...</p></div>}
 
@@ -208,6 +224,7 @@ export default function Home() {
         </main>
       )}
 
+<<<<<<< HEAD
       {session && screen === "dashboard" && (
         <div className="workspace">
           <header className="workspace-header">
@@ -218,13 +235,41 @@ export default function Home() {
               <button type="button" className="header-module" disabled title="Daily analysis is being developed"><Bell size={16}/> Daily analysis <small>Soon</small></button>
               <button type="button" className="header-module" disabled title="Fraud detection is being developed"><ShieldAlert size={16}/> Fraud detection <small>Soon</small></button>
             </nav>
+=======
+      {session && (screen === "dashboard" || screen === "daily-analysis") && (
+        <div className="workspace">
+          <header className="workspace-header">
+            <div className="brand-inline"><div className="brand-mark"><Database size={18}/></div>Query<strong>Pilot</strong></div>
+>>>>>>> saikat
             <div className="header-actions"><span className="connection-status"><i/>{session.projectName || "Supabase project"}</span>
               <button className="small-button" onClick={() => { setManual(session.mode === "postgres"); setScreen("setup"); }}>Switch</button>
               <button className="icon-button" title="Disconnect" aria-label="Disconnect" disabled={busy} onClick={disconnect}><LogOut size={18}/></button>
             </div>
           </header>
+<<<<<<< HEAD
           <div className="workspace-body">
             <main className="main-panel smart-main"><SmartWorkspace tables={tables} loading={loadingTables} onRefresh={() => void loadTables()} projectName={session.projectName || "Supabase project"} projectRef={session.projectRef || "connected-project"} aiEnabled={session.aiEnabled}/></main>
+=======
+
+          <div className="workspace-body">
+            <nav className="module-sidebar" aria-label="Project modules">
+              <div className="module-label">WORKSPACE</div>
+              <button className={"module-link " + (screen === "dashboard" ? "active" : "")} onClick={() => setScreen("dashboard")}><BarChart3 size={17}/><span>Smart data analysis</span></button>
+              <button className={"module-link " + (screen === "daily-analysis" ? "active" : "")} onClick={() => setScreen("daily-analysis")}><Bell size={17}/><span>Daily analysis</span></button>
+              <div className="module-link disabled"><ShieldAlert size={17}/><span>Fraud detection</span><small>Soon</small></div>
+              <div className="module-bottom"><ShieldCheck size={15}/> Read-only connection</div>
+            </nav>
+            <main className="main-panel">{screen === "daily-analysis" ? <DailyAnalysisDashboard onBack={() => setScreen("dashboard")}/> : <DatasetsPanel tables={tables} loading={loadingTables} onRefresh={() => void loadTables()}/>}</main>
+            <aside className="details-panel">
+              <div className="aside-heading"><Database size={20}/><h2>Connection details</h2></div>
+              <div className="detail"><span>Project</span><strong>{session.projectName || "Supabase project"}</strong></div>
+              <div className="detail"><span>Project reference</span><strong className="reference">{session.projectRef || "Not selected"}</strong></div>
+              <div className="detail"><span>Connection method</span><strong>{session.mode === "oauth" ? "Supabase OAuth" : "PostgreSQL"}</strong></div>
+              <div className="detail"><span>Connected tables</span><strong>{tables.length}</strong></div>
+              <div className="detail"><span>Database access</span><strong className="read-only"><ShieldCheck size={14}/> Read only</strong></div>
+              <div className="aside-foot"><LockKeyhole size={15}/> Connection credentials are never shown in the browser.</div>
+            </aside>
+>>>>>>> saikat
           </div>
         </div>
       )}
