@@ -1,0 +1,28 @@
+{
+  "services": {
+    "web": {
+      "root": "./",
+      "framework": "nextjs",
+      "installCommand": "npm install"
+    },
+    "plots": {
+      "root": "smart_data_analysis_and_visualization/plot_service",
+      "entrypoint": "main:app",
+      "framework": "fastapi"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/figures",
+      "destination": {
+        "service": "plots"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "web"
+      }
+    }
+  ]
+}

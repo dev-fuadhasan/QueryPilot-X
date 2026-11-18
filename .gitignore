@@ -1,0 +1,13 @@
+node_modules
+.next
+.env.local
+.env
+*.tsbuildinfo
+.local-data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+daily_data_analysis_and_notification/generated-reports/
+.local-data/reports/
+Generated PDFs/*.pdf
+next-env.d.ts
