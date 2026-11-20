@@ -32,6 +32,54 @@ export function calculateSummary(
   };
 }
 
+export function exportChangeNotificationsToCSV(
+  changes: Array<{
+    id: string;
+    tableName: string;
+    recordId: string;
+    columnName: string;
+    oldValue: unknown;
+    newValue: unknown;
+    timestamp: string;
+    changeType?: string;
+    changedBy?: string | null;
+  }>
+): string {
+  const headers = [
+    "Date & Time",
+    "Dataset / Table",
+    "Record ID",
+    "Field",
+    "Old Value",
+    "New Value",
+    "Type",
+    "Changed By",
+  ];
+
+  const escapeCSV = (val: unknown): string => {
+    if (val === null || val === undefined) return '""';
+    const str = typeof val === "object" ? JSON.stringify(val) : String(val);
+    return `"${str.replace(/"/g, '""')}"`;
+  };
+
+  const rows = changes.map((c) =>
+    [
+      new Date(c.timestamp).toLocaleString(),
+      c.tableName,
+      c.recordId,
+      c.columnName,
+      c.oldValue ?? "NULL",
+      c.newValue ?? "NULL",
+      c.changeType || "MODIFIED",
+      c.changedBy || "User / Database",
+    ]
+      .map(escapeCSV)
+      .join(",")
+  );
+
+  return [headers.join(","), ...rows].join("\r\n");
+}
+
 export function exportAlertsToCSV(alerts: UniversalAlert[]): string {
   const headers = [
     "Alert ID",

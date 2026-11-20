@@ -58,6 +58,20 @@ export type UniversalAlert = {
   eventType?: "INSERT" | "UPDATE" | "DELETE" | "SCAN_ANOMALY" | string;
 };
 
+export type ChangeNotification = {
+  id: string;
+  tableName: string;
+  recordId: string;
+  columnName: string;
+  oldValue: unknown;
+  newValue: unknown;
+  changedBy?: string | null;
+  timestamp: string;
+  changeType: "UPDATE" | "INSERT" | "DELETE" | string;
+  reason?: string;
+  isRead?: boolean;
+};
+
 export type BusinessProfile = {
   id: BusinessProfileType;
   name: string;
