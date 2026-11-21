@@ -153,13 +153,30 @@ export default function Home() {
       {!session && <div className="loading-screen"><Database size={30}/><p>Loading QueryPilot...</p></div>}
 
       {session && screen === "home" && (
-        <main className="welcome">
-          <div className="hero-icon"><Database size={29}/></div>
-          <div className="eyebrow">YOUR DATA WORKSPACE</div>
-          <h1>Your data,<span> connected.</span></h1>
-          <p>One place for smart analysis, daily updates, and fraud monitoring.<br/>Connect a Supabase project to begin.</p>
-          <button className="primary welcome-button" onClick={beginSetup}><Database size={18}/> Connect your database <ArrowRight size={17}/></button>
-          <div className="hint"><ShieldCheck size={15}/> Secure, read-only Supabase connection</div>
+        <main className="welcome login-landing">
+          <section className="login-media" aria-label="QueryPilot introduction">
+            <div className="login-video-wrap">
+              <video className="login-video" src="https://d2ol7oe51mr4n9.cloudfront.net/user_3MAuXQv43Z5PqLIskwD8gbspT5a/af68d7c1-e581-4c94-af9e-e9141fc27d57.mp4" autoPlay loop muted playsInline preload="metadata" disablePictureInPicture aria-label="QueryPilot motion graphic" />
+            </div>
+            <div className="login-media-caption"><span className="login-media-dot" /> A clearer view of your business data</div>
+          </section>
+          <section className="login-content">
+            <div className="login-copy">
+              <div className="login-kicker"><span className="login-kicker-line" /> THE INTELLIGENT DATA WORKSPACE</div>
+              <h1>Make data<br/><span>make sense.</span></h1>
+              <p>From raw numbers to confident decisions. Analyze your data, stay ahead of daily changes, and monitor what matters — all in one place.</p>
+              <div className="login-features">
+                <span><BarChart3 size={16}/> Smart analytics</span>
+                <span><Bell size={16}/> Daily insights</span>
+                <span><ShieldCheck size={16}/> Secure monitoring</span>
+              </div>
+              <button type="button" className="primary login-cta" onClick={beginSetup}>
+                Get started <ArrowRight size={19}/>
+              </button>
+              <div className="login-footnote"><LockKeyhole size={14}/> Connect securely with Supabase</div>
+            </div>
+            <div className="login-bottom-note"><span>ANALYZE</span><span className="login-separator"/> <span>UNDERSTAND</span><span className="login-separator"/><span>ACT</span></div>
+          </section>
         </main>
       )}
 
