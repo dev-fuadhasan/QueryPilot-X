@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, BarChart3, Bell, Check, Database, LockKeyhole, LogOut, ShieldCheck, ShieldAlert } from "lucide-react";
+import { ArrowLeft, ArrowRight, BarChart3, Bell, Check, LockKeyhole, LogOut, ShieldCheck, ShieldAlert } from "lucide-react";
 import type { Table } from "@features/smart_data_analysis_and_visualization/components/DatasetsPanel";
 import DailyAnalysisDashboard from "@features/daily_data_analysis_and_notification/components/DailyAnalysisDashboard";
 import FraudDetectionDashboard from "@features/fraud_detection_and_notification/components/FraudDetectionDashboard";
@@ -125,9 +125,9 @@ export default function Home() {
 
   return (
     <div className={"app" + (screen === "home" || screen === "setup" ? " auth-app" : "")}>
-      {(screen === "home" || screen === "setup") && <header className="top-brand"><div className="brand-mark"><Database size={19}/></div><span>Query<strong>Pilot</strong></span></header>}
+      {(screen === "home" || screen === "setup") && <header className="top-brand"><img className="brand-logo" src="/querypilot-logo.svg" alt="QueryPilot logo" width={36} height={36}/><span>Query<strong>Pilot</strong></span></header>}
 
-      {!session && <div className="loading-screen"><Database size={30}/><p>Loading QueryPilot...</p></div>}
+      {!session && <div className="loading-screen"><img className="loading-logo" src="/querypilot-logo.svg" alt="QueryPilot logo" width={54} height={54}/><p>Loading QueryPilot...</p></div>}
 
       {session && (screen === "home" || screen === "setup") && (
         <main className="welcome login-landing" aria-label="QueryPilot sign in">
@@ -228,7 +228,7 @@ export default function Home() {
       {session && (screen === "dashboard" || screen === "daily-analysis" || screen === "fraud-detection") && (
         <div className="workspace">
           <header className="workspace-header">
-            <div className="brand-inline"><div className="brand-mark"><Database size={18}/></div>Query<strong>Pilot</strong></div>
+            <div className="brand-inline"><img className="brand-logo" src="/querypilot-logo.svg" alt="QueryPilot logo" width={36} height={36}/>Query<strong>Pilot</strong></div>
             <nav className="header-modules" aria-label="Workspace modules">
               <span className="header-workspace-label">WORKSPACE</span>
               <button type="button" className={"header-module " + (screen === "dashboard" ? "selected" : "")} aria-current={screen === "dashboard" ? "page" : undefined} onClick={() => setScreen("dashboard")}><BarChart3 size={16}/> Smart data analysis</button>

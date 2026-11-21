@@ -506,3 +506,10 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
   .auth-app .login-video-wrap{max-height:100%}
   .auth-app .login-footnote{font-size:9px}
 }
+
+/* Official QueryPilot logo branding */
+.brand-logo{display:block;width:36px;height:36px;flex-shrink:0;object-fit:contain}
+.loading-logo{display:block;width:54px;height:54px;object-fit:contain;animation:querypilot-logo-breathe 2s ease-in-out infinite}
+@keyframes querypilot-logo-breathe{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.83;transform:scale(.96)}}
+@media(prefers-reduced-motion:reduce){.loading-logo{animation:none}}
+@media(max-width:700px){.auth-app .top-brand .brand-logo{width:30px;height:30px}}
