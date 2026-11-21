@@ -67,13 +67,13 @@ export default function CustomPanelView({table,spec,filterDimension,selectedGrou
       : <LineChart data={points}><CartesianGrid strokeDasharray="3 3" stroke="#e6eeee"/><XAxis dataKey="label" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}}/><Tooltip/><Line dataKey="value" name={measure} stroke="#2F4A63" dot={{r:3}} strokeWidth={2}/></LineChart>}
   </ResponsiveContainer></div>;
   const axisWidth=categoryAxisWidth(points.map(point=>point.label));
-  return <div className="qp-chart-wrap"><ScrollableChart minWidth={axisWidth+350}><ResponsiveContainer width="100%" height={Math.max(260,Math.min(12,points.length)*58)}>
-    <BarChart data={points.slice(0,12)} layout="vertical" margin={{left:0,right:18}}>
+  return <div className="qp-chart-wrap qp-ranked-chart"><div className="qp-ranked-chart-viewport"><ScrollableChart minWidth={axisWidth+350}><ResponsiveContainer width="100%" height={Math.max(260,Math.min(30,points.length)*57)}>
+    <BarChart data={points} layout="vertical" margin={{left:0,right:18}}>
       <CartesianGrid horizontal={false} strokeDasharray="3 3" stroke="#e6eeee"/>
       <XAxis type="number" tick={{fontSize:10}}/>
       <YAxis dataKey="label" type="category" width={axisWidth} interval={0} tick={<CategoryTick width={axisWidth}/>} tickLine={false}/>
       <Tooltip/><Bar dataKey="value" name={measure} fill="#5B91A3" radius={[0,5,5,0]}
         onClick={item=>{const row=item as {payload?:{label?:string}};select(row.payload?.label||"");}}/>
     </BarChart>
-  </ResponsiveContainer></ScrollableChart><FullCategoryLabels labels={points.map(point=>point.label)}/></div>;
+  </ResponsiveContainer></ScrollableChart></div><FullCategoryLabels labels={points.map(point=>point.label)}/><p className="qp-chart-caption">Showing {points.length}{spec.resultLimit ? " of up to " + spec.resultLimit : ""} ranked categories, based on {measure.toLowerCase()}.</p></div>;
 }

@@ -4,6 +4,7 @@ import { groupSchema, queryPostgres, type SchemaTable } from "@/lib/database";
 import { queryOAuth, refreshSession } from "@/lib/supabase";
 import { proposeDashboardPanel, type ProposedDashboardPanel } from "@features/smart_data_analysis_and_visualization/lib/ai";
 import type { CustomPanelSpec, CustomPanelData, CustomPanelPoint } from "@features/smart_data_analysis_and_visualization/lib/intelligence";
+import { DEFAULT_CATEGORY_RESULTS, DEFAULT_MONTHLY_RESULTS, parseRequestedResultCount, verifiedResultCount, verifiedSortDirection } from "@features/smart_data_analysis_and_visualization/lib/panelRanking";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -66,7 +67,7 @@ const metricAliases: Record<string,string[]> = {
 };
 const dimensionAliases: Record<string,string[]> = {
   region:["region","area","territory"], category:["category","segment","group"],
-  product:["product","item"], country:["country","nation"], city:["city"],
+  product:["product","products","item","items","product name","product names"], country:["country","nation"], city:["city"],
   gender:["gender","sex"], department:["department","team"], status:["status"],
   class:["class"], channel:["channel"], type:["type"]
 };
@@ -120,7 +121,10 @@ function validate(spec: ProposedDashboardPanel, table: SchemaTable, userTitle?: 
     chart: spec.chart, aggregation: spec.aggregation, metric, dimension, time,
     title: (userTitle || spec.title || "Custom panel").trim().slice(0, 65),
     description: spec.aggregation + (metric ? " of " + metric : " of records") +
-      (time ? " over " + time : dimension ? " by " + dimension : "")
+      (time ? " over " + time : dimension ? " by " + dimension : ""),
+    resultLimit: verifiedResultCount(spec.resultLimit,
+      ["line","area"].includes(spec.chart) ? DEFAULT_MONTHLY_RESULTS : DEFAULT_CATEGORY_RESULTS),
+    sortDirection: verifiedSortDirection(spec.sortDirection)
   };
 }
 function filter(input: Input, table: SchemaTable) {
@@ -153,14 +157,16 @@ async function execute(spec: CustomPanelSpec, table: SchemaTable, input: Input, 
     constraints.push(col + " IS NOT NULL");
     sql = "SELECT TO_CHAR(DATE_TRUNC('month', " + col + "), 'YYYY-MM') AS label, COUNT(*)::bigint AS records, " +
       expr(spec) + " AS value FROM " + source(table) + " WHERE " + constraints.join(" AND ") +
-      " GROUP BY 1 ORDER BY 1 DESC LIMIT 24";
+      " GROUP BY 1 ORDER BY 1 " + (spec.sortDirection === "asc" ? "ASC" : "DESC") +
+      " LIMIT " + spec.resultLimit;
   } else {
     const col = quote(spec.dimension || "");
     const group = "LEFT(CAST(" + col + " AS text), 110)";
     sql = "SELECT COALESCE(" + group + ", '(missing)') AS label, COUNT(*)::bigint AS records, " +
       expr(spec) + " AS value FROM " + source(table) +
       (constraints.length ? " WHERE " + constraints.join(" AND ") : "") +
-      " GROUP BY 1 ORDER BY value DESC NULLS LAST, records DESC LIMIT 16";
+      " GROUP BY 1 ORDER BY value " + (spec.sortDirection === "asc" ? "ASC" : "DESC") +
+      " NULLS LAST, records DESC, label ASC LIMIT " + spec.resultLimit;
   }
   const rows = await run(sql);
   if (!rows.length || (spec.chart === "kpi" && Number(rows[0].records) === 0)) {
@@ -172,7 +178,7 @@ async function execute(spec: CustomPanelSpec, table: SchemaTable, input: Input, 
     value: numeric(row.value)
   }));
   if (!points.length) throw new Error("The requested metric has no usable numeric values in this dataset.");
-  if (spec.chart === "line" || spec.chart === "area") points.reverse();
+  if ((spec.chart === "line" || spec.chart === "area") && spec.sortDirection !== "asc") points.reverse();
   if (spec.chart === "pie" && (points.some(point => point.value < 0) || !points.some(point => point.value > 0))) {
     throw new Error("A share chart needs non-negative values and a positive total. Try a bar chart instead.");
   }
@@ -212,14 +218,57 @@ export async function POST(request: NextRequest) {
         return failure("This custom builder supports factual KPI, category and time-series aggregations only. The requested analysis is not available.");
       }
       const cols = available(table);
-      const ai = await proposeDashboardPanel(prompt,cols.metrics,cols.dimensions,cols.times);
-      const deterministic = fallback(prompt,cols);
-      const proposed = ai || deterministic;
-      if (!proposed) return failure("I couldn't match that request to supported fields in this dataset. Try a metric and grouping, e.g. 'Average price by category' or 'Monthly order count'.");
-      try { spec = validate(proposed,table,typeof input.title==="string" ? input.title : undefined); }
-      catch (problem) {
-        if (!deterministic || proposed===deterministic) throw problem;
-        spec = validate(deterministic,table,typeof input.title==="string" ? input.title : undefined);
+      const requested = parseRequestedResultCount(prompt);
+      const explicitMetric = namedMatch(prompt,cols.metrics,metricAliases);
+      const explicitGroup = namedMatch(prompt,cols.dimensions,dimensionAliases);
+      const explicitTime = namedMatch(prompt,cols.times,{date:["date","dates","time","month","months"],created:["created","creation"]});
+      if (requested && (requested.mode === "top" || requested.mode === "bottom" || requested.mode === "first")) {
+        // Ranking is enforced by the server. An LLM is not allowed to ignore "top five".
+        if (/\b(month|months|year|years|date|dates)\b/i.test(prompt)) {
+          return failure("Ranking months by a metric is not supported. Try 'latest 5 months' for a time-series chart.");
+        }
+        const isProductRequest = /\b(?:products?|items?)\b/i.test(prompt) && !/\b(?:categories|category|types)\b/i.test(prompt);
+        const productName = isProductRequest ? cols.dimensions.find(name =>
+          /^(?:product_?name|product_?title|item_?name|item_?title|product|item)$/i.test(name)) : null;
+        const group = productName || explicitGroup || (cols.dimensions.length === 1 ? cols.dimensions[0] : null);
+        if (!group) return failure("To rank " + requested.count + " items, specify a category column that exists in this dataset (for example, product or region).");
+        const wantsAverage = /\b(average|mean|avg)\b/i.test(prompt);
+        const wantsMin = /\b(minimum|min|smallest)\b/i.test(prompt);
+        const wantsMax = /\b(maximum|max|largest)\b/i.test(prompt);
+        const wantsCount = /\b(count|number of|how many|frequency|records)\b/i.test(prompt);
+        const aggregation: ProposedDashboardPanel["aggregation"] = wantsAverage ? "average" : wantsMin ? "min" : wantsMax ? "max" : wantsCount || !explicitMetric ? "count"
+          : /\b(price|rate|score|age)\b/i.test(explicitMetric) && !/\b(total|sum)\b/i.test(prompt) ? "average" : "sum";
+        const forced: ProposedDashboardPanel = {
+          chart: /\b(pie|donut|share)\b/i.test(prompt) ? "pie" : /\b(table|list)\b/i.test(prompt) ? "table" : "bar",
+          aggregation, metric: aggregation === "count" ? null : explicitMetric,
+          dimension: group, time: null, title: prompt.slice(0,70),
+          resultLimit: requested.count,
+          sortDirection: requested.mode === "bottom" || requested.mode === "first" ? "asc" : "desc"
+        };
+        spec = validate(forced,table,typeof input.title==="string" ? input.title : undefined);
+      } else if (requested && requested.mode === "recent") {
+        if (!/\b(month|months|year|years|date|dates|period|periods)\b/i.test(prompt)) {
+          return failure("Use 'latest " + requested.count + " months' for a time-series panel. This dataset view has no general chronological ranking.");
+        }
+        const time = explicitTime || (cols.times.length === 1 ? cols.times[0] : null);
+        if (!time) return failure("This dataset has no matching date column for the requested latest " + requested.count + " periods.");
+        const aggregate: ProposedDashboardPanel["aggregation"] = explicitMetric ? /\b(average|mean|avg)\b/i.test(prompt) ? "average" : "sum" : "count";
+        spec = validate({
+          chart:/\barea\b/i.test(prompt) ? "area" : "line",
+          aggregation:aggregate, metric:aggregate === "count" ? null : explicitMetric,
+          dimension:null,time,title:prompt.slice(0,70),
+          resultLimit:requested.count,sortDirection:"desc"
+        },table,typeof input.title==="string" ? input.title : undefined);
+      } else {
+        const ai = await proposeDashboardPanel(prompt,cols.metrics,cols.dimensions,cols.times);
+        const deterministic = fallback(prompt,cols);
+        const proposed = ai || deterministic;
+        if (!proposed) return failure("I couldn't match that request to supported fields in this dataset. Try a metric and grouping, e.g. 'Average price by category' or 'Monthly order count'.");
+        try { spec = validate(proposed,table,typeof input.title==="string" ? input.title : undefined); }
+        catch (problem) {
+          if (!deterministic || proposed===deterministic) throw problem;
+          spec = validate(deterministic,table,typeof input.title==="string" ? input.title : undefined);
+        }
       }
     } else {
       const existing = input.spec;
@@ -236,7 +285,7 @@ export async function POST(request: NextRequest) {
     return response;
   } catch (err) {
     const message = err instanceof Error ? err.message : "";
-    if (/requested|no matching|not available|not valid|unsupported|compatible|suitable|needs|saved panel|no usable|chart|aggregation/i.test(message)) return failure(message.slice(0,250));
+    if (/requested|no matching|not available|not valid|unsupported|compatible|suitable|needs|saved panel|no usable|chart|aggregation|limit|rank|category|date column|period/i.test(message)) return failure(message.slice(0,250));
     console.error("Dashboard panel generation failed",err);
     return failure("Could not build this panel from the selected dataset. Check its fields and permissions.");
   }

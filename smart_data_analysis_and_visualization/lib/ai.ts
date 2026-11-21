@@ -174,6 +174,8 @@ export type ProposedDashboardPanel = {
   dimension: string | null;
   time: string | null;
   title: string;
+  resultLimit?: number;
+  sortDirection?: "asc" | "desc";
 };
 
 /* The AI only chooses a configuration. Database SQL is constructed and

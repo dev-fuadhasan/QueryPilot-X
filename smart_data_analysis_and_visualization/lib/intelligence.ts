@@ -53,6 +53,8 @@ export type CustomPanelSpec = {
   time: string | null;
   title: string;
   description: string;
+  resultLimit?: number;
+  sortDirection?: "asc" | "desc";
 };
 export type CustomPanelPoint = { label: string; value: number; records: number };
 export type CustomPanelData = { points: CustomPanelPoint[]; total: number | null; sql: string };
