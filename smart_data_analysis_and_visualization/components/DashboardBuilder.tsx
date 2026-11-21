@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { ArrowDown, ArrowUp, Download, Expand, GripVertical, LayoutDashboard, LoaderCircle, Plus, RotateCcw, Save, Trash2, Sparkles, AlertCircle, CheckCircle2, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, BarChart3, Check, Database, Expand, GripVertical, LineChart as LineChartIcon, LoaderCircle, Pencil, PieChart as PieChartIcon, Plus, Sigma, Table2, Trash2, Sparkles, AlertCircle, CheckCircle2, X } from "lucide-react";
 import CustomPanelView from "./CustomPanelView";
 import { CategoryTick, ChartCategoryLegend, FullCategoryLabels, ScrollableChart, categoryAxisWidth } from "./ReadableCharts";
 import type { DashboardPanel, DashboardPanelKind, GroupPoint, InvestigationBundle, OverviewData, TrendPoint } from "../lib/intelligence";
@@ -46,6 +46,8 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
   const { plan } = bundle;
   const storageKey = "querypilot:dashboard-layout:" + projectRef + ":" + plan.table;
   const [title, setTitle] = useState("Dashboard");
+  const [draftTitle, setDraftTitle] = useState("Dashboard");
+  const [editingTitle, setEditingTitle] = useState(false);
   const [panels, setPanels] = useState<DashboardPanel[]>(() => defaultPanels(bundle));
   const [customPrompt, setCustomPrompt] = useState("");
   const [customTitle, setCustomTitle] = useState("");
@@ -58,13 +60,15 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
     setLoaded(false);
     setPanels(defaultPanels(bundle));
     setTitle("Dashboard");
+    setDraftTitle("Dashboard");
+    setEditingTitle(false);
     try {
       const value = localStorage.getItem(storageKey);
       if (value) {
         const stored: unknown = JSON.parse(value);
         if (stored && typeof stored === "object") {
           const item = stored as { title?: unknown; panels?: unknown };
-          if (typeof item.title === "string" && item.title.length < 110) setTitle(item.title);
+          if (typeof item.title === "string" && item.title.length < 110) { setTitle(item.title); setDraftTitle(item.title); }
           if (Array.isArray(item.panels)) {
             const good: DashboardPanel[] = item.panels.filter(panel =>
               panel && typeof panel.id === "string" && typeof panel.title === "string" &&
@@ -147,11 +151,15 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
       setToast({type:"error",message:problem instanceof Error ? problem.message : "Unable to create panel."});
     } finally { setCreating(false); }
   }
-  function saveLayout() {
-    try {
-      localStorage.setItem(storageKey, JSON.stringify({ title, panels }));
-      setToast({type:"success",message:"Layout saved in this browser."});
-    } catch { setToast({type:"error",message:"Browser storage is unavailable. The layout is active in this session only."}); }
+  function saveDashboardTitle() {
+    const value = draftTitle.trim();
+    if (!value) {
+      setToast({type:"error",message:"Please enter a dashboard name."});
+      return;
+    }
+    setTitle(value);
+    setEditingTitle(false);
+    setToast({type:"success",message:"Dashboard name saved."});
   }
   const globalGroups = bundle.drivers || [];
   const canTrend = (bundle.trend || []).length > 0;
@@ -161,9 +169,21 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
     if (panel.kind === "custom" && panel.spec) return <CustomPanelView table={plan.table} spec={panel.spec} filterDimension={plan.dimension} selectedGroup={selectedGroup} onSelectGroup={onSelectGroup}/>;
     if (panel.kind === "kpi") {
       return <div className="qp-kpi-grid">
-        <div><span>Total records</span><strong>{format(overview.records)}</strong><small>{selectedGroup ? "Selected segment" : "Current dataset"}</small></div>
-        <div><span>{plan.metric ? "Total " + label : "Analyzed records"}</span><strong>{format(plan.metric ? overview.total : overview.records)}</strong><small>{plan.metric ? "Aggregated metric" : "Count"}</small></div>
-        <div><span>{plan.metric ? "Average " + label : "Connected columns"}</span><strong>{format(plan.metric ? overview.average : plan.columnCount)}</strong><small>{plan.metric ? "Per non-null observation" : "Schema fields"}</small></div>
+        <div className="qp-kpi-card">
+          <div className="qp-kpi-card-top"><span>Total records</span><span className="qp-kpi-card-icon"><Database size={17}/></span></div>
+          <strong>{format(overview.records)}</strong>
+          <small>{selectedGroup ? "Selected segment" : "Current dataset"}</small>
+        </div>
+        <div className="qp-kpi-card">
+          <div className="qp-kpi-card-top"><span>{plan.metric ? "Total " + label : "Analyzed records"}</span><span className="qp-kpi-card-icon"><Sigma size={17}/></span></div>
+          <strong>{format(plan.metric ? overview.total : overview.records)}</strong>
+          <small>{plan.metric ? "Aggregated metric" : "Record count"}</small>
+        </div>
+        <div className="qp-kpi-card">
+          <div className="qp-kpi-card-top"><span>{plan.metric ? "Average " + label : "Connected columns"}</span><span className="qp-kpi-card-icon"><Activity size={17}/></span></div>
+          <strong>{format(plan.metric ? overview.average : plan.columnCount)}</strong>
+          <small>{plan.metric ? "Per non-null observation" : "Schema fields"}</small>
+        </div>
       </div>;
     }
     if (panel.kind === "trend") {
@@ -216,13 +236,27 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
   }
   return <section className="qp-dashboard-builder">
     <div className="qp-dash-titlebar">
-      <div><input aria-label="Dashboard title" className="qp-dashboard-title" maxLength={90} value={title} onChange={event => setTitle(event.target.value)}/>
-        <p><strong>{plan.table}</strong> · Live metrics</p>
-      </div>
-      <div className="qp-dash-actions">
-        <button type="button" onClick={saveLayout}><Save size={15}/> Save layout</button>
-        <button type="button" onClick={() => window.print()}><Download size={15}/> Print / PDF</button>
-        <button type="button" onClick={() => { setPanels(defaultPanels(bundle)); setTitle("Dashboard"); onSelectGroup(null); }}><RotateCcw size={14}/> Reset</button>
+      <div className="qp-dash-title-content">
+        <div className="qp-dash-title-row">
+          {editingTitle ? (
+            <>
+              <input aria-label="Dashboard title" className="qp-dashboard-title qp-title-edit" maxLength={90}
+                autoFocus value={draftTitle} onChange={event => setDraftTitle(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === "Enter") { event.preventDefault(); saveDashboardTitle(); }
+                  if (event.key === "Escape") { setEditingTitle(false); setDraftTitle(title); }
+                }}/>
+              <button type="button" className="qp-title-icon-button qp-title-save" aria-label="Save dashboard name" title="Save name" onClick={saveDashboardTitle}><Check size={15}/></button>
+              <button type="button" className="qp-title-icon-button" aria-label="Cancel editing dashboard name" title="Cancel" onClick={() => {setDraftTitle(title); setEditingTitle(false);}}><X size={14}/></button>
+            </>
+          ) : (
+            <>
+              <h2 className="qp-dashboard-title" title={title}>{title}</h2>
+              <button type="button" className="qp-title-icon-button" aria-label="Edit dashboard name" title="Edit dashboard name" onClick={() => {setDraftTitle(title); setEditingTitle(true);}}><Pencil size={14}/></button>
+            </>
+          )}
+        </div>
+        <p><strong>{plan.table}</strong> <span className="qp-title-separator">·</span> Live metrics</p>
       </div>
     </div>
     <div className="qp-filter-line">
@@ -235,8 +269,14 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
     <div className="qp-dashboard-grid" aria-busy={filterBusy}>
       {panels.map((panel, index) => <article key={panel.id} className={"qp-dashboard-panel" + (panel.wide ? " wide" : "") + (draggingId === panel.id ? " dragging" : "")} draggable onDragStart={() => setDraggingId(panel.id)} onDragOver={event => event.preventDefault()} onDrop={() => dropPanel(panel.id)} onDragEnd={() => setDraggingId(null)}>
         <div className="qp-panel-heading">
-          <div className="qp-panel-title"><GripVertical size={15}/><input value={panel.title} aria-label="Panel heading" maxLength={65} onChange={event => editPanel(panel.id, {title:event.target.value})}/></div>
+          <div className="qp-panel-title">
+            <span className="qp-panel-kind-icon" aria-hidden="true">
+              {panel.kind === "kpi" ? <Activity size={16}/> : panel.kind === "trend" ? <LineChartIcon size={16}/> : panel.kind === "mix" ? <PieChartIcon size={16}/> : panel.kind === "table" ? <Table2 size={16}/> : <BarChart3 size={16}/>}
+            </span>
+            <input value={panel.title} aria-label="Panel heading" maxLength={65} onChange={event => editPanel(panel.id, {title:event.target.value})}/>
+          </div>
           <div className="qp-panel-actions">
+            <span className="qp-panel-drag-hint" aria-label="Drag to reorder" title="Drag to reorder"><GripVertical size={15}/></span>
             {(panel.kind === "trend" || panel.kind === "drivers") && <select aria-label="Chart type" value={panel.chart} onChange={event => editPanel(panel.id,{chart:event.target.value as DashboardPanel["chart"]})}>
               {panel.kind === "trend" ? <><option value="line">Line</option><option value="area">Area</option></> : <option value="bar">Bars</option>}
             </select>}
