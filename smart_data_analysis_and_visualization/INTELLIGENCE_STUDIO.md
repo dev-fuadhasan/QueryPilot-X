@@ -42,3 +42,30 @@ The custom builder **does not** claim forecasting, causality, correlation, arbit
 
 ## Demonstration
 Connect to Supabase, select a table, open **Dashboard**, watch the progress stages, and inspect the generated dashboard. Enter **"Average price by category"** in **Create your own panel**, show the new card, then try a request the dataset cannot satisfy to demonstrate the rejection notification. Open **Ask AI** and **Datasets** to show that they share the same redesigned workspace.
+
+
+## Palette and exact result counts
+
+The connected workspace header, its three feature buttons, the Dashboard Builder filter bar,
+Performance snapshot cards, and highlighted Dataset Explorer surfaces use the primary
+palette navy `#131B2B` and slate `#2F4A63` with white text. Other panels remain light
+for chart and tabular-data readability. Interactive states use blue `#5B91A3`.
+
+The custom-panel API enforces requested quantities on the server, not just in charts:
+- "top five products" ranks products by record count and returns up to five groups;
+- "top 5 products by revenue" aggregates revenue and returns up to five groups;
+- "bottom three categories" uses ascending rank;
+- "latest six months" returns up to six observed monthly periods.
+
+The exact validated `resultLimit` and `sortDirection` are stored with each custom
+panel definition and applied again when it refreshes. If the table contains fewer
+eligible groups than requested, only those available are shown. Requested quantities
+must be from 1 to 30; larger requests receive an explicit validation error instead
+of silently showing an unrelated number of categories. By default, group results
+show at most 12 categories and time-series panels at most 24 periods.
+
+The bar chart renders every returned category; larger charts have a vertically
+scrollable container. The UI does not silently truncate a requested top-N result.
+
+Ranking parser tests can be run with:
+`npx tsx --test smart_data_analysis_and_visualization/tests/panelRanking.test.ts`
