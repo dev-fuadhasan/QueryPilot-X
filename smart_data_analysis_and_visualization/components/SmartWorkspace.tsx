@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
 import { ArrowRight, BarChart3, CheckCircle2, Database, Download, FileDown, LoaderCircle, MessageSquare, Send, ShieldCheck } from "lucide-react";
 import DatasetsPanel, { type Table } from "./DatasetsPanel";
+import IntelligenceStudio from "./IntelligenceStudio";
 import { downloadHtml, printReport } from "../lib/export";
 import type { AnalysisResponse, AnalysisResult, ChartDetails, Clarification, Figure } from "../lib/types";
 
@@ -43,7 +44,7 @@ function ChartPreview({ report, chart }: { report: AnalysisResult; chart: ChartD
 }
 
 export default function SmartWorkspace({ tables, loading, onRefresh, projectName, projectRef, aiEnabled }: Props) {
-  const [tab, setTab] = useState<"analysis" | "datasets">("analysis");
+  const [tab, setTab] = useState<"studio" | "analysis" | "datasets">("studio");
   const [selectedTable, setSelectedTable] = useState("all");
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -155,16 +156,16 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
     catch (problem) { setError(problem instanceof Error ? problem.message : "Could not open the printable report."); }
   }
 
-  return <div className="smart-workspace">
+  return <div className={"smart-workspace" + (tab === "studio" ? " intelligence-active" : "")}>
     <main className="analysis-canvas">
       <header className="canvas-top">
-        <div className="canvas-heading"><h1>Analysis workspace</h1><p>Connected to {projectName}</p></div>
+        <div className="canvas-heading"><h1>{tab === "studio" ? "Intelligence studio" : "Analysis workspace"}</h1><p>Connected to {projectName}</p></div>
         <div className="canvas-controls">
           <div className="canvas-scope"><label htmlFor="analysis-scope">Analyze table</label><select id="analysis-scope" value={selectedTable} disabled={busy} onChange={event => selectAnalysisTable(event.target.value)}><option value="all">All tables</option>{tables.map(table => <option key={table.name} value={table.name}>{table.name}</option>)}</select></div>
-          <div className="canvas-tabs"><button type="button" className={tab === "analysis" ? "selected" : ""} onClick={() => setTab("analysis")}><BarChart3 size={15}/> Analysis</button><button type="button" className={tab === "datasets" ? "selected" : ""} onClick={() => setTab("datasets")}><Database size={15}/> Datasets</button></div>
+          <div className="canvas-tabs"><button type="button" className={tab === "studio" ? "selected" : ""} onClick={() => setTab("studio")}><BarChart3 size={15}/> AI Studio</button><button type="button" className={tab === "analysis" ? "selected" : ""} onClick={() => setTab("analysis")}><MessageSquare size={15}/> Ask AI</button><button type="button" className={tab === "datasets" ? "selected" : ""} onClick={() => setTab("datasets")}><Database size={15}/> Datasets</button></div>
         </div>
       </header>
-      {tab === "datasets" ? <div className="canvas-datasets"><DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh} selectedTable={selectedTable} onSelectTable={selectAnalysisTable}/></div> : <div className="canvas-results">
+      {tab === "datasets" ? <div className="canvas-datasets"><DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh} selectedTable={selectedTable} onSelectTable={selectAnalysisTable}/></div> : tab === "studio" ? <div className="canvas-results qp-studio-host"><IntelligenceStudio key={projectRef + ":" + selectedTable} tables={tables} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} projectRef={projectRef} projectName={projectName}/></div> : <div className="canvas-results">
         {error && <div className="analysis-error" role="alert">{error}</div>}
         {busy && <div className="work-status"><LoaderCircle className="spinning" size={25}/><div><strong>Analyzing the selected data</strong><p>Checking available columns and running a read-only query.</p></div></div>}
         {!busy && clarification && <div className="choice-card"><span className="choice-label">ONE MORE DETAIL</span><h2>{clarification.question}</h2><p>Choose the option that best matches your request.</p><div className="choice-list">{clarification.options.map(option => <button type="button" key={option} onClick={() => selectOption(option)}>{option}<ArrowRight size={16}/></button>)}</div></div>}
@@ -185,9 +186,9 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
         </div>}
       </div>}
     </main>
-    <aside className="ai-chat"><header className="ai-chat-top"><div className="ai-avatar"><MessageSquare size={19}/></div><div><h2>QueryPilot AI</h2><p>Ask about your connected data</p></div><span className="ai-online"/></header>
+    {tab === "analysis" && <aside className="ai-chat"><header className="ai-chat-top"><div className="ai-avatar"><MessageSquare size={19}/></div><div><h2>QueryPilot AI</h2><p>Ask about your connected data</p></div><span className="ai-online"/></header>
       <div className="ai-chat-history"><div className="chat-greeting"><div className="chat-greeting-icon"><BarChart3 size={19}/></div><h3>Ask your data anything</h3><p>Ask about revenue, performance, changes over time, comparisons or visualizations.</p></div>{messages.map((message, i) => <div className={"chat-message " + message.role} key={i}><span>{message.text}</span></div>)}{busy && <div className="chat-loading"><LoaderCircle className="spinning" size={15}/> Checking your data...</div>}<div ref={chatBottom}/></div>
       <form className="ai-chat-form" onSubmit={event => { event.preventDefault(); void ask(question); }}><textarea value={question} disabled={busy} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void ask(question); } }} placeholder="Ask a question about your data..." rows={3} maxLength={900}/><div className="ai-chat-form-bottom"><small>Enter to send · Shift + Enter for new line</small><button type="submit" disabled={busy || !question.trim()} aria-label="Send message"><Send size={17}/></button></div></form>
-    </aside>
+    </aside>}
   </div>;
 }

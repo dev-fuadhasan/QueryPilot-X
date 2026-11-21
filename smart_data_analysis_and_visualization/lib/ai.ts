@@ -121,3 +121,47 @@ export async function interpretReport(question: string, facts: string[], columns
     return { interpretation: "", figures: [] };
   }
 }
+
+
+/**
+ * AI only selects from the server-verified columns. It never generates
+ * executable SQL for the autonomous investigation workflow.
+ */
+export async function suggestInvestigationFocus(
+  goal: string,
+  table: string,
+  metrics: string[],
+  dimensions: string[],
+  times: string[]
+): Promise<{ metric: string | null; dimension: string | null; time: string | null; rationale: string } | null> {
+  if (!aiReady()) return null;
+  try {
+    const result = await complete([
+      {
+        role: "system",
+        content: [
+          "Plan an exploratory investigation of a single authorized database table.",
+          "Select at most one metric, one dimension and one date field from the lists provided.",
+          "All chosen field names MUST match the supplied lists exactly.",
+          "Do not generate SQL. Do not invent field names, data, results, causal claims or relationships.",
+          "Prefer a useful measure and breakdown appropriate to the user's question.",
+          "Return JSON only: {\"metric\":string|null,\"dimension\":string|null,\"time\":string|null,\"rationale\":string}."
+        ].join("\n")
+      },
+      { role: "user", content: JSON.stringify({ goal: goal.slice(0, 300), table, metrics, dimensions, times }) }
+    ]);
+    const pick = (key: "metric" | "dimension" | "time", allowed: string[]) =>
+      typeof result[key] === "string" && allowed.includes(result[key] as string) ? result[key] as string : null;
+    const metric = pick("metric", metrics);
+    const dimension = pick("dimension", dimensions);
+    const time = pick("time", times);
+    return {
+      metric, dimension, time,
+      rationale: typeof result.rationale === "string"
+        ? result.rationale.trim().slice(0, 240)
+        : "Selected verified dataset fields for an exploratory investigation."
+    };
+  } catch {
+    return null;
+  }
+}
