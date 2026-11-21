@@ -265,3 +265,105 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
 @media(max-width:1100px){.analysis-stat-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:650px){.analysis-grid{grid-template-columns:1fr}.analysis-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.report-meta span{border-left:0;padding-left:0;width:100%}.history-card button{align-items:flex-start;flex-direction:column;gap:5px}}
 @media(max-width:900px){.trend-grid{grid-template-columns:1fr}}
+
+
+/* QueryPilot shared color system */
+:root{
+  --ink:#131B2B;
+  --muted:#657c8a;
+  --border:#d9e6e5;
+  --green:#5B91A3;
+  --qp-navy:#131B2B;
+  --qp-slate:#2F4A63;
+  --qp-blue:#5B91A3;
+  --qp-mint:#CFEAE0;
+  --qp-surface:#f5faf8;
+}
+body{color:var(--ink);background:#fff}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline-color:var(--qp-blue)}
+.brand-mark{background:var(--qp-navy)}
+.top-brand{z-index:5;color:var(--qp-navy)}
+.primary{background:var(--qp-navy);border-color:var(--qp-navy)}
+.primary:hover:not(:disabled){background:var(--qp-slate);border-color:var(--qp-slate)}
+.project.active{background:var(--qp-surface);border-color:var(--qp-blue)}
+.project strong,.connect-form label,.setup h1,.brand-inline{color:var(--qp-navy)}
+.setup-icon,.hero-icon{background:var(--qp-mint);color:var(--qp-slate);border-color:var(--qp-mint)}
+.safe-note{background:var(--qp-surface);border-color:var(--qp-mint);color:var(--qp-slate)}
+.safe-note svg,.connected-icon,.report-eyebrow{color:var(--qp-blue)}
+.footer{color:var(--qp-blue)}
+.workspace-header{background:#fff;border-bottom-color:var(--border)}
+.workspace-body{background:var(--qp-surface)}
+.header-module.selected{color:var(--qp-navy);background:var(--qp-mint);border-color:var(--qp-mint)}
+.header-module:hover:not(:disabled){color:var(--qp-slate);background:var(--qp-surface)}
+.connection-status{color:var(--qp-slate);border-color:var(--border)}
+.connection-status i,.ai-online{background:var(--qp-blue)}
+.ai-avatar,.ai-chat-form-bottom button,.chat-message.user span{background:var(--qp-slate)}
+.canvas-top,.report-heading,.report-section,.analysis-card,.analysis-stat,.answer-card,.choice-card,.table-card,.figure-card{border-color:var(--border)}
+.answer-card h2,.answer-metric strong,.report-dataset-source strong{color:var(--qp-navy)}
+.answer-interpretation,.report-heading p{color:var(--qp-slate)}
+.canvas-scope select:focus,.ai-chat-form textarea:focus{border-color:var(--qp-blue)}
+.trend-card polyline{stroke:var(--qp-blue)}
+.trend-labels strong,.settings-message,.pdf-status,.comparison-note.positive{color:var(--qp-slate)}
+.bar-row i{background:var(--qp-blue)}
+.schedule-badge,.pdf-status,.comparison-note.positive{background:var(--qp-surface);border-color:var(--qp-mint)}
+.settings-check input{accent-color:var(--qp-blue)}
+
+/* Borderless, editorial split login page */
+.login-landing{
+  display:grid;
+  grid-template-columns:minmax(0,1.03fr) minmax(0,.97fr);
+  gap:clamp(30px,4vw,76px);
+  align-items:center;
+  max-width:1480px;
+  min-height:100dvh;
+  margin:0 auto;
+  padding:105px clamp(28px,5vw,80px) 80px;
+  text-align:left;
+}
+.login-media{min-width:0;display:flex;flex-direction:column;align-items:center;gap:17px}
+.login-video-wrap{
+  width:min(100%,480px);
+  aspect-ratio:4/5;
+  overflow:hidden;
+  border:0;
+  border-radius:28px;
+  background:#f2f7f6;
+  box-shadow:0 28px 80px rgba(19,27,43,.075);
+}
+.login-video{display:block;width:100%;height:100%;object-fit:contain;background:#f2f7f6}
+.login-media-caption{font-size:12px;color:var(--qp-slate);letter-spacing:.15px;display:flex;gap:9px;align-items:center}
+.login-media-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--qp-blue)}
+.login-content{min-width:0;min-height:560px;display:flex;flex-direction:column;justify-content:center;position:relative}
+.login-copy{max-width:590px}
+.login-kicker{display:flex;gap:12px;align-items:center;font-size:10px;font-weight:800;color:var(--qp-blue);letter-spacing:2px}
+.login-kicker-line{width:27px;height:2px;background:var(--qp-blue)}
+.login-landing h1{font-size:clamp(52px,5.3vw,86px);font-weight:760;letter-spacing:-4.5px;line-height:1.05;margin:24px 0 23px;color:var(--qp-navy)}
+.login-landing h1 span{color:var(--qp-blue)}
+.login-copy>p{max-width:465px;font-size:15px;line-height:1.9;color:var(--qp-slate);margin:0 0 32px}
+.login-features{display:flex;gap:11px;flex-wrap:wrap;margin-bottom:35px}
+.login-features span{display:inline-flex;gap:8px;align-items:center;font-size:11px;font-weight:650;padding:10px 12px;border-radius:30px;background:var(--qp-surface);color:var(--qp-slate)}
+.login-features svg{color:var(--qp-blue)}
+.login-cta{min-width:210px;min-height:55px;justify-content:space-between;padding:15px 21px;font-size:14px;border-radius:12px;box-shadow:0 10px 25px rgba(47,74,99,.12)}
+.login-footnote{display:flex;gap:8px;align-items:center;font-size:11px;color:var(--muted);margin-top:19px}
+.login-bottom-note{position:absolute;bottom:0;left:0;display:flex;align-items:center;gap:13px;font-size:10px;color:var(--qp-blue);font-weight:800;letter-spacing:1.65px}
+.login-separator{width:4px;height:4px;border-radius:50%;background:var(--qp-mint)}
+.login-landing~.footer{display:none}
+@media(max-width:1050px){
+  .login-landing{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:36px}
+  .login-landing h1{font-size:clamp(44px,5vw,65px);letter-spacing:-3px}
+  .login-content{min-height:485px}
+  .login-video-wrap{border-radius:23px}
+}
+@media(max-width:700px){
+  .top-brand{top:23px;left:24px}
+  .login-landing{display:flex;flex-direction:column;gap:36px;align-items:stretch;padding:97px 24px 70px}
+  .login-media{gap:13px}
+  .login-video-wrap{width:min(100%,360px);border-radius:23px}
+  .login-content{min-height:auto;padding-bottom:40px}
+  .login-landing h1{font-size:clamp(47px,10vw,66px);letter-spacing:-3px;margin:18px 0}
+  .login-copy>p{font-size:14px}
+  .login-features{gap:8px;margin-bottom:28px}
+  .login-features span{font-size:10px}
+  .login-bottom-note{bottom:0}
+}
+@media(prefers-reduced-motion:reduce){.login-cta{transition:none}}
