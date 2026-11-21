@@ -169,7 +169,7 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
         </div>
       </header>
       <div className="canvas-results qp-studio-host" style={{display:tab === "studio" ? "block":"none"}}>
-        <IntelligenceStudio key={projectRef + ":" + selectedTable} tables={tables} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} projectRef={projectRef} projectName={projectName}/>
+        <IntelligenceStudio tables={tables} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} projectRef={projectRef} projectName={projectName}/>
       </div>
       {tab === "datasets" && <div className="canvas-datasets qp-unified-datasets">
         <DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} onOpenDashboard={() => setTab("studio")}/>

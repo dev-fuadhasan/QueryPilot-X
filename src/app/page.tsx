@@ -241,7 +241,11 @@ export default function Home() {
             </div>
           </header>
           <div className="workspace-body">
-            <main className={screen === "dashboard" ? "main-panel smart-main" : "main-panel"}>{screen === "daily-analysis" ? <DailyAnalysisDashboard onBack={() => setScreen("dashboard")}/> : screen === "fraud-detection" ? <FraudDetectionDashboard/> : <SmartWorkspace tables={tables} loading={loadingTables} onRefresh={() => void loadTables()} projectName={session.projectName || "Supabase project"} projectRef={session.projectRef || "connected-project"} aiEnabled={session.aiEnabled}/>}</main>
+            <main className="main-panel smart-main" style={{display:screen === "dashboard" ? undefined : "none"}}>
+              <SmartWorkspace tables={tables} loading={loadingTables} onRefresh={() => void loadTables()} projectName={session.projectName || "Supabase project"} projectRef={session.projectRef || "connected-project"} aiEnabled={session.aiEnabled}/>
+            </main>
+            {screen === "daily-analysis" && <main className="main-panel"><DailyAnalysisDashboard onBack={() => setScreen("dashboard")}/></main>}
+            {screen === "fraud-detection" && <main className="main-panel"><FraudDetectionDashboard/></main>}
           </div>
         </div>
       )}
