@@ -17,6 +17,7 @@ type Input = {
   spec?: unknown;
   filterDimension?: unknown;
   filterValue?: unknown;
+  filters?: unknown;
 };
 const numberType = /(?:int|numeric|decimal|double|real|float|money)/i;
 const dateType = /(?:date|timestamp)/i;
@@ -128,13 +129,26 @@ function validate(spec: ProposedDashboardPanel, table: SchemaTable, userTitle?: 
   };
 }
 function filter(input: Input, table: SchemaTable) {
-  if (input.filterValue === null || input.filterValue === undefined) return "";
-  const dimension = text(input.filterDimension);
-  if (!available(table).dimensions.includes(dimension) || typeof input.filterValue !== "string" || input.filterValue.length > 110) {
-    throw new Error("The requested linked filter is not valid for this dataset.");
+  const raw: unknown = input.filters === undefined
+    ? (input.filterValue === null || input.filterValue === undefined
+      ? [] : [{ column: input.filterDimension, value: input.filterValue }])
+    : input.filters;
+  if (!Array.isArray(raw) || raw.length > 3) throw new Error("Invalid dashboard filters.");
+  const approved = available(table).dimensions;
+  const seen = new Set<string>();
+  const constraints: string[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Invalid dashboard filter.");
+    const selected = item as { column?: unknown; value?: unknown };
+    if (typeof selected.column !== "string" || !approved.includes(selected.column) ||
+        typeof selected.value !== "string" || selected.value.length > 110 || seen.has(selected.column)) {
+      throw new Error("Selected dashboard filters are not valid for this dataset.");
+    }
+    seen.add(selected.column);
+    constraints.push(selected.value === "(missing)" ? quote(selected.column) + " IS NULL" :
+      "LEFT(CAST(" + quote(selected.column) + " AS text), 110) = " + literal(selected.value));
   }
-  return input.filterValue === "(missing)" ? quote(dimension) + " IS NULL" :
-    "LEFT(CAST(" + quote(dimension) + " AS text), 110) = " + literal(input.filterValue);
+  return constraints.join(" AND ");
 }
 function expr(spec: CustomPanelSpec) {
   if (spec.aggregation === "count") return "COUNT(*)::double precision";
