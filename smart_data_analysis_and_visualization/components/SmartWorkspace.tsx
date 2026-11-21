@@ -49,6 +49,7 @@ function ChartPreview({ report, chart }: { report: AnalysisResult; chart: ChartD
 export default function SmartWorkspace({ tables, loading, onRefresh, projectName, projectRef, aiEnabled }: Props) {
   const [tab, setTab] = useState<"studio" | "analysis" | "datasets">("studio");
   const [selectedTable, setSelectedTable] = useState("all");
+  const [scopeReady, setScopeReady] = useState(false);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [report, setReport] = useState<AnalysisResult | null>(null);
@@ -72,10 +73,11 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
   }
 
   useEffect(() => {
-    if (loading) return;
+    if (loading) { setScopeReady(false); return; }
     const saved = window.sessionStorage.getItem("querypilot:selected-table:" + projectRef);
     const next = saved && (saved === "all" || tables.some(table => table.name === saved)) ? saved : tables[0]?.name || "all";
     setSelectedTable(next);
+    setScopeReady(true);
   }, [loading, projectRef, tables]);
 
   useEffect(() => {
@@ -169,7 +171,7 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
         </div>
       </header>
       <div className="canvas-results qp-studio-host" style={{display:tab === "studio" ? "block":"none"}}>
-        <IntelligenceStudio tables={tables} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} projectRef={projectRef} projectName={projectName}/>
+        <IntelligenceStudio tables={tables} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} projectRef={projectRef} projectName={projectName} ready={scopeReady && !loading}/>
       </div>
       {tab === "datasets" && <div className="canvas-datasets qp-unified-datasets">
         <DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} onOpenDashboard={() => setTab("studio")}/>
