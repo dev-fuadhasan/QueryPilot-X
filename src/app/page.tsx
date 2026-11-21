@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, BarChart3, Bell, Check, Database, Eye, EyeOff, LockKeyhole, LogOut, ShieldCheck, ShieldAlert } from "lucide-react";
 import type { Table } from "@features/smart_data_analysis_and_visualization/components/DatasetsPanel";
 import DailyAnalysisDashboard from "@features/daily_data_analysis_and_notification/components/DailyAnalysisDashboard";
+import FraudDetectionDashboard from "@features/fraud_detection_and_notification/components/FraudDetectionDashboard";
 import SmartWorkspace from "@features/smart_data_analysis_and_visualization/components/SmartWorkspace";
 
 type Project = { id: string; name: string };
@@ -18,7 +19,7 @@ type Session = {
   mode: "oauth" | "postgres" | null;
 };
 
-type Screen = "home" | "setup" | "dashboard" | "daily-analysis";
+type Screen = "home" | "setup" | "dashboard" | "daily-analysis" | "fraud-detection";
 
 export default function Home() {
   const [session, setSession] = useState<Session | null>(null);
@@ -226,7 +227,7 @@ export default function Home() {
         </main>
       )}
 
-      {session && (screen === "dashboard" || screen === "daily-analysis") && (
+      {session && (screen === "dashboard" || screen === "daily-analysis" || screen === "fraud-detection") && (
         <div className="workspace">
           <header className="workspace-header">
             <div className="brand-inline"><div className="brand-mark"><Database size={18}/></div>Query<strong>Pilot</strong></div>
@@ -234,7 +235,7 @@ export default function Home() {
               <span className="header-workspace-label">WORKSPACE</span>
               <button type="button" className={"header-module " + (screen === "dashboard" ? "selected" : "")} aria-current={screen === "dashboard" ? "page" : undefined} onClick={() => setScreen("dashboard")}><BarChart3 size={16}/> Smart data analysis</button>
               <button type="button" className={"header-module " + (screen === "daily-analysis" ? "selected" : "")} aria-current={screen === "daily-analysis" ? "page" : undefined} onClick={() => setScreen("daily-analysis")}><Bell size={16}/> Daily analysis</button>
-              <button type="button" className="header-module" disabled title="Fraud detection is being developed"><ShieldAlert size={16}/> Fraud detection <small>Soon</small></button>
+              <button type="button" className={"header-module " + (screen === "fraud-detection" ? "selected" : "")} aria-current={screen === "fraud-detection" ? "page" : undefined} onClick={() => setScreen("fraud-detection")}><ShieldAlert size={16}/> Fraud detection</button>
             </nav>
             <div className="header-actions"><span className="connection-status"><i/>{session.projectName || "Supabase project"}</span>
               <button className="small-button" onClick={() => { setManual(session.mode === "postgres"); setScreen("setup"); }}>Switch</button>
@@ -242,7 +243,7 @@ export default function Home() {
             </div>
           </header>
           <div className="workspace-body">
-            <main className="main-panel smart-main">{screen === "daily-analysis" ? <DailyAnalysisDashboard onBack={() => setScreen("dashboard")}/> : <SmartWorkspace tables={tables} loading={loadingTables} onRefresh={() => void loadTables()} projectName={session.projectName || "Supabase project"} projectRef={session.projectRef || "connected-project"} aiEnabled={session.aiEnabled}/>}</main>
+            <main className={screen === "dashboard" ? "main-panel smart-main" : "main-panel"}>{screen === "daily-analysis" ? <DailyAnalysisDashboard onBack={() => setScreen("dashboard")}/> : screen === "fraud-detection" ? <FraudDetectionDashboard/> : <SmartWorkspace tables={tables} loading={loadingTables} onRefresh={() => void loadTables()} projectName={session.projectName || "Supabase project"} projectRef={session.projectRef || "connected-project"} aiEnabled={session.aiEnabled}/>}</main>
           </div>
         </div>
       )}
