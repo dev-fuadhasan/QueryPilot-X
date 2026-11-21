@@ -1,30 +1,39 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, BarChart3, Bell, Check, Database, Eye, EyeOff, LockKeyhole, LogOut, ShieldCheck, ShieldAlert } from "lucide-react";
-import DatasetsPanel, { type Table } from "@features/smart_data_analysis_and_visualization/components/DatasetsPanel";
+import { ArrowLeft, ArrowRight, BarChart3, Bell, Check, LockKeyhole, LogOut, ShieldCheck, ShieldAlert } from "lucide-react";
+import type { Table } from "@features/smart_data_analysis_and_visualization/components/DatasetsPanel";
 import DailyAnalysisDashboard from "@features/daily_data_analysis_and_notification/components/DailyAnalysisDashboard";
+import FraudDetectionDashboard from "@features/fraud_detection_and_notification/components/FraudDetectionDashboard";
+import SmartWorkspace from "@features/smart_data_analysis_and_visualization/components/SmartWorkspace";
 
 type Project = { id: string; name: string };
 type Session = {
   connected: boolean;
   configured: boolean;
   oauthEnabled: boolean;
+  aiEnabled: boolean;
   projectName: string;
   projectRef: string;
   projects: Project[];
   mode: "oauth" | "postgres" | null;
 };
 
-type Screen = "home" | "setup" | "dashboard" | "daily-analysis";
+type Screen = "home" | "setup" | "dashboard" | "daily-analysis" | "fraud-detection";
+
+function SupabaseMark({ size = 22 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+      <path d="M13.5 2.1c.35-.48 1.11-.23 1.11.36v8.17h5.7c.54 0 .83.64.47 1.05l-9.87 10.2c-.39.42-1.1.14-1.1-.43v-8.12H4.1c-.54 0-.83-.64-.47-1.05L13.5 2.1Z" fill="#3ECF8E"/>
+      <path d="M9.81 13.33h4.8v-2.7h-4.8v2.7Z" fill="#239B69" opacity=".45"/>
+    </svg>
+  );
+}
 
 export default function Home() {
   const [session, setSession] = useState<Session | null>(null);
   const [screen, setScreen] = useState<Screen>("home");
-  const [manual, setManual] = useState(false);
   const [projectRef, setProjectRef] = useState("");
-  const [databaseUri, setDatabaseUri] = useState("");
-  const [showUri, setShowUri] = useState(false);
   const [tables, setTables] = useState<Table[]>([]);
   const [busy, setBusy] = useState(false);
   const [loadingTables, setLoadingTables] = useState(false);
@@ -65,7 +74,6 @@ export default function Home() {
         void loadTables();
       } else if (data.projects.length || params.has("setup")) {
         setScreen("setup");
-        setManual(!data.projects.length);
       }
     }).catch(() => setError("Cannot load your session. Check server settings."));
 
@@ -73,12 +81,7 @@ export default function Home() {
   }, []);
 
   function beginSetup() {
-    if (!session?.configured) {
-      setError("Add SESSION_SECRET to your environment variables before connecting.");
-      return;
-    }
     setError("");
-    setManual(!session.oauthEnabled && !session.projects.length);
     setScreen("setup");
   }
 
@@ -94,30 +97,6 @@ export default function Home() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not connect the project.");
-      await loadSession();
-      setScreen("dashboard");
-      await loadTables();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Connection failed.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function connectManually(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!databaseUri.trim()) return;
-    setError("");
-    setBusy(true);
-    try {
-      const response = await fetch("/api/connect", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uri: databaseUri.trim() })
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not connect to the database.");
-      setDatabaseUri("");
       await loadSession();
       setScreen("dashboard");
       await loadTables();
@@ -145,102 +124,130 @@ export default function Home() {
   }
 
   return (
-    <div className="app">
-      {(screen === "home" || screen === "setup") && <header className="top-brand"><div className="brand-mark"><Database size={19}/></div><span>Query<strong>Pilot</strong></span></header>}
+    <div className={"app" + (screen === "home" || screen === "setup" ? " auth-app" : "")}>
+      {(screen === "home" || screen === "setup") && <header className="top-brand"><img className="brand-logo" src="/querypilot-logo.svg" alt="QueryPilot logo" width={36} height={36}/><span>Query<strong>Pilot</strong></span></header>}
 
-      {!session && <div className="loading-screen"><Database size={30}/><p>Loading QueryPilot...</p></div>}
+      {!session && <div className="loading-screen"><img className="loading-logo" src="/querypilot-logo.svg" alt="QueryPilot logo" width={54} height={54}/><p>Loading QueryPilot...</p></div>}
 
-      {session && screen === "home" && (
-        <main className="welcome">
-          <div className="hero-icon"><Database size={29}/></div>
-          <div className="eyebrow">YOUR DATA WORKSPACE</div>
-          <h1>Your data,<span> connected.</span></h1>
-          <p>One place for smart analysis, daily updates, and fraud monitoring.<br/>Connect a Supabase project to begin.</p>
-          <button className="primary welcome-button" onClick={beginSetup}><Database size={18}/> Connect your database <ArrowRight size={17}/></button>
-          <div className="hint"><ShieldCheck size={15}/> Secure, read-only Supabase connection</div>
-        </main>
-      )}
-
-      {session && screen === "setup" && (
-        <main className="setup">
-          <button className="back" onClick={() => { setError(""); setScreen(session.connected ? "dashboard" : "home"); }}><ArrowLeft size={15}/> Back</button>
-          <div className="setup-icon"><Database size={25}/></div>
-          <h1>{!manual && session.projects.length ? "Choose your project" : "Connect your database"}</h1>
-          <p className="muted">Authorize a Supabase project or connect using its read-only PostgreSQL connection string.</p>
-
-          {!manual && !session.projects.length && session.oauthEnabled && (
-            <button className="primary full" onClick={() => window.location.assign("/api/auth/start")}><Database size={18}/> Authorize with Supabase <ArrowRight size={17}/></button>
-          )}
-
-          {!manual && session.projects.length > 0 && (
-            <div className="project-list">
-              <div className="field-title">AUTHORIZED PROJECTS</div>
-              {session.projects.map(project => (
-                <button type="button" key={project.id} className={"project " + (projectRef === project.id ? "active" : "")} onClick={() => setProjectRef(project.id)}>
-                  <Database size={18}/><span><strong>{project.name}</strong><small>{project.id}</small></span>{projectRef === project.id && <Check size={16}/>}
-                </button>
-              ))}
-              <button className="primary full" disabled={!projectRef || busy} onClick={connectProject}>{busy ? "Connecting..." : "Connect selected project"}<ArrowRight size={17}/></button>
+      {session && (screen === "home" || screen === "setup") && (
+        <main className="welcome login-landing" aria-label="QueryPilot sign in">
+          <section className="login-media" aria-label="QueryPilot introduction">
+            <div className="login-video-wrap">
+              <video
+                className="login-video"
+                src="https://d2ol7oe51mr4n9.cloudfront.net/user_3MAuXQv43Z5PqLIskwD8gbspT5a/af68d7c1-e581-4c94-af9e-e9141fc27d57.mp4"
+                autoPlay
+                loop
+                muted
+                playsInline
+                preload="metadata"
+                disablePictureInPicture
+                aria-label="QueryPilot motion graphic"
+              />
             </div>
-          )}
+            <div className="login-media-caption"><span className="login-media-dot" /> A clearer view of your business data</div>
+          </section>
 
-          {manual && (
-            <form onSubmit={connectManually} className="connect-form">
-              <label htmlFor="database-uri">PostgreSQL connection string</label>
-              <div className="uri-input">
-                <input id="database-uri" type={showUri ? "text" : "password"} value={databaseUri} onChange={event => setDatabaseUri(event.target.value)}
-                  placeholder="postgresql://user.project:password@...pooler.supabase.com:5432/postgres" autoComplete="off" spellCheck={false} required/>
-                <button type="button" aria-label={showUri ? "Hide connection string" : "Show connection string"} onClick={() => setShowUri(!showUri)}>
-                  {showUri ? <EyeOff size={17}/> : <Eye size={17}/>}
+          <section className="login-content" aria-live="polite">
+            {screen === "home" ? (
+              <div className="login-copy">
+                <div className="login-kicker"><span className="login-kicker-line" /> THE INTELLIGENT DATA WORKSPACE</div>
+                <h1>Make data<br/><span>make sense.</span></h1>
+                <p>From raw numbers to confident decisions. Analyze your data, stay ahead of daily changes, and monitor what matters — all in one place.</p>
+                <div className="login-features">
+                  <span><BarChart3 size={16}/> Smart analytics</span>
+                  <span><Bell size={16}/> Daily insights</span>
+                  <span><ShieldCheck size={16}/> Secure monitoring</span>
+                </div>
+                <button type="button" className="primary login-cta" onClick={beginSetup}>
+                  Get started <ArrowRight size={19}/>
                 </button>
+                <div className="login-footnote"><LockKeyhole size={14}/> Secure access, powered by Supabase</div>
               </div>
-              <button className="primary full" disabled={!databaseUri.trim() || busy} type="submit"><LockKeyhole size={16}/>{busy ? "Verifying connection..." : "Connect securely"}<ArrowRight size={17}/></button>
-            </form>
-          )}
+            ) : (
+              <div className="login-copy login-setup-copy">
+                <button className="back login-inline-back" type="button" onClick={() => { setError(""); setScreen(session.connected ? "dashboard" : "home"); }}>
+                  <ArrowLeft size={15}/> Back
+                </button>
+                <div className="login-supabase-identity">
+                  <div className="login-supabase-logo"><SupabaseMark size={27}/></div>
+                  <span>SUPABASE CONNECTION</span>
+                </div>
+                <h1 className="login-setup-title">{session.projects.length ? "Choose your project." : "Connect with Supabase."}</h1>
+                <p className="login-setup-description">
+                  {session.projects.length
+                    ? "Your Supabase account is authorized. Select the project you want to work with."
+                    : "Sign in securely to your Supabase account to view and connect your authorized projects."}
+                </p>
 
-          {session.oauthEnabled && <button className="text-button" type="button" onClick={() => {
-            if (manual && !session.projects.length) window.location.assign("/api/auth/start");
-            else setManual(!manual);
-          }}>{manual ? session.projects.length ? "Use authorized projects" : "Connect using Supabase OAuth" : "Use a PostgreSQL connection string"}<ArrowRight size={15}/></button>}
-          <div className="safe-note"><ShieldCheck size={17}/><span>Connections are stored in encrypted browser sessions. For manual access, use a database account with SELECT-only permissions.</span></div>
-          <a className="help-link" href="https://supabase.com/docs/guides/database/connecting-to-postgres" target="_blank" rel="noreferrer">Where do I find my connection string?</a>
+                {session.projects.length > 0 ? (
+                  <div className="login-project-picker">
+                    <div className="field-title">YOUR SUPABASE PROJECTS</div>
+                    <div className="login-project-list" role="group" aria-label="Select a Supabase project">
+                      {session.projects.map(project => (
+                        <button
+                          type="button"
+                          key={project.id}
+                          className={"project " + (projectRef === project.id ? "active" : "")}
+                          aria-pressed={projectRef === project.id}
+                          onClick={() => setProjectRef(project.id)}
+                        >
+                          <SupabaseMark size={18}/>
+                          <span><strong>{project.name}</strong><small>{project.id}</small></span>
+                          {projectRef === project.id && <Check size={17}/>}
+                        </button>
+                      ))}
+                    </div>
+                    <button className="primary login-cta login-connect-button" type="button" disabled={!projectRef || busy} onClick={connectProject}>
+                      {busy ? "Connecting..." : "Connect selected project"} <ArrowRight size={18}/>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="login-auth-action">
+                    <button
+                      className="primary login-cta login-connect-button"
+                      type="button"
+                      disabled={!session.configured || !session.oauthEnabled}
+                      onClick={() => window.location.assign("/api/auth/start")}
+                    >
+                      <SupabaseMark size={22}/> Continue with Supabase <ArrowRight size={18}/>
+                    </button>
+                    {(!session.configured || !session.oauthEnabled) && (
+                      <p className="login-config-warning" role="status">Supabase sign-in is not configured on this deployment. Check the OAuth and session environment variables.</p>
+                    )}
+                  </div>
+                )}
+                <div className="login-footnote"><LockKeyhole size={14}/> Encrypted session · Supabase authorization</div>
+              </div>
+            )}
+            <div className="login-bottom-note"><span>ANALYZE</span><span className="login-separator"/><span>UNDERSTAND</span><span className="login-separator"/><span>ACT</span></div>
+          </section>
         </main>
       )}
 
-      {session && (screen === "dashboard" || screen === "daily-analysis") && (
+      {session && (screen === "dashboard" || screen === "daily-analysis" || screen === "fraud-detection") && (
         <div className="workspace">
           <header className="workspace-header">
-            <div className="brand-inline"><div className="brand-mark"><Database size={18}/></div>Query<strong>Pilot</strong></div>
+            <div className="brand-inline"><img className="brand-logo" src="/querypilot-logo.svg" alt="QueryPilot logo" width={36} height={36}/>Query<strong>Pilot</strong></div>
+            <nav className="header-modules" aria-label="Workspace modules">
+              <span className="header-workspace-label">WORKSPACE</span>
+              <button type="button" className={"header-module " + (screen === "dashboard" ? "selected" : "")} aria-current={screen === "dashboard" ? "page" : undefined} onClick={() => setScreen("dashboard")}><BarChart3 size={16}/> Smart Dashboard and Analysis</button>
+              <button type="button" className={"header-module " + (screen === "daily-analysis" ? "selected" : "")} aria-current={screen === "daily-analysis" ? "page" : undefined} onClick={() => setScreen("daily-analysis")}><Bell size={16}/> Daily analysis</button>
+              <button type="button" className={"header-module " + (screen === "fraud-detection" ? "selected" : "")} aria-current={screen === "fraud-detection" ? "page" : undefined} onClick={() => setScreen("fraud-detection")}><ShieldAlert size={16}/> Fraud detection</button>
+            </nav>
             <div className="header-actions"><span className="connection-status"><i/>{session.projectName || "Supabase project"}</span>
-              <button className="small-button" onClick={() => { setManual(session.mode === "postgres"); setScreen("setup"); }}>Switch</button>
+              <button className="small-button" onClick={() => { setScreen("setup"); }}>Switch</button>
               <button className="icon-button" title="Disconnect" aria-label="Disconnect" disabled={busy} onClick={disconnect}><LogOut size={18}/></button>
             </div>
           </header>
-
           <div className="workspace-body">
-            <nav className="module-sidebar" aria-label="Project modules">
-              <div className="module-label">WORKSPACE</div>
-              <button className={"module-link " + (screen === "dashboard" ? "active" : "")} onClick={() => setScreen("dashboard")}><BarChart3 size={17}/><span>Smart data analysis</span></button>
-              <button className={"module-link " + (screen === "daily-analysis" ? "active" : "")} onClick={() => setScreen("daily-analysis")}><Bell size={17}/><span>Daily analysis</span></button>
-              <div className="module-link disabled"><ShieldAlert size={17}/><span>Fraud detection</span><small>Soon</small></div>
-              <div className="module-bottom"><ShieldCheck size={15}/> Read-only connection</div>
-            </nav>
-            <main className="main-panel">{screen === "daily-analysis" ? <DailyAnalysisDashboard onBack={() => setScreen("dashboard")}/> : <DatasetsPanel tables={tables} loading={loadingTables} onRefresh={() => void loadTables()}/>}</main>
-            <aside className="details-panel">
-              <div className="aside-heading"><Database size={20}/><h2>Connection details</h2></div>
-              <div className="detail"><span>Project</span><strong>{session.projectName || "Supabase project"}</strong></div>
-              <div className="detail"><span>Project reference</span><strong className="reference">{session.projectRef || "Not selected"}</strong></div>
-              <div className="detail"><span>Connection method</span><strong>{session.mode === "oauth" ? "Supabase OAuth" : "PostgreSQL"}</strong></div>
-              <div className="detail"><span>Connected tables</span><strong>{tables.length}</strong></div>
-              <div className="detail"><span>Database access</span><strong className="read-only"><ShieldCheck size={14}/> Read only</strong></div>
-              <div className="aside-foot"><LockKeyhole size={15}/> Connection credentials are never shown in the browser.</div>
-            </aside>
+            <main className={screen === "dashboard" ? "main-panel smart-main" : "main-panel"}>{screen === "daily-analysis" ? <DailyAnalysisDashboard onBack={() => setScreen("dashboard")}/> : screen === "fraud-detection" ? <FraudDetectionDashboard/> : <SmartWorkspace tables={tables} loading={loadingTables} onRefresh={() => void loadTables()} projectName={session.projectName || "Supabase project"} projectRef={session.projectRef || "connected-project"} aiEnabled={session.aiEnabled}/>}</main>
           </div>
         </div>
       )}
 
       {error && <div className="error" role="alert"><span>{error}</span><button onClick={() => setError("")} aria-label="Close message">×</button></div>}
-      {screen !== "dashboard" && <div className="footer">QUERY PILOT <span>·</span> DATA MADE CLEAR</div>}
+      {(screen === "home" || screen === "setup") && <div className="footer">QUERY PILOT <span>·</span> DATA MADE CLEAR</div>}
     </div>
   );
 }

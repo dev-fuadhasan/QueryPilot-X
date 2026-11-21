@@ -1,10 +1,23 @@
+import fs from "node:fs";
+import path from "node:path";
 import { Client } from "pg";
 
 export type Table = { name: string; columns: string[] };
 
+// SSL configuration using Supabase CA certificate
+const postgresSSL = {
+  rejectUnauthorized: true,
+  ca: fs.readFileSync(
+    path.join(process.cwd(), "prod-ca-2021.crt"),
+    "utf8"
+  ),
+};
+
 function quoteIdentifier(value: string) {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) throw new Error("Invalid database identifier.");
-  return `"${value.replace(/"/g, `""`)}"`;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value))
+    throw new Error("Invalid database identifier.");
+
+  return `"${value.replace(/"/g, '""')}"`;
 }
 
 export function validateSupabaseUri(value: string, projectRef?: string) {
@@ -17,45 +30,78 @@ export function validateSupabaseUri(value: string, projectRef?: string) {
     throw new Error("Enter a valid PostgreSQL connection string.");
   }
 
-  if (!["postgres:", "postgresql:"].includes(uri.protocol)) throw new Error("A PostgreSQL connection string is required.");
-  if (!uri.hostname || !uri.username || !uri.password) throw new Error("Database credentials are missing.");
-  if (uri.port && !["5432", "6543"].includes(uri.port)) throw new Error("Unsupported database port.");
-  if (uri.pathname !== "/postgres") throw new Error("Connect to the postgres database.");
-  if ([...uri.searchParams.keys()].some(k => k !== "sslmode")) throw new Error("Unsupported connection option.");
-  if (uri.searchParams.has("sslmode") && !["require", "verify-full", "verify-ca"].includes(uri.searchParams.get("sslmode") || "")) {
+  if (!["postgres:", "postgresql:"].includes(uri.protocol))
+    throw new Error("A PostgreSQL connection string is required.");
+
+  if (!uri.hostname || !uri.username || !uri.password)
+    throw new Error("Database credentials are missing.");
+
+  if (uri.port && !["5432", "6543"].includes(uri.port))
+    throw new Error("Unsupported database port.");
+
+  if (uri.pathname !== "/postgres")
+    throw new Error("Connect to the postgres database.");
+
+  if ([...uri.searchParams.keys()].some((k) => k !== "sslmode"))
+    throw new Error("Unsupported connection option.");
+
+  if (
+    uri.searchParams.has("sslmode") &&
+    !["require", "verify-full", "verify-ca"].includes(
+      uri.searchParams.get("sslmode") || ""
+    )
+  ) {
     throw new Error("SSL must be enabled.");
   }
 
   const host = uri.hostname.toLowerCase();
+
   const direct = /^db\.([a-z0-9-]{10,40})\.supabase\.co$/.exec(host);
-  const pooler = /^[a-z0-9-]+\.pooler\.supabase\.com$/.test(host);
-  const match = pooler ? /\.([a-z0-9-]{10,40})$/.exec(decodeURIComponent(uri.username)) : null;
+
+  const pooler =
+    /^[a-z0-9-]+\.pooler\.supabase\.com$/.test(host);
+
+  const match = pooler
+    ? /\.([a-z0-9-]{10,40})$/.exec(decodeURIComponent(uri.username))
+    : null;
+
   const ref = direct?.[1] || match?.[1];
 
-  if (!ref) throw new Error("Only Supabase PostgreSQL connections are supported.");
-  if (projectRef && ref !== projectRef) throw new Error("This connection belongs to a different project.");
+  if (!ref)
+    throw new Error("Only Supabase PostgreSQL connections are supported.");
+
+  if (projectRef && ref !== projectRef)
+    throw new Error("This connection belongs to a different project.");
 
   return { url: value.trim(), ref };
 }
 
-export async function getPostgresTables(connectionString: string): Promise<Table[]> {
+export async function getPostgresTables(
+  connectionString: string
+): Promise<Table[]> {
   const client = new Client({
     connectionString,
-    ssl: { rejectUnauthorized: true },
+    ssl: postgresSSL,
     connectionTimeoutMillis: 6500,
-    query_timeout: 12000
+    query_timeout: 12000,
   });
 
   try {
     await client.connect();
     await client.query("BEGIN READ ONLY");
     await client.query("SET LOCAL statement_timeout = '9000ms'");
-    const result = await client.query<{ table_name: string; column_name: string }>(
+
+    const result = await client.query<{
+      table_name: string;
+      column_name: string;
+    }>(
       "SELECT c.table_name, c.column_name FROM information_schema.columns c JOIN information_schema.tables t ON c.table_schema = t.table_schema AND c.table_name = t.table_name WHERE c.table_schema = 'public' AND t.table_type IN ('BASE TABLE', 'VIEW') ORDER BY c.table_name, c.ordinal_position LIMIT 500"
     );
+
     await client.query("ROLLBACK");
 
     const tables = new Map<string, string[]>();
+
     for (const row of result.rows) {
       if (!tables.has(row.table_name)) tables.set(row.table_name, []);
       tables.get(row.table_name)?.push(row.column_name);
@@ -67,19 +113,87 @@ export async function getPostgresTables(connectionString: string): Promise<Table
   }
 }
 
-export async function getPostgresRows(connectionString: string, table: string) {
+export type SchemaTable = {
+  name: string;
+  columns: { name: string; type: string }[];
+};
+
+export const schemaSql =
+  "SELECT c.table_name, c.column_name, c.data_type FROM information_schema.columns c JOIN information_schema.tables t ON c.table_schema = t.table_schema AND c.table_name = t.table_name WHERE c.table_schema = 'public' AND t.table_type IN ('BASE TABLE', 'VIEW') ORDER BY c.table_name, c.ordinal_position LIMIT 600";
+
+export function groupSchema(rows: Record<string, unknown>[]): SchemaTable[] {
+  const tables = new Map<string, SchemaTable["columns"]>();
+
+  for (const row of rows) {
+    if (
+      typeof row.table_name !== "string" ||
+      typeof row.column_name !== "string"
+    )
+      continue;
+
+    if (!tables.has(row.table_name) && tables.size >= 35) break;
+
+    if (!tables.has(row.table_name)) tables.set(row.table_name, []);
+
+    tables
+      .get(row.table_name)
+      ?.push({
+        name: row.column_name,
+        type: String(row.data_type || "text"),
+      });
+  }
+
+  return [...tables].map(([name, columns]) => ({ name, columns }));
+}
+
+export async function queryPostgres(
+  connectionString: string,
+  sql: string
+): Promise<Record<string, unknown>[]> {
   const client = new Client({
     connectionString,
-    ssl: { rejectUnauthorized: true },
+    ssl: postgresSSL,
     connectionTimeoutMillis: 6500,
-    query_timeout: 12000
+    query_timeout: 15000,
   });
+
+  try {
+    await client.connect();
+    await client.query("BEGIN READ ONLY");
+    await client.query("SET LOCAL statement_timeout = '12000ms'");
+
+    const result = await client.query(sql);
+
+    await client.query("ROLLBACK");
+
+    return result.rows as Record<string, unknown>[];
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+export async function getPostgresRows(
+  connectionString: string,
+  table: string
+): Promise<Array<Record<string, unknown>>> {
+  const client = new Client({
+    connectionString,
+    ssl: postgresSSL,
+    connectionTimeoutMillis: 6500,
+    query_timeout: 12000,
+  });
+
   try {
     await client.connect();
     await client.query("BEGIN READ ONLY");
     await client.query("SET LOCAL statement_timeout = '9000ms'");
-    const result = await client.query(`SELECT * FROM public.${quoteIdentifier(table)} LIMIT 10000`);
+
+    const result = await client.query(
+      `SELECT * FROM public.${quoteIdentifier(table)} LIMIT 10000`
+    );
+
     await client.query("ROLLBACK");
+
     return result.rows as Array<Record<string, unknown>>;
   } finally {
     await client.end().catch(() => undefined);
