@@ -33,11 +33,26 @@ export type InvestigationBundle = {
   goal: string;
 };
 export type DataResponse<T> = { stage: InvestigationStage; data: T; sql: string; completedAt: string };
-export type DashboardPanelKind = "kpi" | "trend" | "drivers" | "mix" | "table";
+export type DashboardPanelKind = "kpi" | "trend" | "drivers" | "mix" | "table" | "custom";
 export type DashboardPanel = {
   id: string;
   kind: DashboardPanelKind;
   title: string;
   wide: boolean;
   chart: "bar" | "line" | "area" | "pie";
+  spec?: CustomPanelSpec;
 };
+
+export type CustomChart = "kpi" | "bar" | "line" | "area" | "pie" | "table";
+export type CustomAggregation = "count" | "sum" | "average" | "min" | "max";
+export type CustomPanelSpec = {
+  chart: CustomChart;
+  aggregation: CustomAggregation;
+  metric: string | null;
+  dimension: string | null;
+  time: string | null;
+  title: string;
+  description: string;
+};
+export type CustomPanelPoint = { label: string; value: number; records: number };
+export type CustomPanelData = { points: CustomPanelPoint[]; total: number | null; sql: string };

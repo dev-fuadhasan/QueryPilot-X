@@ -1,52 +1,44 @@
-# QueryPilot AI Intelligence Studio
+# QueryPilot Smart Data Analysis — Dashboard Builder
 
-This module introduces two independent but connected capabilities in the **Smart Data Analysis & Visualization** section.
+The **Smart Data Analysis** module now uses one unified workspace with **Dashboard**, **Ask AI**, and **Datasets**. The standalone Investigation tab and findings screen have been removed.
 
-## 1. Autonomous Investigation Engine
-In the Smart Data Analysis workspace, the **AI Studio** tab opens by default. Choose a connected public-schema table, optionally edit the investigation goal, and select **Start investigation**.
+## Dashboard generation
+- Opening the Dashboard automatically launches a five-stage, visible workflow: schema planning, bounded row-quality profiling, metric aggregation, category breakdown, and temporal analysis when supported.
+- Once the stages finish, the progress view is replaced with the interactive dashboard.
+- Rebuild refreshes the dashboard; the optional Analysis focus adjusts the verified-column plan.
+- Data is queried through the existing authorized Supabase session. The AI may suggest verified column names but cannot execute arbitrary SQL.
+- Unsupported stages are skipped or reported without fabricated figures.
 
-The client executes five sequential, visible stages through POST /api/smart-investigation:
+## Dashboard controls
+- Existing cards include KPI totals, time trends, category charts, and supporting data where valid.
+- Selecting a group updates linked default cards through authorized read-only aggregate queries.
+- Cards can be renamed, resized, dragged, reordered with arrow controls, or removed.
+- Save layout stores the layout only in browser localStorage, scoped to the Supabase project and table.
+- Print / PDF uses the browser print dialog.
 
-1. **Plan:** inspect the authorized table schema, identify valid numeric metrics, categorical dimensions and date columns. When GROQ_API_KEY is configured, the model suggests a plan using *only* approved field names. A schema-guided fallback works without the model.
-2. **Profile:** calculate missing-value percentages for the selected fields using at most 5,000 sampled records.
-3. **Overview:** calculate live record counts and (if a numeric metric is present) total, mean, minimum and maximum.
-4. **Drivers:** compute ranked category aggregates where a suitable dimension exists.
-5. **Trend:** calculate the last 24 observed monthly aggregates where a real date/timestamp field exists.
+## User-described panels
+The **Create your own panel** form accepts:
+- A short description of the requested calculation and visual, for example **"Average price by category"**, **"Monthly order count"**, **"Revenue by region"**, **"Total orders"**, or **"Category share pie chart"**.
+- An optional custom title.
 
-The result panel shows factual, computed observations and each stage's read-only SQL query. Stages with unsupported schema requirements are marked *Not applicable* rather than inventing results. Individual failed stages do not erase successfully computed evidence.
+The server uses an AI-assisted or schema-validated deterministic interpretation of the description, verifies available numeric, text, and date columns, then performs read-only aggregation. Results are rendered as a verified KPI, bar, line, area, pie, or table panel.
 
-## 2. Interactive Dashboard Builder
-Switch to **Dashboard builder** or use **Turn findings into an interactive dashboard** after an investigation. If nothing has been investigated, click **Generate dashboard** to execute the investigation pipeline first.
+If required fields are absent, the requested calculation isn't supported, or the database returns no matching records, the form displays a floating notification explaining why the panel could not be created. **No placeholder or random panel is added.**
 
-- KPI cards are created from real aggregated values.
-- Trend, category ranking, and category-share panels appear only when the source supports them.
-- Click a chart segment or filter pill to recalculate *all linked KPI and chart aggregates* through read-only database queries.
-- Add or remove cards, rename panels, toggle card width, and drag cards into a new order; keyboard-accessible arrow controls are also provided.
-- Save the dashboard's title and layout in the current browser, scoped by Supabase project and table. **Data rows are not persisted in browser storage.**
-- Print the dashboard or save it as PDF using the browser's print dialog.
-- Return to **Ask AI** for the original conversational SQL analysis experience.
+Custom panels refresh against the database whenever the linked dashboard filter changes. Stored layouts contain only the selected panel specification; data values are requested again when the panel is opened. Filter-click linking is enabled only when a custom panel groups by the same column as the dashboard-wide category filter.
 
-## Security and limitations
+The custom builder **does not** claim forecasting, causality, correlation, arbitrary joins, or other unsupported statistical calculations.
 
-- Requires the existing Supabase OAuth or authenticated PostgreSQL session. The API validates origin, session, table membership, and field names.
-- Queries are read-only aggregation statements; arbitrary SQL from the model is never executed by this engine.
-- Personal/contact-like column names and identifier-like fields are excluded from suggested metrics and dimensions.
-- Profiling uses a bounded, non-random sample of up to 5,000 records. Its missingness rates are sample statistics, not guaranteed whole-table estimates.
-- Category panels show the top 12 results. Temporal panels show at most 24 months. These are not complete historical reports for larger data.
-- Categories longer than 110 characters are grouped under their first 110 characters.
-- The pipeline works with one selected table at a time and does not assume relationships between tables.
-- The investigation reports descriptive associations and changes, not causal explanations or validated forecasts.
-- The dashboard's layout is stored locally, so another browser or device will not inherit the user's saved card layout.
+## Shared UI
+- **Dashboard** maintains the full workspace and background.
+- **Ask AI** opens a matching overlay drawer while preserving the dashboard underneath. The original chat workflow, supporting tables, chart previews, SQL evidence, and exports remain available inside the drawer.
+- **Datasets** uses the same navigation and design. Its original table-selection and schema details remain available.
 
-## Suggested capstone demonstration
+## Security and bounds
+- All new routes check the same-origin request and authenticated Supabase session, verify the selected public table and approved column names, and build SQL from server-owned templates.
+- Data-quality profiling uses at most 5,000 rows; grouped charts show a limited ranked selection; time trends show up to 24 months.
+- Computed analyses are descriptive. They do not prove causal relationships.
+- Access remains subject to the connected Supabase account's permissions.
 
-1. Log in with Supabase and select a project with at least one readable public table.
-2. Open **Smart data analysis** > **AI Studio**.
-3. Choose a table, enter a goal, and start the investigation.
-4. Watch the stages execute; expand the SQL evidence and review the missingness profile.
-5. Convert the findings into a dashboard.
-6. Click a category to filter all KPIs and charts. Show the recalculation.
-7. Drag, resize, and rename a card; save the layout.
-8. Open **Ask AI** to show that the earlier chatbot analysis still works.
-
-The module uses the existing Next.js, React, Recharts, Groq (optional), and Supabase stack. No new package dependencies or database migrations are required.
+## Demonstration
+Connect to Supabase, select a table, open **Dashboard**, watch the progress stages, and inspect the generated dashboard. Enter **"Average price by category"** in **Create your own panel**, show the new card, then try a request the dataset cannot satisfy to demonstrate the rejection notification. Open **Ask AI** and **Datasets** to show that they share the same redesigned workspace.
