@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Activity, ArrowDown, ArrowUp, BarChart3, Check, Database, Expand, GripVertical, LineChart as LineChartIcon, LoaderCircle, Pencil, PieChart as PieChartIcon, Plus, Sigma, Table2, Trash2, Sparkles, AlertCircle, CheckCircle2, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, BarChart3, Check, Database, Download, Expand, GripVertical, LineChart as LineChartIcon, LoaderCircle, Pencil, PieChart as PieChartIcon, Plus, RotateCcw, Save, Sigma, Table2, Trash2, Sparkles, AlertCircle, CheckCircle2, X } from "lucide-react";
 import CustomPanelView from "./CustomPanelView";
 import { CategoryTick, ChartCategoryLegend, FullCategoryLabels, ScrollableChart, categoryAxisWidth } from "./ReadableCharts";
 import type { DashboardPanel, DashboardPanelKind, GroupPoint, InvestigationBundle, OverviewData, TrendPoint } from "../lib/intelligence";
@@ -161,6 +161,23 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
     setEditingTitle(false);
     setToast({type:"success",message:"Dashboard name saved."});
   }
+  function saveLayout() {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({title,panels}));
+      setToast({type:"success",message:"Dashboard layout saved in this browser."});
+    } catch {
+      setToast({type:"error",message:"Unable to save the layout in this browser."});
+    }
+  }
+  function resetLayout() {
+    const defaults = defaultPanels(bundle);
+    setPanels(defaults);
+    setTitle("Dashboard");
+    setDraftTitle("Dashboard");
+    setEditingTitle(false);
+    onSelectGroup(null);
+    setToast({type:"success",message:"Dashboard layout reset to its default cards."});
+  }
   const globalGroups = bundle.drivers || [];
   const canTrend = (bundle.trend || []).length > 0;
   const label = plan.metric ? plan.metric.replace(/_/g, " ") : "record count";
@@ -257,6 +274,11 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
           )}
         </div>
         <p><strong>{plan.table}</strong> <span className="qp-title-separator">·</span> Live metrics</p>
+      </div>
+      <div className="qp-dash-actions qp-dashboard-toolbar" role="toolbar" aria-label="Dashboard actions">
+        <button type="button" onClick={saveLayout}><Save size={15}/> Save layout</button>
+        <button type="button" onClick={() => window.print()}><Download size={15}/> Print / PDF</button>
+        <button type="button" onClick={resetLayout}><RotateCcw size={15}/> Reset</button>
       </div>
     </div>
     <div className="qp-filter-line">
