@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { ArrowDown, ArrowUp, Download, Expand, GripVertical, LayoutDashboard, LoaderCircle, Plus, RotateCcw, Save, Trash2, Sparkles, AlertCircle, CheckCircle2, X } from "lucide-react";
 import CustomPanelView from "./CustomPanelView";
+import { CategoryTick, ChartCategoryLegend, FullCategoryLabels, ScrollableChart, categoryAxisWidth } from "./ReadableCharts";
 import type { DashboardPanel, DashboardPanelKind, GroupPoint, InvestigationBundle, OverviewData, TrendPoint } from "../lib/intelligence";
 
 type Props = {
@@ -175,11 +176,12 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
     }
     if (panel.kind === "drivers") {
       if (!drivers.length) return <p className="qp-chart-empty">No categorical breakdown is available for this dataset.</p>;
-      return <><div className="qp-chart-wrap"><ResponsiveContainer width="100%" height={Math.max(240, Math.min(drivers.length, 10) * 35)}>
+      const axisWidth = categoryAxisWidth(drivers.map(item => item.label));
+      return <><div className="qp-chart-wrap"><ScrollableChart minWidth={axisWidth + 340}><ResponsiveContainer width="100%" height={Math.max(260, Math.min(drivers.length, 10) * 58)}>
         <BarChart data={drivers.slice(0, 10)} layout="vertical" margin={{left:4,right:14}}>
           <CartesianGrid stroke="#edf3f2" strokeDasharray="3 3" horizontal={false}/>
           <XAxis type="number" tick={{fontSize:10}}/>
-          <YAxis type="category" dataKey="label" width={110} tick={{fontSize:10}}/>
+          <YAxis type="category" dataKey="label" width={axisWidth} interval={0} tick={<CategoryTick width={axisWidth}/>} tickLine={false}/>
           <Tooltip/>
           <Bar dataKey="value" name={label} fill="#5B91A3" radius={[0,5,5,0]}
             onClick={(entry) => {
@@ -188,7 +190,7 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
             }}
           />
         </BarChart>
-      </ResponsiveContainer></div><p className="qp-chart-caption">Click a bar to filter the connected metrics and time series.</p></>;
+      </ResponsiveContainer></ScrollableChart><FullCategoryLabels labels={drivers.slice(0, 10).map(item => item.label)}/></div><p className="qp-chart-caption">Select a bar to filter the connected metrics and time series.</p></>;
     }
     if (panel.kind === "mix") {
       if (!drivers.length) return <p className="qp-chart-empty">No category breakdown is available.</p>;
@@ -204,8 +206,8 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
           }}
         >
           {drivers.slice(0, 8).map((item, index) => <Cell key={item.label + index} fill={colors[index % colors.length]}/>)}
-        </Pie><Tooltip/><Legend verticalAlign="bottom" height={36} wrapperStyle={{fontSize:10}}/>
-      </PieChart></ResponsiveContainer></div>;
+        </Pie><Tooltip/>
+      </PieChart></ResponsiveContainer><ChartCategoryLegend rows={drivers.slice(0, 8)} onSelect={value => onSelectGroup(value)}/></div>;
     }
     return <div className="qp-evidence-scroll"><table><thead><tr><th>{plan.dimension || "Group"}</th><th>Records</th><th>{label}</th></tr></thead>
       <tbody>{drivers.length ? drivers.map((item, index) => <tr key={item.label + index} onClick={() => onSelectGroup(item.label)} className="qp-selectable-row"><td>{item.label}</td><td>{format(item.records)}</td><td>{format(metricValue(item))}</td></tr>)
@@ -226,7 +228,7 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
     <div className="qp-filter-line">
       <strong>Filter</strong>
       <button type="button" className={!selectedGroup ? "active" : ""} onClick={() => onSelectGroup(null)}>All data</button>
-      {globalGroups.slice(0, 8).map(item => <button key={item.label} type="button" className={selectedGroup === item.label ? "active" : ""} onClick={() => onSelectGroup(item.label)}>{item.label}</button>)}
+      {globalGroups.slice(0, 8).map(item => <button key={item.label} type="button" title={item.label} className={selectedGroup === item.label ? "active" : ""} onClick={() => onSelectGroup(item.label)}>{item.label}</button>)}
       {filterBusy && <small>Recalculating…</small>}
     </div>
     {filterError && <div className="qp-alert" role="alert">{filterError}</div>}
