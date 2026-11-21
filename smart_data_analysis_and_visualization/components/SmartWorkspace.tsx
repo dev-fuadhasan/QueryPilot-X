@@ -5,6 +5,7 @@ import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, Line
 import { ArrowRight, BarChart3, CheckCircle2, Database, Download, FileDown, LoaderCircle, MessageSquare, Send, ShieldCheck } from "lucide-react";
 import DatasetsPanel, { type Table } from "./DatasetsPanel";
 import IntelligenceStudio from "./IntelligenceStudio";
+import { CategoryTick, ChartCategoryLegend, FullCategoryLabels, ScrollableChart, categoryAxisWidth } from "./ReadableCharts";
 import { downloadHtml, printReport } from "../lib/export";
 import type { AnalysisResponse, AnalysisResult, ChartDetails, Clarification, Figure } from "../lib/types";
 
@@ -31,14 +32,16 @@ function ChartPreview({ report, chart }: { report: AnalysisResult; chart: ChartD
     data = Array.from({ length: 8 }, (_, i) => ({ ...data[0], bin: (minimum + i * step).toFixed(2), count: values.filter(v => i === 7 ? v >= minimum + i * step : v >= minimum + i * step && v < minimum + (i + 1) * step).length }));
   }
   const axis = <><CartesianGrid stroke="#e9edf0" strokeDasharray="3 3"/><XAxis dataKey={view === "histogram" ? "bin" : chart.x} tick={{ fontSize: 10 }} tickLine={false} axisLine={false}/><YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false}/><Tooltip/></>;
-  if (view === "pie" || view === "donut") return <ResponsiveContainer width="100%" height={290}><PieChart><Pie data={data} dataKey={chart.y} nameKey={chart.x} cx="50%" cy="50%" outerRadius={94} innerRadius={view === "donut" ? 52 : 0} label>{data.map((_, i) => <Cell key={i} fill={palette[i % palette.length]}/>)}</Pie><Tooltip/><Legend/></PieChart></ResponsiveContainer>;
+  if (view === "pie" || view === "donut") return <div className="qp-chart-wrap"><ResponsiveContainer width="100%" height={275}><PieChart><Pie data={data} dataKey={chart.y} nameKey={chart.x} cx="50%" cy="50%" outerRadius={94} innerRadius={view === "donut" ? 52 : 0}>{data.map((_, i) => <Cell key={i} fill={palette[i % palette.length]}/>)}</Pie><Tooltip/></PieChart></ResponsiveContainer><ChartCategoryLegend rows={data.map(row => ({label:String(row[chart.x] ?? "Unknown"),value:Number(row[chart.y]) || 0}))}/></div>;
   if (view === "scatter") return <ResponsiveContainer width="100%" height={290}><ScatterChart><CartesianGrid stroke="#eef1f4"/><XAxis type="number" dataKey={chart.x} name={chart.x}/><YAxis type="number" dataKey={chart.y} name={chart.y}/><Tooltip cursor={{ strokeDasharray: "3 3" }}/><Scatter data={data} fill={palette[1]}/></ScatterChart></ResponsiveContainer>;
   if (view === "line" || view === "area") return <ResponsiveContainer width="100%" height={290}>{view === "line" ? <LineChart data={data} margin={{ top: 15, right: 20, left: 0, bottom: 15 }}>{axis}<Line type="monotone" stroke={palette[0]} dataKey={chart.y} strokeWidth={2.5} dot={{ r: 3 }}/></LineChart> : <AreaChart data={data} margin={{ top: 15, right: 20, left: 0, bottom: 15 }}>{axis}<Area type="monotone" dataKey={chart.y} stroke={palette[0]} fill="#dceaf0" strokeWidth={2}/></AreaChart>}</ResponsiveContainer>;
   if (["bar", "horizontal_bar", "grouped_bar", "stacked_bar", "histogram", "lollipop"].includes(view)) {
     const horizontal = view === "horizontal_bar";
+    const visibleData = data.slice(0, 24);
+    const axisWidth = categoryAxisWidth(visibleData.map(row => String(row[chart.x] ?? "")));
     const fields = ["grouped_bar", "stacked_bar"].includes(view) ? chart.extra || [chart.y] : [view === "histogram" ? "count" : chart.y];
     const bars = fields.map((field, i) => <Bar key={field} dataKey={field} stackId={view === "stacked_bar" ? "stack" : undefined} fill={palette[i % palette.length]} radius={[3, 3, 0, 0]}/>);
-    return <ResponsiveContainer width="100%" height={290}><BarChart data={data} layout={horizontal ? "vertical" : "horizontal"} margin={{ top: 15, right: 20, left: 0, bottom: 15 }}><CartesianGrid stroke="#edf0f3" strokeDasharray="3 3"/>{horizontal ? <><XAxis type="number"/><YAxis width={95} type="category" dataKey={chart.x} tick={{ fontSize: 10 }}/></> : <><XAxis dataKey={view === "histogram" ? "bin" : chart.x} tick={{ fontSize: 10 }}/><YAxis tick={{ fontSize: 10 }}/></>}<Tooltip/>{bars}</BarChart></ResponsiveContainer>;
+    return <div className="qp-chart-wrap"><ScrollableChart minWidth={horizontal ? axisWidth + 340 : Math.max(560, Math.min(visibleData.length,24)*44)}><ResponsiveContainer width="100%" height={horizontal ? Math.max(260,visibleData.length*58) : 350}><BarChart data={visibleData} layout={horizontal ? "vertical" : "horizontal"} margin={{ top: 15, right: 22, left: 6, bottom: 25 }}><CartesianGrid stroke="#edf0f3" strokeDasharray="3 3"/>{horizontal ? <><XAxis type="number"/><YAxis width={axisWidth} type="category" dataKey={chart.x} interval={0} tickLine={false} tick={<CategoryTick width={axisWidth}/>} /></> : <><XAxis dataKey={view === "histogram" ? "bin" : chart.x} tick={{ fontSize: 10 }} angle={-34} height={85} textAnchor="end" interval={0}/><YAxis tick={{ fontSize: 10 }}/></>}<Tooltip/>{bars}</BarChart></ResponsiveContainer></ScrollableChart>{horizontal && <FullCategoryLabels labels={visibleData.map(row => String(row[chart.x] ?? ""))}/>} {data.length > 24 && <p className="qp-chart-caption">Chart shows the first 24 results; the supporting table contains the remaining values.</p>}</div>;
   }
   return <p className="figure-fallback-note">This figure needs the Matplotlib plotting service. The query values are available in the table below.</p>;
 }
@@ -156,7 +159,7 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
     catch (problem) { setError(problem instanceof Error ? problem.message : "Could not open the printable report."); }
   }
 
-  return <div className="smart-workspace intelligence-active qp-unified-shell">
+  return <div className={"smart-workspace intelligence-active qp-unified-shell" + (tab === "analysis" ? " qp-chat-mode" : "")}>
     <main className="analysis-canvas">
       <header className="canvas-top">
         <div className="canvas-heading"><h1>QueryPilot Studio</h1><p>{projectName}</p></div>
@@ -165,15 +168,23 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
           <div className="canvas-tabs"><button type="button" className={tab === "studio" ? "selected" : ""} onClick={() => setTab("studio")}><BarChart3 size={15}/> Dashboard</button><button type="button" className={tab === "analysis" ? "selected" : ""} onClick={() => setTab("analysis")}><MessageSquare size={15}/> Ask AI</button><button type="button" className={tab === "datasets" ? "selected" : ""} onClick={() => setTab("datasets")}><Database size={15}/> Datasets</button></div>
         </div>
       </header>
-      <div className="canvas-results qp-studio-host" style={{display:tab === "datasets" ? "none":"block"}}>
+      <div className="canvas-results qp-studio-host" style={{display:tab === "studio" ? "block":"none"}}>
         <IntelligenceStudio key={projectRef + ":" + selectedTable} tables={tables} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} projectRef={projectRef} projectName={projectName}/>
       </div>
       {tab === "datasets" && <div className="canvas-datasets qp-unified-datasets">
-        <DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh} selectedTable={selectedTable} onSelectTable={selectAnalysisTable}/>
+        <DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} onOpenDashboard={() => setTab("studio")}/>
       </div>}
-    </main>
-    {tab === "analysis" && <aside className="ai-chat qp-chat-drawer" role="dialog" aria-label="Ask AI analysis assistant"><header className="ai-chat-top"><div className="ai-avatar"><MessageSquare size={19}/></div><div><h2>Ask QueryPilot</h2><p>Analysis assistant</p></div><button type="button" className="qp-chat-close" aria-label="Close chat" onClick={() => setTab("studio")}>×</button></header>
-      <div className="ai-chat-history"><div className="chat-greeting"><div className="chat-greeting-icon"><BarChart3 size={19}/></div><h3>Ask about your data</h3><p>Query your connected tables.</p></div>{messages.map((message, i) => <div className={"chat-message " + message.role} key={i}><span>{message.text}</span></div>)}<div className="qp-chat-analysis-results">
+      {tab === "analysis" && <section className="canvas-results qp-chat-results" aria-label="AI analysis results">
+        <div className="qp-chat-results-heading">
+          <div><span>ANALYSIS WORKSPACE</span><h2>Results</h2></div>
+          <span className="qp-chat-source"><Database size={14}/>{selectedTable === "all" ? "All connected tables" : selectedTable}</span>
+        </div>
+        {!busy && !report && !clarification && !error && <div className="qp-chat-empty">
+          <div className="qp-chat-empty-symbol"><BarChart3 size={29}/></div>
+          <h3>Ready to analyze</h3>
+          <p>Your charts, calculations and supporting data will appear here.</p>
+        </div>}
+        <div className="qp-chat-analysis-results">
         {error && <div className="analysis-error" role="alert">{error}</div>}
         {busy && <div className="work-status"><LoaderCircle className="spinning" size={25}/><div><strong>Analyzing the selected data</strong><p>Checking available columns and running a read-only query.</p></div></div>}
         {!busy && clarification && <div className="choice-card"><span className="choice-label">ONE MORE DETAIL</span><h2>{clarification.question}</h2><p>Choose the option that best matches your request.</p><div className="choice-list">{clarification.options.map(option => <button type="button" key={option} onClick={() => selectOption(option)}>{option}<ArrowRight size={16}/></button>)}</div></div>}
@@ -192,7 +203,11 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
           <details className="sql-details"><summary>Executed read-only SQL</summary><pre>{report.sql}</pre></details>
         </div>}
 
-      </div>{busy && <div className="chat-loading"><LoaderCircle className="spinning" size={15}/> Checking your data...</div>}<div ref={chatBottom}/></div>
+      </div>
+      </section>}
+    </main>
+    {tab === "analysis" && <aside className="ai-chat qp-chat-sidebar" aria-label="Ask AI chat panel"><header className="ai-chat-top"><div className="ai-avatar"><MessageSquare size={19}/></div><div><h2>QueryPilot AI</h2><p>Ask about your connected data</p></div><span className="qp-chat-presence" title="Chat available"/></header>
+      <div className="ai-chat-history"><div className="chat-greeting"><div className="chat-greeting-icon"><BarChart3 size={19}/></div><h3>What would you like to know?</h3><p>Use the chat to explore your selected table. Results appear in the workspace.</p></div>{messages.map((message, i) => <div className={"chat-message " + message.role} key={i}><span>{message.text}</span></div>)}{busy && <div className="chat-loading"><LoaderCircle className="spinning" size={15}/> Checking your data...</div>}<div ref={chatBottom}/></div>
       <form className="ai-chat-form" onSubmit={event => { event.preventDefault(); void ask(question); }}><textarea value={question} disabled={busy} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void ask(question); } }} placeholder="Ask a question about your data..." rows={3} maxLength={900}/><div className="ai-chat-form-bottom"><small>Enter to send · Shift + Enter for new line</small><button type="submit" disabled={busy || !question.trim()} aria-label="Send message"><Send size={17}/></button></div></form>
     </aside>}
   </div>;
