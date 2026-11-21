@@ -58,4 +58,5 @@ export type CustomPanelSpec = {
 };
 export type CustomPanelPoint = { label: string; value: number; records: number };
 export type CustomPanelData = { points: CustomPanelPoint[]; total: number | null; sql: string };
-\nexport type DashboardFilter = { column: string; value: string };\n
+
+export type DashboardFilter = { column: string; value: string };
