@@ -71,7 +71,7 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
   useEffect(() => {
     if (loading) return;
     const saved = window.sessionStorage.getItem("querypilot:selected-table:" + projectRef);
-    const next = saved && (saved === "all" || tables.some(table => table.name === saved)) ? saved : "all";
+    const next = saved && (saved === "all" || tables.some(table => table.name === saved)) ? saved : tables[0]?.name || "all";
     setSelectedTable(next);
   }, [loading, projectRef, tables]);
 
@@ -156,20 +156,27 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
     catch (problem) { setError(problem instanceof Error ? problem.message : "Could not open the printable report."); }
   }
 
-  return <div className={"smart-workspace" + (tab === "studio" ? " intelligence-active" : "")}>
+  return <div className="smart-workspace intelligence-active qp-unified-shell">
     <main className="analysis-canvas">
       <header className="canvas-top">
-        <div className="canvas-heading"><h1>{tab === "studio" ? "Intelligence studio" : "Analysis workspace"}</h1><p>Connected to {projectName}</p></div>
+        <div className="canvas-heading"><h1>QueryPilot Studio</h1><p>{projectName}</p></div>
         <div className="canvas-controls">
           <div className="canvas-scope"><label htmlFor="analysis-scope">Analyze table</label><select id="analysis-scope" value={selectedTable} disabled={busy} onChange={event => selectAnalysisTable(event.target.value)}><option value="all">All tables</option>{tables.map(table => <option key={table.name} value={table.name}>{table.name}</option>)}</select></div>
-          <div className="canvas-tabs"><button type="button" className={tab === "studio" ? "selected" : ""} onClick={() => setTab("studio")}><BarChart3 size={15}/> AI Studio</button><button type="button" className={tab === "analysis" ? "selected" : ""} onClick={() => setTab("analysis")}><MessageSquare size={15}/> Ask AI</button><button type="button" className={tab === "datasets" ? "selected" : ""} onClick={() => setTab("datasets")}><Database size={15}/> Datasets</button></div>
+          <div className="canvas-tabs"><button type="button" className={tab === "studio" ? "selected" : ""} onClick={() => setTab("studio")}><BarChart3 size={15}/> Dashboard</button><button type="button" className={tab === "analysis" ? "selected" : ""} onClick={() => setTab("analysis")}><MessageSquare size={15}/> Ask AI</button><button type="button" className={tab === "datasets" ? "selected" : ""} onClick={() => setTab("datasets")}><Database size={15}/> Datasets</button></div>
         </div>
       </header>
-      {tab === "datasets" ? <div className="canvas-datasets"><DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh} selectedTable={selectedTable} onSelectTable={selectAnalysisTable}/></div> : tab === "studio" ? <div className="canvas-results qp-studio-host"><IntelligenceStudio key={projectRef + ":" + selectedTable} tables={tables} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} projectRef={projectRef} projectName={projectName}/></div> : <div className="canvas-results">
+      <div className="canvas-results qp-studio-host" style={{display:tab === "datasets" ? "none":"block"}}>
+        <IntelligenceStudio key={projectRef + ":" + selectedTable} tables={tables} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} projectRef={projectRef} projectName={projectName}/>
+      </div>
+      {tab === "datasets" && <div className="canvas-datasets qp-unified-datasets">
+        <DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh} selectedTable={selectedTable} onSelectTable={selectAnalysisTable}/>
+      </div>}
+    </main>
+    {tab === "analysis" && <aside className="ai-chat qp-chat-drawer" role="dialog" aria-label="Ask AI analysis assistant"><header className="ai-chat-top"><div className="ai-avatar"><MessageSquare size={19}/></div><div><h2>Ask QueryPilot</h2><p>Analysis assistant</p></div><button type="button" className="qp-chat-close" aria-label="Close chat" onClick={() => setTab("studio")}>×</button></header>
+      <div className="ai-chat-history"><div className="chat-greeting"><div className="chat-greeting-icon"><BarChart3 size={19}/></div><h3>Ask about your data</h3><p>Query your connected tables.</p></div>{messages.map((message, i) => <div className={"chat-message " + message.role} key={i}><span>{message.text}</span></div>)}<div className="qp-chat-analysis-results">
         {error && <div className="analysis-error" role="alert">{error}</div>}
         {busy && <div className="work-status"><LoaderCircle className="spinning" size={25}/><div><strong>Analyzing the selected data</strong><p>Checking available columns and running a read-only query.</p></div></div>}
         {!busy && clarification && <div className="choice-card"><span className="choice-label">ONE MORE DETAIL</span><h2>{clarification.question}</h2><p>Choose the option that best matches your request.</p><div className="choice-list">{clarification.options.map(option => <button type="button" key={option} onClick={() => selectOption(option)}>{option}<ArrowRight size={16}/></button>)}</div></div>}
-        {!busy && !clarification && !report && <div className="analysis-placeholder"><div className="placeholder-icon"><BarChart3 size={29}/></div><h2>What would you like to analyze?</h2><p>Ask a question in the chatbox. Your answer, charts, and supporting data will appear here.</p><div className="placeholder-pills"><span><Database size={14}/> {tables.length} connected tables</span><span><ShieldCheck size={14}/> Read-only analysis</span></div>{!aiEnabled && <div className="ai-setup">Add <strong>GROQ_API_KEY</strong> in Vercel to enable AI analysis.</div>}</div>}
         {!busy && report && <div className="generated-report">
           <section className="answer-card">
             <div className="answer-top"><span className="report-eyebrow"><CheckCircle2 size={14}/> ANALYSIS COMPLETE</span><div className="export-actions"><button onClick={download} type="button" disabled={plotStatus === "loading"}><Download size={15}/> HTML</button><button onClick={print} type="button" disabled={plotStatus === "loading"}><FileDown size={15}/> PDF</button></div></div>
@@ -184,10 +191,8 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
           <section className="report-section"><div className="report-section-head"><h3>Supporting data</h3><span>{new Date(report.createdAt).toLocaleString()}</span></div>{report.columns.length ? <div className="report-table-scroll"><table><thead><tr>{report.columns.map(column => <th key={column.name}>{column.name.replace(/_/g, " ")}</th>)}</tr></thead><tbody>{report.rows.map((row, i) => <tr key={i}>{report.columns.map(column => <td key={column.name}>{asText(row[column.name])}</td>)}</tr>)}</tbody></table></div> : <p className="report-subtext">No matching data.</p>}{report.truncated && <p className="report-subtext">Preview limited to the first 100 returned records.</p>}</section>
           <details className="sql-details"><summary>Executed read-only SQL</summary><pre>{report.sql}</pre></details>
         </div>}
-      </div>}
-    </main>
-    {tab === "analysis" && <aside className="ai-chat"><header className="ai-chat-top"><div className="ai-avatar"><MessageSquare size={19}/></div><div><h2>QueryPilot AI</h2><p>Ask about your connected data</p></div><span className="ai-online"/></header>
-      <div className="ai-chat-history"><div className="chat-greeting"><div className="chat-greeting-icon"><BarChart3 size={19}/></div><h3>Ask your data anything</h3><p>Ask about revenue, performance, changes over time, comparisons or visualizations.</p></div>{messages.map((message, i) => <div className={"chat-message " + message.role} key={i}><span>{message.text}</span></div>)}{busy && <div className="chat-loading"><LoaderCircle className="spinning" size={15}/> Checking your data...</div>}<div ref={chatBottom}/></div>
+
+      </div>{busy && <div className="chat-loading"><LoaderCircle className="spinning" size={15}/> Checking your data...</div>}<div ref={chatBottom}/></div>
       <form className="ai-chat-form" onSubmit={event => { event.preventDefault(); void ask(question); }}><textarea value={question} disabled={busy} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void ask(question); } }} placeholder="Ask a question about your data..." rows={3} maxLength={900}/><div className="ai-chat-form-bottom"><small>Enter to send · Shift + Enter for new line</small><button type="submit" disabled={busy || !question.trim()} aria-label="Send message"><Send size={17}/></button></div></form>
     </aside>}
   </div>;

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { ArrowDown, ArrowUp, Download, Expand, GripVertical, LayoutDashboard, Plus, RotateCcw, Save, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Download, Expand, GripVertical, LayoutDashboard, LoaderCircle, Plus, RotateCcw, Save, Trash2, Sparkles, AlertCircle, CheckCircle2, X } from "lucide-react";
+import CustomPanelView from "./CustomPanelView";
 import type { DashboardPanel, DashboardPanelKind, GroupPoint, InvestigationBundle, OverviewData, TrendPoint } from "../lib/intelligence";
 
 type Props = {
@@ -43,17 +44,19 @@ function defaultPanels(bundle: InvestigationBundle): DashboardPanel[] {
 export default function DashboardBuilder({ bundle, projectRef, overview, drivers, trend, selectedGroup, onSelectGroup, filterBusy, filterError }: Props) {
   const { plan } = bundle;
   const storageKey = "querypilot:dashboard-layout:" + projectRef + ":" + plan.table;
-  const [title, setTitle] = useState("Decision intelligence dashboard");
+  const [title, setTitle] = useState("Dashboard");
   const [panels, setPanels] = useState<DashboardPanel[]>(() => defaultPanels(bundle));
-  const [newKind, setNewKind] = useState<DashboardPanelKind>("drivers");
+  const [customPrompt, setCustomPrompt] = useState("");
+  const [customTitle, setCustomTitle] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [toast, setToast] = useState<{message:string;type:"error"|"success"}|null>(null);
   const [loaded, setLoaded] = useState(false);
-  const [savedNotice, setSavedNotice] = useState("");
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
   useEffect(() => {
     setLoaded(false);
     setPanels(defaultPanels(bundle));
-    setTitle("Decision intelligence dashboard");
+    setTitle("Dashboard");
     try {
       const value = localStorage.getItem(storageKey);
       if (value) {
@@ -64,7 +67,8 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
           if (Array.isArray(item.panels)) {
             const good: DashboardPanel[] = item.panels.filter(panel =>
               panel && typeof panel.id === "string" && typeof panel.title === "string" &&
-              panelKinds.some(kind => kind.value === panel.kind) &&
+              (panelKinds.some(kind => kind.value === panel.kind) ||
+                (panel.kind === "custom" && panel.spec && typeof panel.spec.title === "string" && ["kpi","bar","line","area","pie","table"].includes(panel.spec.chart))) &&
               ["bar", "line", "area", "pie"].includes(panel.chart) &&
               typeof panel.wide === "boolean"
             ).slice(0, 12);
@@ -110,25 +114,50 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
     });
     setDraggingId(null);
   }
-  function addPanel() {
-    if (panels.length >= 12) return;
-    const label = panelKinds.find(kind => kind.value === newKind)?.label || "Dashboard panel";
-    setPanels(items => [...items, {
-      id: "custom-" + Date.now() + "-" + items.length, kind: newKind, title: label, wide: false,
-      chart: newKind === "trend" ? "line" : newKind === "mix" ? "pie" : "bar"
-    }]);
+  useEffect(()=>{
+    if (!toast) return;
+    const timer=window.setTimeout(()=>setToast(null),6500);
+    return ()=>window.clearTimeout(timer);
+  },[toast]);
+
+  async function createCustomPanel(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!customPrompt.trim() || creating) return;
+    if (panels.length>=12) {
+      setToast({type:"error",message:"Maximum 12 panels. Remove one to create another."});
+      return;
+    }
+    setCreating(true);
+    try {
+      const response=await fetch("/api/smart-dashboard-panel",{
+        method:"POST",cache:"no-store",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({action:"create",table:plan.table,prompt:customPrompt.trim(),
+          title:customTitle.trim()||undefined,filterDimension:plan.dimension,filterValue:selectedGroup})
+      });
+      const result=await response.json();
+      if (!response.ok) throw new Error(result.error || "This dataset cannot create the requested panel.");
+      if (!result.spec || !Array.isArray(result.data?.points)) throw new Error("Panel could not be verified.");
+      setPanels(current=>[...current,{id:"panel-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),
+        kind:"custom",title:result.spec.title,wide:false,chart:"bar",spec:result.spec}]);
+      setCustomPrompt("");
+      setCustomTitle("");
+      setToast({type:"success",message:"Your custom panel has been created."});
+    } catch (problem) {
+      setToast({type:"error",message:problem instanceof Error ? problem.message : "Unable to create panel."});
+    } finally { setCreating(false); }
   }
   function saveLayout() {
     try {
       localStorage.setItem(storageKey, JSON.stringify({ title, panels }));
-      setSavedNotice("Layout saved in this browser for this Supabase project.");
-    } catch { setSavedNotice("Browser storage is unavailable; layout remains active in this session."); }
+      setToast({type:"success",message:"Layout saved in this browser."});
+    } catch { setToast({type:"error",message:"Browser storage is unavailable. The layout is active in this session only."}); }
   }
   const globalGroups = bundle.drivers || [];
   const canTrend = (bundle.trend || []).length > 0;
   const label = plan.metric ? plan.metric.replace(/_/g, " ") : "record count";
   const metricValue = (point: GroupPoint | TrendPoint) => point.value;
   function renderPanel(panel: DashboardPanel) {
+    if (panel.kind === "custom" && panel.spec) return <CustomPanelView table={plan.table} spec={panel.spec} filterDimension={plan.dimension} selectedGroup={selectedGroup} onSelectGroup={onSelectGroup}/>;
     if (panel.kind === "kpi") {
       return <div className="qp-kpi-grid">
         <div><span>Total records</span><strong>{format(overview.records)}</strong><small>{selectedGroup ? "Selected segment" : "Current dataset"}</small></div>
@@ -185,19 +214,17 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
   }
   return <section className="qp-dashboard-builder">
     <div className="qp-dash-titlebar">
-      <div><div className="qp-eyebrow"><LayoutDashboard size={14}/> INTERACTIVE DASHBOARD BUILDER</div>
-        <input aria-label="Dashboard title" className="qp-dashboard-title" maxLength={90} value={title} onChange={event => setTitle(event.target.value)}/>
-        <p>Built from verified aggregates in <strong>{plan.table}</strong>. Adjust panels, explore segments and export the current view.</p>
+      <div><input aria-label="Dashboard title" className="qp-dashboard-title" maxLength={90} value={title} onChange={event => setTitle(event.target.value)}/>
+        <p><strong>{plan.table}</strong> · Live metrics</p>
       </div>
       <div className="qp-dash-actions">
         <button type="button" onClick={saveLayout}><Save size={15}/> Save layout</button>
         <button type="button" onClick={() => window.print()}><Download size={15}/> Print / PDF</button>
-        <button type="button" onClick={() => { setPanels(defaultPanels(bundle)); setTitle("Decision intelligence dashboard"); onSelectGroup(null); }}><RotateCcw size={14}/> Reset</button>
+        <button type="button" onClick={() => { setPanels(defaultPanels(bundle)); setTitle("Dashboard"); onSelectGroup(null); }}><RotateCcw size={14}/> Reset</button>
       </div>
     </div>
-    {savedNotice && <div className="qp-success-note" role="status">{savedNotice}</div>}
     <div className="qp-filter-line">
-      <strong>Linked segment filter</strong>
+      <strong>Filter</strong>
       <button type="button" className={!selectedGroup ? "active" : ""} onClick={() => onSelectGroup(null)}>All data</button>
       {globalGroups.slice(0, 8).map(item => <button key={item.label} type="button" className={selectedGroup === item.label ? "active" : ""} onClick={() => onSelectGroup(item.label)}>{item.label}</button>)}
       {filterBusy && <small>Recalculating…</small>}
@@ -220,11 +247,24 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
         {renderPanel(panel)}
       </article>)}
     </div>
-    <div className="qp-add-panel">
-      <div><strong>Customize the dashboard</strong><p>Add panels, edit titles, resize and drag cards to rearrange; arrow controls work with the keyboard.</p></div>
-      <div className="qp-add-controls"><select aria-label="New dashboard panel" value={newKind} onChange={event => setNewKind(event.target.value as DashboardPanelKind)}>{panelKinds.map(item => <option value={item.value} key={item.value}>{item.label}</option>)}</select>
-        <button type="button" onClick={addPanel} disabled={panels.length >= 12}><Plus size={15}/> Add panel</button></div>
-    </div>
-    <p className="qp-dash-disclaimer">Chart filters re-query the authorized Supabase table using read-only aggregates. Dashboard layouts are stored only in this browser, not in the database. No causality is inferred.</p>
+    <form className="qp-custom-create" onSubmit={createCustomPanel}>
+      <div className="qp-custom-heading"><Sparkles size={18}/><strong>Create your own panel</strong></div>
+      <input aria-label="Custom panel title" placeholder="Panel title (optional)" maxLength={65}
+        value={customTitle} onChange={event=>setCustomTitle(event.target.value)}/>
+      <div className="qp-custom-request">
+        <textarea aria-label="Describe your panel" required maxLength={300} rows={2}
+          value={customPrompt} onChange={event=>setCustomPrompt(event.target.value)}
+          placeholder="Describe what you need, e.g. Average price by category or monthly revenue trend"/>
+        <button type="submit" disabled={creating || !customPrompt.trim() || panels.length>=12}>
+          {creating?<LoaderCircle size={17} className="spinning"/>:<Plus size={17}/>}
+          {creating?"Building…":"Create panel"}
+        </button>
+      </div>
+    </form>
+    {toast && <div role={toast.type==="error"?"alert":"status"} className={"qp-floating-toast "+toast.type}>
+      {toast.type==="error"?<AlertCircle size={19}/>:<CheckCircle2 size={19}/>}
+      <span>{toast.message}</span>
+      <button type="button" aria-label="Dismiss notification" onClick={()=>setToast(null)}><X size={16}/></button>
+    </div>}
   </section>;
 }

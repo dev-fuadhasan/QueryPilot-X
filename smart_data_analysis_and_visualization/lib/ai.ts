@@ -165,3 +165,58 @@ export async function suggestInvestigationFocus(
     return null;
   }
 }
+
+
+export type ProposedDashboardPanel = {
+  chart: "kpi" | "bar" | "line" | "area" | "pie" | "table";
+  aggregation: "count" | "sum" | "average" | "min" | "max";
+  metric: string | null;
+  dimension: string | null;
+  time: string | null;
+  title: string;
+};
+
+/* The AI only chooses a configuration. Database SQL is constructed and
+   checked by the server from the schema whitelist. */
+export async function proposeDashboardPanel(
+  request: string,
+  metrics: string[],
+  dimensions: string[],
+  times: string[]
+): Promise<ProposedDashboardPanel | null> {
+  if (!aiReady()) return null;
+  try {
+    const response = await complete([
+      { role: "system", content: [
+        "You configure read-only analytical dashboard panels from a verified database schema.",
+        "Select only existing column names from the given lists; never invent data or column names.",
+        "Supported chart types: kpi, bar, line, area, pie, table.",
+        "Supported aggregations: count, sum, average, min, max.",
+        "A KPI requires an aggregate metric or count. Bar/pie/table require an available category dimension.",
+        "Line/area require a real date column and aggregate values by month.",
+        "If user asks for something unsupported, do not pretend it is possible.",
+        "Respond with only a JSON object {chart,aggregation,metric,dimension,time,title}.",
+        "Use null for fields that are not needed. Use exact case-sensitive column names."
+      ].join("\n") },
+      { role: "user", content: JSON.stringify({
+        request: request.slice(0, 260), metrics, dimensions, times
+      }) }
+    ]);
+    const charts = ["kpi", "bar", "line", "area", "pie", "table"] as const;
+    const aggregations = ["count", "sum", "average", "min", "max"] as const;
+    if (!charts.includes(response.chart as typeof charts[number]) ||
+        !aggregations.includes(response.aggregation as typeof aggregations[number])) return null;
+    const allowed = (value: unknown, options: string[]) =>
+      typeof value === "string" && options.includes(value) ? value : null;
+    return {
+      chart: response.chart as ProposedDashboardPanel["chart"],
+      aggregation: response.aggregation as ProposedDashboardPanel["aggregation"],
+      metric: allowed(response.metric, metrics),
+      dimension: allowed(response.dimension, dimensions),
+      time: allowed(response.time, times),
+      title: typeof response.title === "string" ? response.title.slice(0, 70) : request.slice(0, 70)
+    };
+  } catch {
+    return null;
+  }
+}
