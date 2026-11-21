@@ -157,7 +157,7 @@ export default function IntelligenceStudio({tables,selectedTable,projectRef,read
 
   useEffect(()=>{
     if(!bundle?.overview || bundle.plan.table!==selected || !ready) return;
-    const current=bundle;
+    const current: InvestigationBundle & { overview: OverviewData } = { ...bundle, overview: bundle.overview };
     const appliedFilters=filters;
     const controller=new AbortController();
     let pending=false;
