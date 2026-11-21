@@ -162,14 +162,15 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
   }
 
   return <div className={"smart-workspace intelligence-active qp-unified-shell" + (tab === "analysis" ? " qp-chat-mode" : "")}>
-    <main className="analysis-canvas">
-      <header className="canvas-top">
+    <header className="canvas-top">
         <div className="canvas-heading"><h1>QueryPilot Studio</h1><p>{projectName}</p></div>
         <div className="canvas-controls">
           <div className="canvas-scope"><label htmlFor="analysis-scope">Analyze table</label><select id="analysis-scope" value={selectedTable} disabled={busy} onChange={event => selectAnalysisTable(event.target.value)}><option value="all">All tables</option>{tables.map(table => <option key={table.name} value={table.name}>{table.name}</option>)}</select></div>
           <div className="canvas-tabs"><button type="button" className={tab === "studio" ? "selected" : ""} onClick={() => setTab("studio")}><BarChart3 size={15}/> Dashboard</button><button type="button" className={tab === "analysis" ? "selected" : ""} onClick={() => setTab("analysis")}><MessageSquare size={15}/> Ask AI</button><button type="button" className={tab === "datasets" ? "selected" : ""} onClick={() => setTab("datasets")}><Database size={15}/> Datasets</button></div>
         </div>
-      </header>
+    </header>
+    <div className="qp-studio-content">
+      <main className="analysis-canvas">
       <div className="canvas-results qp-studio-host" style={{display:tab === "studio" ? "block":"none"}}>
         <IntelligenceStudio tables={tables} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} projectRef={projectRef} projectName={projectName} ready={scopeReady && !loading}/>
       </div>
@@ -212,5 +213,6 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
       <div className="ai-chat-history"><div className="chat-greeting"><div className="chat-greeting-icon"><BarChart3 size={19}/></div><h3>What would you like to know?</h3><p>Use the chat to explore your selected table. Results appear in the workspace.</p></div>{messages.map((message, i) => <div className={"chat-message " + message.role} key={i}><span>{message.text}</span></div>)}{busy && <div className="chat-loading"><LoaderCircle className="spinning" size={15}/> Checking your data...</div>}<div ref={chatBottom}/></div>
       <form className="ai-chat-form" onSubmit={event => { event.preventDefault(); void ask(question); }}><textarea value={question} disabled={busy} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void ask(question); } }} placeholder="Ask a question about your data..." rows={3} maxLength={900}/><div className="ai-chat-form-bottom"><small>Enter to send · Shift + Enter for new line</small><button type="submit" disabled={busy || !question.trim()} aria-label="Send message"><Send size={17}/></button></div></form>
     </aside>}
+    </div>
   </div>;
 }

@@ -1545,3 +1545,137 @@ button.qp-category-item:hover{background:#F0F4F7}
 
 .qp-filter-choice-error{color:#9D5B44;font-size:10px;margin:9px 0 0;line-height:1.5}
 .qp-live-indicator:has(+ .qp-alert){color:#7C6A41}
+
+
+/* November 2026 — persistent Studio header, content switches below */
+.smart-workspace.qp-unified-shell,
+.smart-workspace.qp-unified-shell.qp-chat-mode{
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  grid-template-rows:auto minmax(0,1fr);
+  width:100%;
+  height:100%;
+  min-height:0;
+  min-width:0;
+}
+.qp-unified-shell>.canvas-top{
+  position:relative;
+  top:auto;
+  z-index:6;
+  width:100%;
+  min-width:0;
+  box-sizing:border-box;
+  border-bottom:1px solid #E1E8EE;
+}
+.qp-unified-shell>.qp-studio-content{
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  grid-template-rows:minmax(0,1fr);
+  width:100%;
+  height:100%;
+  min-height:0;
+  min-width:0;
+}
+.qp-unified-shell.qp-chat-mode>.qp-studio-content{
+  grid-template-columns:minmax(0,1fr) minmax(310px,370px);
+  grid-template-rows:minmax(0,1fr);
+}
+.qp-unified-shell .qp-studio-content>.analysis-canvas{
+  min-width:0;
+  min-height:0;
+  height:100%;
+  overflow-y:auto;
+}
+.qp-unified-shell .qp-studio-content>.ai-chat.qp-chat-sidebar{
+  min-width:0;
+  min-height:0;
+  overflow:hidden;
+}
+/* Performance snapshot — shorter stat tiles and tighter internal rhythm */
+.qp-dashboard-builder>.qp-snapshot-card{
+  padding:17px 20px 17px;
+  border-radius:16px;
+}
+.qp-snapshot-card .qp-snapshot-header{
+  margin-bottom:12px;
+}
+.qp-snapshot-card .qp-kpi-grid{gap:12px}
+.qp-snapshot-card .qp-kpi-grid>.qp-kpi-card,
+.qp-snapshot-card .qp-kpi-grid>.qp-kpi-card:nth-child(2){
+  min-height:109px;
+  padding:13px 15px 12px;
+  border-radius:12px;
+  gap:7px;
+}
+.qp-snapshot-card .qp-kpi-card-top{gap:9px}
+.qp-snapshot-card .qp-kpi-card-top>span:first-child{
+  font-size:11px;
+  line-height:1.3;
+}
+.qp-snapshot-card .qp-kpi-card-icon{
+  width:29px;
+  height:29px;
+  flex:0 0 29px;
+  border-radius:9px;
+}
+.qp-snapshot-card .qp-kpi-grid>.qp-kpi-card>strong{
+  font-size:clamp(22px,2.2vw,30px);
+  line-height:1.08;
+  letter-spacing:-.65px;
+}
+.qp-snapshot-card .qp-kpi-grid>.qp-kpi-card>small{
+  font-size:10px;
+  line-height:1.25;
+}
+.qp-snapshot-card .qp-snapshot-divider{
+  margin:16px 0 14px;
+}
+.qp-snapshot-card .qp-filter-topline{margin-bottom:10px}
+.qp-snapshot-card .qp-active-filters{margin-top:10px}
+.qp-dashboard-builder>.qp-dashboard-grid{
+  margin-top:27px;
+}
+@media(max-width:1050px){
+  .qp-unified-shell.qp-chat-mode>.qp-studio-content{
+    grid-template-columns:minmax(0,1fr) minmax(285px,330px);
+  }
+}
+@media(max-width:780px){
+  .smart-workspace.qp-unified-shell,
+  .smart-workspace.qp-unified-shell.qp-chat-mode{
+    height:auto;
+    grid-template-columns:1fr;
+    grid-template-rows:auto auto;
+  }
+  .qp-unified-shell>.qp-studio-content,
+  .qp-unified-shell.qp-chat-mode>.qp-studio-content{
+    height:auto;
+    grid-template-columns:1fr;
+    grid-template-rows:minmax(330px,auto) auto;
+  }
+  .qp-unified-shell .qp-studio-content>.analysis-canvas{
+    height:auto;
+    overflow-y:visible;
+  }
+  .qp-unified-shell.qp-chat-mode .qp-studio-content>.ai-chat.qp-chat-sidebar{
+    height:530px!important;
+    min-height:410px!important;
+  }
+  .qp-dashboard-builder>.qp-snapshot-card{padding:15px}
+  .qp-snapshot-card .qp-kpi-grid>.qp-kpi-card,
+  .qp-snapshot-card .qp-kpi-grid>.qp-kpi-card:nth-child(2){
+    min-height:100px;
+    padding:12px 13px;
+  }
+  .qp-dashboard-builder>.qp-dashboard-grid{margin-top:20px}
+}
+@media(max-width:520px){
+  .qp-snapshot-card .qp-kpi-grid{
+    grid-template-columns:1fr;
+    gap:9px;
+  }
+  .qp-snapshot-card .qp-kpi-grid>.qp-kpi-card,
+  .qp-snapshot-card .qp-kpi-grid>.qp-kpi-card:nth-child(2){
+    min-height:91px;
+  }
+}
