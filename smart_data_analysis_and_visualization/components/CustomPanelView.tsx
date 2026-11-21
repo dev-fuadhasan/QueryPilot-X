@@ -4,31 +4,33 @@ import { useEffect, useState } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { AlertCircle, LoaderCircle } from "lucide-react";
 import { CategoryTick, ChartCategoryLegend, FullCategoryLabels, ScrollableChart, categoryAxisWidth } from "./ReadableCharts";
-import type { CustomPanelData, CustomPanelSpec } from "../lib/intelligence";
+import type { DashboardFilter, CustomPanelData, CustomPanelSpec } from "../lib/intelligence";
 
 type Props = {
   table: string;
   spec: CustomPanelSpec;
   filterDimension: string | null;
-  selectedGroup: string | null;
+  filters: DashboardFilter[];
+  refreshVersion: number;
   onSelectGroup: (group: string) => void;
 };
 const colors = ["#2F4A63","#5B91A3","#8AB7C2","#96B9AE","#CFEAE0","#73859E"];
 const format = (n:number|null) => n===null || !Number.isFinite(n) ? "—" :
   new Intl.NumberFormat("en-US",{maximumFractionDigits:2}).format(n);
 
-export default function CustomPanelView({table,spec,filterDimension,selectedGroup,onSelectGroup}:Props) {
+export default function CustomPanelView({table,spec,filterDimension,filters,refreshVersion,onSelectGroup}:Props) {
   const [data,setData]=useState<CustomPanelData|null>(null);
   const [loading,setLoading]=useState(true);
+  const filterKey=JSON.stringify(filters);
   const [error,setError]=useState("");
   useEffect(()=>{
     const controller=new AbortController();
-    setLoading(true);
+    if(!data) setLoading(true);
     setError("");
     fetch("/api/smart-dashboard-panel",{
       method:"POST",cache:"no-store",signal:controller.signal,
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({action:"refresh",table,spec,filterDimension,filterValue:selectedGroup})
+      body:JSON.stringify({action:"refresh",table,spec,filters})
     }).then(async response=>{
       const result=await response.json();
       if(!response.ok) throw new Error(result.error || "Could not calculate this panel.");
@@ -37,9 +39,9 @@ export default function CustomPanelView({table,spec,filterDimension,selectedGrou
       .catch(problem=>{if(!controller.signal.aborted){setError(problem instanceof Error ? problem.message : "Panel calculation failed.");setData(null);}})
       .finally(()=>{if(!controller.signal.aborted) setLoading(false);});
     return ()=>controller.abort();
-  },[table,spec,filterDimension,selectedGroup]);
+  },[table,spec,filterDimension,filterKey,refreshVersion]);
 
-  if(loading) return <div className="qp-panel-status"><LoaderCircle className="spinning" size={20}/> Calculating panel…</div>;
+  if(loading && !data) return <div className="qp-panel-status"><LoaderCircle className="spinning" size={20}/> Calculating panel…</div>;
   if(error) return <div className="qp-panel-error" role="status"><AlertCircle size={18}/>{error}</div>;
   if(!data?.points.length) return <div className="qp-panel-status">No matching data.</div>;
   const points=data.points;

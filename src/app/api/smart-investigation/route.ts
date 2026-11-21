@@ -16,6 +16,9 @@ type Input = {
   dimension?: unknown;
   time?: unknown;
   filterValue?: unknown;
+  filters?: unknown;
+  filterDimension?: unknown;
+  filterSearch?: unknown;
 };
 type Query = (sql: string) => Promise<Record<string, unknown>[]>;
 const metricType = /(?:int|numeric|decimal|double|real|float|money)/i;
@@ -68,14 +71,44 @@ function selectedFields(input: Input, table: SchemaTable) {
     time: selectVerified(input.time, choices.times)
   };
 }
-function filter(input: Input, dimension: string | null) {
-  if (input.filterValue === undefined || input.filterValue === null) return "";
-  if (!dimension || typeof input.filterValue !== "string" || input.filterValue.length > 120) {
-    throw new Error("Choose a valid category to filter this investigation.");
+function filter(input: Input, table: SchemaTable, defaultDimension: string | null) {
+  const approved = names(table).dimensions;
+  const raw: unknown = input.filters === undefined
+    ? (input.filterValue === undefined || input.filterValue === null
+        ? [] : [{ column: defaultDimension, value: input.filterValue }])
+    : input.filters;
+  if (!Array.isArray(raw) || raw.length > 3) throw new Error("Choose up to three valid dashboard filters.");
+  const seen = new Set<string>();
+  const constraints: string[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Invalid dashboard filter.");
+    const candidate = item as { column?: unknown; value?: unknown };
+    if (typeof candidate.column !== "string" || !approved.includes(candidate.column) ||
+        typeof candidate.value !== "string" || candidate.value.length > 110 || seen.has(candidate.column)) {
+      throw new Error("Choose an approved field and category for each dashboard filter.");
+    }
+    seen.add(candidate.column);
+    constraints.push(candidate.value === "(missing)"
+      ? ident(candidate.column) + " IS NULL"
+      : "LEFT(CAST(" + ident(candidate.column) + " AS text), 110) = " + str(candidate.value));
   }
-  return input.filterValue === "(missing)"
-    ? ident(dimension) + " IS NULL"
-    : "LEFT(CAST(" + ident(dimension) + " AS text), 110) = " + str(input.filterValue);
+  return constraints.join(" AND ");
+}
+async function filterOptions(table: SchemaTable, input: Input, run: Query) {
+  const column = input.filterDimension;
+  if (typeof column !== "string" || !names(table).dimensions.includes(column)) {
+    throw new Error("Choose an approved category field.");
+  }
+  const search = typeof input.filterSearch === "string" ? input.filterSearch.trim().slice(0,80) : "";
+  const expression = "LEFT(CAST(" + ident(column) + " AS text), 110)";
+  const searchConstraint = search ? " WHERE " + expression + " ILIKE " + str("%" + search + "%") : "";
+  const sql = "SELECT COALESCE(" + expression + ", '(missing)') AS label, COUNT(*)::bigint AS records FROM " +
+    source(table) + searchConstraint + " GROUP BY 1 ORDER BY records DESC, label ASC LIMIT 75";
+  const rows = await run(sql);
+  return NextResponse.json({
+    data: { values: rows.map(row => String(row.label ?? "(missing)")), column },
+    completedAt: new Date().toISOString()
+  }, { headers: { "Cache-Control": "no-store" } });
 }
 function where(...parts: string[]) {
   const conditions = parts.filter(Boolean);
@@ -126,7 +159,7 @@ async function profile(table: SchemaTable, input: Input, run: Query) {
 }
 async function overview(table: SchemaTable, input: Input, run: Query) {
   const fields = selectedFields(input, table);
-  const constraint = filter(input, fields.dimension);
+  const constraint = filter(input, table, fields.dimension);
   const metric = fields.metric;
   const expressions = [
     "COUNT(*)::bigint AS records",
@@ -150,7 +183,7 @@ async function drivers(table: SchemaTable, input: Input, run: Query) {
   const fields = selectedFields(input, table);
   if (!fields.dimension) return response("drivers", [], "");
   const dim = ident(fields.dimension);
-  const constraint = filter(input, fields.dimension);
+  const constraint = filter(input, table, fields.dimension);
   const group = "LEFT(CAST(" + dim + " AS text), 110)";
   const sql = "SELECT COALESCE(" + group + ", '(missing)') AS label, " +
     "COUNT(*)::bigint AS records, " + totalExpr(fields.metric) + " AS value FROM " +
@@ -166,7 +199,7 @@ async function trend(table: SchemaTable, input: Input, run: Query) {
   const fields = selectedFields(input, table);
   if (!fields.time) return response("trend", [], "");
   const field = ident(fields.time);
-  const constraint = filter(input, fields.dimension);
+  const constraint = filter(input, table, fields.dimension);
   const sql = "SELECT TO_CHAR(DATE_TRUNC('month', " + field + "), 'YYYY-MM') AS period, " +
     "COUNT(*)::bigint AS records, " + totalExpr(fields.metric) + " AS value FROM " +
     source(table) + where(constraint, field + " IS NOT NULL") +
@@ -190,7 +223,7 @@ export async function POST(request: NextRequest) {
     }
     const input = body as Input;
     const stage = input.stage;
-    if (!["plan", "profile", "overview", "drivers", "trend"].includes(String(stage))) {
+    if (!["plan", "profile", "overview", "drivers", "trend", "filter-options"].includes(String(stage))) {
       return NextResponse.json({ error: "Unknown investigation stage." }, { status: 400 });
     }
     if (typeof input.table !== "string" || input.table.length > 120) {
@@ -215,6 +248,7 @@ export async function POST(request: NextRequest) {
       case "overview": result = await overview(table, input, run); break;
       case "drivers": result = await drivers(table, input, run); break;
       case "trend": result = await trend(table, input, run); break;
+      case "filter-options": result = await filterOptions(table, input, run); break;
       default: throw new Error("Unknown investigation stage.");
     }
     if (access.refreshed) {
@@ -225,7 +259,7 @@ export async function POST(request: NextRequest) {
   } catch (problem) {
     console.error("Investigation stage failed:", problem);
     return NextResponse.json({
-      error: problem instanceof Error && /approved dataset field|valid category|dataset/i.test(problem.message)
+      error: problem instanceof Error && /approved|valid category|dataset|dashboard filter|category field/i.test(problem.message)
         ? problem.message : "Investigation could not complete. Confirm your database permissions and try again."
     }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
