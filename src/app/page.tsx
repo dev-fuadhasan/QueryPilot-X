@@ -6,6 +6,7 @@ import type { Table } from "@features/smart_data_analysis_and_visualization/comp
 import DailyAnalysisDashboard from "@features/daily_data_analysis_and_notification/components/DailyAnalysisDashboard";
 import FraudDetectionDashboard from "@features/fraud_detection_and_notification/components/FraudDetectionDashboard";
 import SmartWorkspace from "@features/smart_data_analysis_and_visualization/components/SmartWorkspace";
+import LandingPage from "@/components/LandingPage";
 
 type Project = { id: string; name: string };
 type Session = {
@@ -224,6 +225,8 @@ export default function Home() {
           </section>
         </main>
       )}
+
+      {session && screen === "home" && <LandingPage onStart={beginSetup} />}
 
       {session && (screen === "dashboard" || screen === "daily-analysis" || screen === "fraud-detection") && (
         <div className="workspace">
