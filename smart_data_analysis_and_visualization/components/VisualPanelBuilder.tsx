@@ -22,9 +22,11 @@ type Props = {
   filters: DashboardFilter[];
   initialSpec?: CustomPanelSpec | null;
   initialWide?: boolean;
+  panelCount: number;
+  initialPosition: number;
   atLimit: boolean;
   onClose: () => void;
-  onSave: (spec: CustomPanelSpec, wide: boolean) => void;
+  onSave: (spec: CustomPanelSpec, wide: boolean, position: number) => void;
 };
 
 const chartOptions: ChartItem[] = [
@@ -106,7 +108,7 @@ function Preview({spec,data}:{spec:CustomPanelSpec;data:CustomPanelData}) {
   return <ResponsiveContainer width="100%" height={220}><BarChart data={points.slice(0,10)} margin={{left:-15,right:5,top:12,bottom:8}}><CartesianGrid stroke="#CFEAE0" strokeDasharray="3 3"/><XAxis dataKey="label" tick={{fontSize:9}} interval="preserveStartEnd"/><YAxis tick={{fontSize:9}}/><Tooltip/><Bar dataKey="value" fill="#5B91A3" radius={[4,4,0,0]}/></BarChart></ResponsiveContainer>;
 }
 
-export default function VisualPanelBuilder({table,filters,initialSpec,initialWide=false,atLimit,onClose,onSave}:Props) {
+export default function VisualPanelBuilder({table,filters,initialSpec,initialWide=false,panelCount,initialPosition,atLimit,onClose,onSave}:Props) {
   const [fields,setFields]=useState<Fields|null>(null);
   const [schemaError,setSchemaError]=useState("");
   const [reload,setReload]=useState(0);
@@ -118,6 +120,7 @@ export default function VisualPanelBuilder({table,filters,initialSpec,initialWid
   const [resultLimit,setResultLimit]=useState(initialSpec?.resultLimit || 10);
   const [sort,setSort]=useState<"asc"|"desc">(initialSpec?.sortDirection || "desc");
   const [wide,setWide]=useState(initialWide);
+  const [position,setPosition]=useState(Math.max(1,Math.min(initialPosition,Math.max(1,panelCount+(initialSpec?0:1)))));
   const [gaugeMin,setGaugeMin]=useState(String(initialSpec?.gaugeMin ?? 0));
   const [gaugeMax,setGaugeMax]=useState(String(initialSpec?.gaugeMax ?? 100));
   const [secondDimension,setSecondDimension]=useState(initialSpec?.secondDimension||(initialSpec?.time?initialSpec.dimension||"":""));
@@ -269,7 +272,7 @@ export default function VisualPanelBuilder({table,filters,initialSpec,initialWid
 
   function addPanel() {
     if(!preview || (atLimit && !initialSpec))return;
-    onSave(preview.spec,wide);
+    onSave(preview.spec,wide,position);
   }
 
   return <div className="qp-visual-overlay" role="presentation">
@@ -324,7 +327,21 @@ export default function VisualPanelBuilder({table,filters,initialSpec,initialWid
               <button type="button" className="qp-visual-change-link" onClick={returnToGallery}>Change</button>
             </div>
             <div className="qp-visual-section-heading qp-visual-config-heading"><div><span className="qp-visual-step">02</span><h3>Configure your data</h3></div><p>Only compatible fields are offered.</p></div>
+
             <div className="qp-visual-fields">
+              <label className="qp-visual-field qp-visual-position-field qp-visual-field-full">
+                <span>Dashboard position</span>
+                <select aria-label="Dashboard panel position" value={position} onChange={event=>setPosition(Number(event.target.value))}>
+                  {Array.from({length:Math.max(1,panelCount+(initialSpec?0:1))},(_,index)=>{
+                    const number=index+1;
+                    const last=number===panelCount+(initialSpec?0:1);
+                    return <option key={number} value={number}>
+                      {number===1 ? "Position 1 — First" : last ? "Position "+number+" — Last" : "Position "+number}
+                    </option>;
+                  })}
+                </select>
+                <small>The figure is placed in this order, from left to right and top to bottom. Wide panels may span both columns.</small>
+              </label>
               {needsAxis && <label className="qp-visual-field"><span>{primaryIsDate?"X axis · Date / time":"X axis · Category"}</span>
                 <select value={dimension} onChange={event=>setDimension(event.target.value)}>
                   <option value="">Choose a field</option>

@@ -4,9 +4,10 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Activity, ArrowDown, ArrowUp, BarChart3, Check, Database, Download, Expand, GripVertical, LineChart as LineChartIcon, LoaderCircle, Pencil, PieChart as PieChartIcon, Plus, RotateCcw, Save, Sigma, Table2, Trash2, Sparkles, AlertCircle, CheckCircle2, X, LayoutGrid, Settings2 } from "lucide-react";
 import CustomPanelView from "./CustomPanelView";
+import ChartTypeGlyph from "./ChartTypeGlyph";
 import VisualPanelBuilder from "./VisualPanelBuilder";
 import { CategoryTick, ChartCategoryLegend, FullCategoryLabels, ScrollableChart, categoryAxisWidth } from "./ReadableCharts";
-import type { CustomPanelSpec, DashboardFilter, DashboardPanel, DashboardPanelKind, GroupPoint, InvestigationBundle, OverviewData, TrendPoint } from "../lib/intelligence";
+import type { CustomChart, CustomPanelSpec, DashboardFilter, DashboardPanel, DashboardPanelKind, GroupPoint, InvestigationBundle, OverviewData, TrendPoint } from "../lib/intelligence";
 
 type Props = {
   bundle: InvestigationBundle;
@@ -33,6 +34,14 @@ const panelKinds: { value: DashboardPanelKind; label: string }[] = [
 function format(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, notation: Math.abs(value) >= 1000000 ? "compact" : "standard" }).format(value);
+}
+function panelChartType(panel: DashboardPanel): CustomChart {
+  if (panel.kind === "custom" && panel.spec) return panel.spec.chart;
+  if (panel.kind === "trend") return panel.chart === "area" ? "area" : "line";
+  if (panel.kind === "mix") return "pie";
+  if (panel.kind === "drivers") return "bar";
+  if (panel.kind === "table") return "table";
+  return "kpi";
 }
 function defaultPanels(bundle: InvestigationBundle): DashboardPanel[] {
   // The snapshot is permanently visible with filters in one unified card.
@@ -196,20 +205,33 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
     setEditingVisualId(id);
     setVisualOpen(true);
   }
-  function saveVisualPanel(spec: CustomPanelSpec, wide: boolean) {
+  function saveVisualPanel(spec: CustomPanelSpec, wide: boolean, position: number) {
     if (!editingVisualId && panels.length >= 12) {
       setToast({type:"error",message:"Maximum 12 panels. Remove one before adding another visualization."});
       return;
     }
-    if (editingVisualId) {
-      setPanels(current=>current.map(panel=>panel.id===editingVisualId ? {...panel,kind:"custom" as const,spec,title:spec.title,wide,chart:"bar" as const} : panel));
-    } else {
-      setPanels(current=>[...current,{id:"visual-"+Date.now()+"-"+Math.random().toString(36).slice(2,7),
-        kind:"custom" as const,spec,title:spec.title,wide,chart:"bar" as const}]);
-    }
+    setPanels(current=>{
+      const next=[...current];
+      let updated:DashboardPanel;
+      if (editingVisualId) {
+        const originalIndex=next.findIndex(item=>item.id===editingVisualId);
+        if (originalIndex<0) return current;
+        const [existing]=next.splice(originalIndex,1);
+        updated={...existing,kind:"custom",spec,title:spec.title,wide,chart:"bar"};
+      } else {
+        if (next.length>=12) return current;
+        updated={id:"visual-"+Date.now()+"-"+Math.random().toString(36).slice(2,7),
+          kind:"custom",spec,title:spec.title,wide,chart:"bar"};
+      }
+      // Positions are one-based and follow dashboard reading/DOM order.
+      const requested=Number.isFinite(position)?Math.trunc(position):next.length+1;
+      const insertionIndex=Math.max(0,Math.min(requested-1,next.length));
+      next.splice(insertionIndex,0,updated);
+      return next;
+    });
     setVisualOpen(false);
     setEditingVisualId(null);
-    setToast({type:"success",message:editingVisualId?"Visualization updated.":"Visualization added to your dashboard."});
+    setToast({type:"success",message:editingVisualId?"Visualization and position updated.":"Visualization added at position "+position+"."});
   }
   function saveDashboardTitle() {
     const value = draftTitle.trim();
@@ -403,7 +425,7 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
         <div className="qp-panel-heading">
           <div className="qp-panel-title">
             <span className="qp-panel-kind-icon" aria-hidden="true">
-              {panel.kind === "kpi" ? <Activity size={16}/> : panel.kind === "trend" ? <LineChartIcon size={16}/> : panel.kind === "mix" ? <PieChartIcon size={16}/> : panel.kind === "table" ? <Table2 size={16}/> : <BarChart3 size={16}/>}
+              <ChartTypeGlyph chart={panelChartType(panel)} size={25}/>
             </span>
             <input value={panel.title} aria-label="Panel heading" maxLength={65} onChange={event => editPanel(panel.id, {title:event.target.value})}/>
           </div>
@@ -425,6 +447,8 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
     {visualOpen && <VisualPanelBuilder key={plan.table+":"+(editingVisualId||"new")} table={plan.table} filters={filters}
       initialSpec={editingVisualId ? panels.find(panel=>panel.id===editingVisualId)?.spec||null : null}
       initialWide={Boolean(editingVisualId && panels.find(panel=>panel.id===editingVisualId)?.wide)}
+      panelCount={panels.length}
+      initialPosition={editingVisualId ? panels.findIndex(panel=>panel.id===editingVisualId)+1 : panels.length+1}
       atLimit={panels.length>=12}
       onClose={()=>{setVisualOpen(false);setEditingVisualId(null);}}
       onSave={saveVisualPanel}/>}
