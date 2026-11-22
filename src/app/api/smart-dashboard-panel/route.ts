@@ -24,7 +24,15 @@ const dateType = /(?:date|timestamp)/i;
 const categoryType = /(?:char|text|uuid|enum)/i;
 const privateField = /(?:password|secret|token|api_?key|phone|mobile|email|ssn|address|passport|national_id|first_name|last_name|full_name|notes|message|comment|description|review|free_text|text_body)/i;
 const identifier = /(?:^id$|_id$|uuid|postcode|postal|zip|serial|tracking_number)/i;
-const allowedCharts = new Set(["kpi", "bar", "line", "area", "pie", "table"]);
+const singleCharts = new Set(["kpi","gauge","bullet","progress","thermometer"]);
+const timeCharts = new Set(["line","area","sparkline","combo"]);
+const seriesCharts = new Set(["grouped_bar","stacked_bar","stacked_100","stacked_area","slope","bump","heatmap","pivot","network","sankey"]);
+const timeSeriesCharts = new Set(["stacked_area","slope","bump"]);
+const sampleCharts = new Set(["histogram","box","density","violin"]);
+const scatterCharts = new Set(["scatter","bubble"]);
+const multiCharts = new Set(["correlation","parallel"]);
+const additiveCharts = new Set(["pie","donut","treemap","waffle","funnel"]);
+const allowedCharts = new Set(["kpi","gauge","bullet","progress","thermometer","bar","column","grouped_bar","stacked_bar","stacked_100","lollipop","line","area","stacked_area","sparkline","combo","pie","donut","treemap","waffle","radar","histogram","box","density","violin","scatter","bubble","heatmap","correlation","funnel","waterfall","slope","bump","parallel","network","sankey","table","pivot"]);
 const allowedAggregates = new Set(["count", "sum", "average", "min", "max"]);
 const quote = (value: string) => '"' + value.replace(/"/g, '""') + '"';
 const literal = (value: string) => "'" + value.replace(/'/g, "''") + "'";
@@ -107,25 +115,79 @@ function fallback(request: string, columns: ReturnType<typeof available>): Propo
     title: request.slice(0, 70)
   };
 }
-function validate(spec: ProposedDashboardPanel, table: SchemaTable, userTitle?: string): CustomPanelSpec {
+function validate(spec: ProposedDashboardPanel | CustomPanelSpec, table: SchemaTable, userTitle?: string): CustomPanelSpec {
   const columns = available(table);
-  if (!allowedCharts.has(spec.chart) || !allowedAggregates.has(spec.aggregation)) throw new Error("Requested chart or calculation is not supported.");
+  if (!allowedCharts.has(spec.chart) || !allowedAggregates.has(spec.aggregation)) throw new Error("Chart or calculation is not supported.");
   const field = (name: unknown, candidates: string[]) => typeof name === "string" && candidates.includes(name) ? name : null;
+  const configured = spec as CustomPanelSpec;
   const metric = field(spec.metric, columns.metrics);
   const dimension = field(spec.dimension, columns.dimensions);
   const time = field(spec.time, columns.times);
-  if (spec.aggregation !== "count" && !metric) throw new Error("No compatible numeric metric exists for this calculation.");
-  if (["bar","pie","table"].includes(spec.chart) && !dimension) throw new Error("This panel needs a suitable categorical field in the selected dataset.");
-  if (["line","area"].includes(spec.chart) && !time) throw new Error("This panel needs a real date or timestamp column in the selected dataset.");
-  if (spec.chart === "pie" && !["sum","count"].includes(spec.aggregation)) throw new Error("Share charts require additive totals or counts. Use a bar chart for averages or minima.");
+  const secondDimension = field(configured.secondDimension, columns.dimensions);
+  const secondaryMetric = field(configured.secondaryMetric, columns.metrics);
+  const xMetric = field(configured.xMetric, columns.metrics);
+  const sizeMetric = field(configured.sizeMetric, columns.metrics);
+  const selectedMetrics = Array.isArray(configured.metrics) && configured.metrics.length <= 6
+    ? configured.metrics.filter((name): name is string => typeof name === "string" && columns.metrics.includes(name))
+    : [];
+  if (spec.aggregation !== "count" && !metric && !multiCharts.has(spec.chart)) throw new Error("Select a numeric Y-axis field or use record count.");
+  if (sampleCharts.has(spec.chart) && !metric) throw new Error("This distribution requires a numeric field.");
+  if (scatterCharts.has(spec.chart) && (!metric || !xMetric || (spec.chart === "bubble" && !sizeMetric))) {
+    throw new Error("Scatter requires numeric X and Y fields; bubble also requires a numeric size field.");
+  }
+  if (multiCharts.has(spec.chart) && (selectedMetrics.length < (spec.chart === "parallel" ? 3 : 2) || new Set(selectedMetrics).size !== selectedMetrics.length)) {
+    throw new Error("Choose " + (spec.chart === "parallel" ? "three" : "two") + " or more distinct numeric fields.");
+  }
+  if (timeCharts.has(spec.chart) && !time) throw new Error("This trend needs an existing date or timestamp column.");
+  if (spec.chart === "combo" && (!metric || !secondaryMetric || secondaryMetric === metric)) {
+    throw new Error("Combo charts require two distinct numeric measures for bars and line.");
+  }
+  if (seriesCharts.has(spec.chart)) {
+    if (timeSeriesCharts.has(spec.chart)) {
+      if (!time || !dimension) throw new Error("This trend needs a date field and a category series field.");
+    } else if (!dimension || !secondDimension || dimension === secondDimension) {
+      throw new Error("This comparison needs two different categorical fields.");
+    }
+  }
+  const ordinaryCategory = !singleCharts.has(spec.chart) && !timeCharts.has(spec.chart) &&
+    !seriesCharts.has(spec.chart) && !sampleCharts.has(spec.chart) && !scatterCharts.has(spec.chart) &&
+    !multiCharts.has(spec.chart);
+  if (ordinaryCategory && !dimension) throw new Error("This visualization requires a categorical X-axis field.");
+  if (additiveCharts.has(spec.chart) && !["sum","count"].includes(spec.aggregation)) {
+    throw new Error("Share and funnel charts require additive totals or record counts.");
+  }
+  if (spec.chart === "radar" && !["sum","count"].includes(spec.aggregation)) {
+    throw new Error("Radar charts require comparable summed values or counts.");
+  }
+  if (["stacked_100","stacked_area","sankey","network"].includes(spec.chart) &&
+      !["sum","count"].includes(spec.aggregation)) {
+    throw new Error("This visual requires additive totals or counts, not averages or extrema.");
+  }
+  const gaugeMin = configured.gaugeMin === undefined ? 0 : configured.gaugeMin;
+  const gaugeMax = configured.gaugeMax === undefined ? 100 : configured.gaugeMax;
+  if (["gauge","bullet","progress","thermometer"].includes(spec.chart) && (
+    typeof gaugeMin !== "number" || !Number.isFinite(gaugeMin) ||
+    typeof gaugeMax !== "number" || !Number.isFinite(gaugeMax) ||
+    gaugeMax <= gaugeMin || Math.abs(gaugeMax) > 1e15 || Math.abs(gaugeMin) > 1e15
+  )) throw new Error("Set a valid target range where maximum is greater than minimum.");
+  if (spec.chart === "progress" && (gaugeMin !== 0 || gaugeMax <= 0)) {
+    throw new Error("Progress bars use a zero baseline and a positive target.");
+  }
   return {
-    chart: spec.chart, aggregation: spec.aggregation, metric, dimension, time,
+    chart: spec.chart, aggregation: spec.aggregation,
+    metric: multiCharts.has(spec.chart) ? null : metric,
+    dimension, time,
     title: (userTitle || spec.title || "Custom panel").trim().slice(0, 65),
     description: spec.aggregation + (metric ? " of " + metric : " of records") +
       (time ? " over " + time : dimension ? " by " + dimension : ""),
     resultLimit: verifiedResultCount(spec.resultLimit,
-      ["line","area"].includes(spec.chart) ? DEFAULT_MONTHLY_RESULTS : DEFAULT_CATEGORY_RESULTS),
-    sortDirection: verifiedSortDirection(spec.sortDirection)
+      (timeCharts.has(spec.chart) || timeSeriesCharts.has(spec.chart)) ? DEFAULT_MONTHLY_RESULTS : DEFAULT_CATEGORY_RESULTS),
+    sortDirection: verifiedSortDirection(spec.sortDirection),
+    ...(singleCharts.has(spec.chart) ? { gaugeMin, gaugeMax } : {}),
+    ...(seriesCharts.has(spec.chart) ? { secondDimension: timeSeriesCharts.has(spec.chart) ? null : secondDimension } : {}),
+    ...(spec.chart === "combo" ? { secondaryMetric } : {}),
+    ...(scatterCharts.has(spec.chart) ? { xMetric, sizeMetric:spec.chart === "bubble" ? sizeMetric : null } : {}),
+    ...(multiCharts.has(spec.chart) ? { metrics:selectedMetrics } : {})
   };
 }
 function filter(input: Input, table: SchemaTable) {
@@ -159,44 +221,115 @@ function expr(spec: CustomPanelSpec) {
   if (spec.aggregation === "min") return "MIN(" + numericCol + ")::double precision";
   return "MAX(" + numericCol + ")::double precision";
 }
-async function execute(spec: CustomPanelSpec, table: SchemaTable, input: Input, run: (sql:string)=>Promise<Record<string,unknown>[]>):Promise<CustomPanelData> {
-  const condition = filter(input, table);
-  const constraints = [condition].filter(Boolean);
+async function execute(spec: CustomPanelSpec, table: SchemaTable, input: Input,
+  run: (sql:string)=>Promise<Record<string,unknown>[]>): Promise<CustomPanelData> {
+  const condition = filter(input,table);
+  const conditions = [condition].filter(Boolean);
+  const from = source(table);
+  const where = (xs: string[]) => xs.length ? " WHERE " + xs.join(" AND ") : "";
+  const category = (name:string) => "COALESCE(LEFT(CAST(" + quote(name) + " AS text), 90), '(missing)')";
+  const dateLabel = (name:string) => "TO_CHAR(DATE_TRUNC('month', " + quote(name) + "), 'YYYY-MM')";
+  const finite = (v:unknown) => v !== null && v !== undefined && Number.isFinite(Number(v));
+  const currentChart = spec.chart;
+  const limit = spec.resultLimit || DEFAULT_CATEGORY_RESULTS;
   let sql = "";
-  if (spec.chart === "kpi") {
-    sql = "SELECT COUNT(*)::bigint AS records, " + expr(spec) + " AS value FROM " + source(table) +
-      (constraints.length ? " WHERE " + constraints.join(" AND ") : "");
-  } else if (spec.chart === "line" || spec.chart === "area") {
-    const col = quote(spec.time || "");
-    constraints.push(col + " IS NOT NULL");
-    sql = "SELECT TO_CHAR(DATE_TRUNC('month', " + col + "), 'YYYY-MM') AS label, COUNT(*)::bigint AS records, " +
-      expr(spec) + " AS value FROM " + source(table) + " WHERE " + constraints.join(" AND ") +
-      " GROUP BY 1 ORDER BY 1 " + (spec.sortDirection === "asc" ? "ASC" : "DESC") +
-      " LIMIT " + spec.resultLimit;
+  let rows:Record<string,unknown>[] = [];
+
+  if (sampleCharts.has(currentChart)) {
+    const col = quote(spec.metric || "");
+    sql = "SELECT ("+col+")::double precision AS x FROM "+from+
+      where([...conditions,col+" IS NOT NULL"])+" LIMIT 1500";
+    rows = await run(sql);
+    const samples = rows.filter(row=>finite(row.x)).map(row=>({x:numeric(row.x)}));
+    if(samples.length<5) throw new Error("This distribution needs at least five finite numeric observations.");
+    return {points:[],total:null,samples,sql};
+  }
+
+  if (scatterCharts.has(currentChart)) {
+    const x=quote(spec.xMetric||""),y=quote(spec.metric||""),z=quote(spec.sizeMetric||"");
+    const whereParts=[...conditions,x+" IS NOT NULL",y+" IS NOT NULL"];
+    if(currentChart==="bubble") whereParts.push(z+" IS NOT NULL");
+    sql = "SELECT ("+x+")::double precision AS x, ("+y+")::double precision AS y"+
+      (currentChart==="bubble"?", ("+z+")::double precision AS size":"")+
+      " FROM "+from+where(whereParts)+" LIMIT 800";
+    rows = await run(sql);
+    const samples=rows.filter(row=>finite(row.x)&&finite(row.y)&&
+        (currentChart!=="bubble" || (finite(row.size)&&numeric(row.size)>=0)))
+      .map(row=>({x:numeric(row.x),y:numeric(row.y),
+        ...(currentChart==="bubble"?{size:numeric(row.size)}:{})}));
+    if(samples.length<2) throw new Error("No usable paired numeric observations exist for these fields.");
+    return {points:[],total:null,samples,sql};
+  }
+
+  if (multiCharts.has(currentChart)) {
+    const metrics=spec.metrics||[];
+    const projections=metrics.map((name,i)=>"("+quote(name)+")::double precision AS m"+i);
+    sql="SELECT "+projections.join(", ")+" FROM "+from+where(conditions)+" LIMIT 800";
+    rows=await run(sql);
+    const samples=rows.map(row=>metrics.map((_,i)=>row["m"+i]))
+      .filter(values=>values.every(finite)).map(values=>({x:numeric(values[0]),values:values.map(numeric)}));
+    if(samples.length<5)throw new Error("At least five rows with valid values across the selected numeric fields are required.");
+    return {points:[],total:null,samples,columns:metrics,sql};
+  }
+
+  if (seriesCharts.has(currentChart)) {
+    const primary=timeSeriesCharts.has(currentChart)?dateLabel(spec.time||""):category(spec.dimension||"");
+    const secondary=category(timeSeriesCharts.has(currentChart)?spec.dimension||"":spec.secondDimension||"");
+    const parts=[...conditions];
+    if(timeSeriesCharts.has(currentChart))parts.push(quote(spec.time||"")+" IS NOT NULL");
+    sql="SELECT "+primary+" AS label, "+secondary+" AS series, COUNT(*)::bigint AS records, "+
+      expr(spec)+" AS value FROM "+from+where(parts)+
+      " GROUP BY 1,2 ORDER BY value DESC NULLS LAST, label ASC LIMIT 240";
+    rows=await run(sql);
+    const cells=rows.filter(row=>finite(row.value)).map(row=>({
+      label:String(row.label??""),series:String(row.series??""),records:numeric(row.records),value:numeric(row.value)
+    }));
+    if(!cells.length)throw new Error("No compatible grouped values were found for these fields.");
+    if(["sankey","network","stacked_100","stacked_area"].includes(currentChart) &&
+       (cells.some(c=>c.value<0)||!cells.some(c=>c.value>0))) {
+      throw new Error("This visualization requires non-negative values and a positive total.");
+    }
+    if((currentChart==="slope"||currentChart==="bump")&&
+        new Set(cells.map(c=>c.label)).size<2)throw new Error("At least two distinct time periods are needed.");
+    return {points:[],total:null,cells,sql};
+  }
+
+  const scalar = singleCharts.has(currentChart);
+  const timed=timeCharts.has(currentChart);
+  if(scalar) {
+    sql="SELECT COUNT(*)::bigint AS records, "+expr(spec)+" AS value FROM "+from+where(conditions);
+  } else if(timed) {
+    const col=quote(spec.time||"");
+    const second=spec.chart==="combo"? ", "+expr({...spec,metric:spec.secondaryMetric||null})+" AS second_value":"";
+    sql="SELECT "+dateLabel(spec.time||"")+" AS label, COUNT(*)::bigint AS records, "+
+      expr(spec)+" AS value"+second+" FROM "+from+
+      where([...conditions,col+" IS NOT NULL"])+" GROUP BY 1 ORDER BY 1 "+
+      (spec.sortDirection==="asc"?"ASC":"DESC")+" LIMIT "+limit;
   } else {
-    const col = quote(spec.dimension || "");
-    const group = "LEFT(CAST(" + col + " AS text), 110)";
-    sql = "SELECT COALESCE(" + group + ", '(missing)') AS label, COUNT(*)::bigint AS records, " +
-      expr(spec) + " AS value FROM " + source(table) +
-      (constraints.length ? " WHERE " + constraints.join(" AND ") : "") +
-      " GROUP BY 1 ORDER BY value " + (spec.sortDirection === "asc" ? "ASC" : "DESC") +
-      " NULLS LAST, records DESC, label ASC LIMIT " + spec.resultLimit;
+    sql="SELECT "+category(spec.dimension||"")+" AS label, COUNT(*)::bigint AS records, "+
+      expr(spec)+" AS value FROM "+from+where(conditions)+
+      " GROUP BY 1 ORDER BY value "+(spec.sortDirection==="asc"?"ASC":"DESC")+
+      " NULLS LAST, records DESC, label ASC LIMIT "+limit;
   }
-  const rows = await run(sql);
-  if (!rows.length || (spec.chart === "kpi" && Number(rows[0].records) === 0)) {
-    throw new Error("No matching records were found for this requested panel.");
-  }
-  const points: CustomPanelPoint[] = rows.filter(row => row.value !== null && row.value !== undefined && Number.isFinite(Number(row.value))).map((row,index) => ({
-    label: String(row.label || (index === 0 ? "All records" : "Other")),
-    records: numeric(row.records),
-    value: numeric(row.value)
+  rows=await run(sql);
+  if(!rows.length||(scalar&&Number(rows[0].records)===0))throw new Error("No matching records were found.");
+  const points:CustomPanelPoint[]=rows.filter(row=>finite(row.value)).map((row,i)=>({
+    label:String(row.label||(i===0?"All records":"Other")),
+    records:numeric(row.records),value:numeric(row.value),
+    ...(spec.chart==="combo"&&finite(row.second_value)?{secondValue:numeric(row.second_value)}:{})
   }));
-  if (!points.length) throw new Error("The requested metric has no usable numeric values in this dataset.");
-  if ((spec.chart === "line" || spec.chart === "area") && spec.sortDirection !== "asc") points.reverse();
-  if (spec.chart === "pie" && (points.some(point => point.value < 0) || !points.some(point => point.value > 0))) {
-    throw new Error("A share chart needs non-negative values and a positive total. Try a bar chart instead.");
+  if(!points.length)throw new Error("The selected metric contains no usable numeric values.");
+  if(timed&&spec.sortDirection!=="asc")points.reverse();
+  if(currentChart==="radar"&&points.length<3)throw new Error("Radar charts require three or more categories.");
+  if(currentChart==="combo"&&points.some(row=>row.secondValue===undefined))throw new Error("The second metric contains missing or invalid values.");
+  if(["pie","donut","treemap","waffle","funnel","radar"].includes(currentChart)&&
+     (points.some(row=>row.value<0)||!points.some(row=>row.value>0))) {
+    throw new Error("This visualization requires non-negative values with at least one positive total.");
   }
-  return {points, total:spec.chart === "kpi" ? points[0].value : ["sum","count"].includes(spec.aggregation) ? points.reduce((sum,point)=>sum+point.value,0) : null, sql};
+  return {
+    points,total:scalar?points[0].value:["sum","count"].includes(spec.aggregation)?
+      points.reduce((sum,point)=>sum+point.value,0):null,sql
+  };
 }
 function failure(message: string, status=422) {
   return NextResponse.json({error:message},{status,headers:{"Cache-Control":"no-store"}});
@@ -209,9 +342,9 @@ export async function POST(request: NextRequest) {
     const raw:unknown = await request.json();
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return failure("Invalid panel request.");
     const input = raw as Input;
-    if (!["create","refresh"].includes(text(input.action)) || typeof input.table !== "string" ||
+    if (!["create","refresh","schema"].includes(text(input.action)) || typeof input.table !== "string" ||
         input.table.length > 120 || input.table.includes("\u0000")) return failure("Select an authorized dataset.");
-    const action = input.action as "create" | "refresh";
+    const action = input.action as "create" | "refresh" | "schema";
     if (action === "create" && (typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > 300)) {
       return failure("Describe the panel you want in 300 characters or fewer.");
     }
@@ -225,6 +358,14 @@ export async function POST(request: NextRequest) {
     const schema = groupSchema(await run(sqlSchema));
     const table = schema.find(item => item.name === input.table);
     if (!table) return failure("The selected dataset is not available in this Supabase project.",404);
+    if (action === "schema") {
+      const response = NextResponse.json({table:table.name,fields:available(table)}, {headers:{"Cache-Control":"no-store"}});
+      if (access.refreshed) {
+        const {issuedAt,...saved}=session;
+        saveSession(response,saved);
+      }
+      return response;
+    }
     let spec:CustomPanelSpec;
     if (action === "create") {
       const prompt = (input.prompt as string).trim();
@@ -299,7 +440,7 @@ export async function POST(request: NextRequest) {
     return response;
   } catch (err) {
     const message = err instanceof Error ? err.message : "";
-    if (/requested|no matching|not available|not valid|unsupported|compatible|suitable|needs|saved panel|no usable|chart|aggregation|limit|rank|category|date column|period/i.test(message)) return failure(message.slice(0,250));
+    if (/requested|no matching|not available|not valid|unsupported|compatible|suitable|needs|saved panel|no usable|chart|aggregation|limit|rank|category|date column|period|gauge|minimum|maximum|scale|numeric|rows|finite|fields|target|values/i.test(message)) return failure(message.slice(0,250));
     console.error("Dashboard panel generation failed",err);
     return failure("Could not build this panel from the selected dataset. Check its fields and permissions.");
   }
