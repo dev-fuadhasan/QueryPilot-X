@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, PolarAngleAxis, PolarGrid, Radar, RadarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Activity, ArrowRight, BarChart3, CheckCircle2, ChevronLeft, CircleDot, Columns3, Database, Gauge, LineChart as LineChartIcon, LoaderCircle, PieChart as PieChartIcon, Scan, Sigma, Table2, X, Search, type LucideIcon } from "lucide-react";
+import { Activity, ArrowRight, BarChart3, CheckCircle2, ChevronLeft, Database, LoaderCircle, X, Search } from "lucide-react";
+import ChartTypeGlyph from "./ChartTypeGlyph";
 import SpecialVisual, { specialCharts } from "./SpecialVisuals";
 import type { CustomAggregation, CustomChart, CustomPanelData, CustomPanelSpec, DashboardFilter } from "../lib/intelligence";
 
@@ -15,7 +16,6 @@ type ChartItem = {
   description: string;
   mode: ChartMode;
   group: ChartGroup;
-  icon: LucideIcon;
 };
 type Props = {
   table: string;
@@ -28,44 +28,44 @@ type Props = {
 };
 
 const chartOptions: ChartItem[] = [
- {value:"bar",label:"Horizontal bar",description:"Rank categories",mode:"category",group:"Comparison",icon:BarChart3},
- {value:"column",label:"Column chart",description:"Compare category values",mode:"category",group:"Comparison",icon:Columns3},
- {value:"grouped_bar",label:"Grouped bars",description:"Compare two category fields",mode:"twoDim",group:"Comparison",icon:BarChart3},
- {value:"stacked_bar",label:"Stacked bars",description:"Category totals and parts",mode:"twoDim",group:"Comparison",icon:Columns3},
- {value:"stacked_100",label:"100% stacked",description:"Relative proportions",mode:"twoDim",group:"Comparison",icon:BarChart3},
- {value:"bullet",label:"Bullet chart",description:"Actual versus target",mode:"single",group:"Comparison",icon:Gauge},
- {value:"lollipop",label:"Lollipop",description:"Minimal dot ranking",mode:"category",group:"Comparison",icon:CircleDot},
- {value:"line",label:"Line chart",description:"Month-to-month trends",mode:"time",group:"Trends",icon:LineChartIcon},
- {value:"area",label:"Area chart",description:"Trend and volume",mode:"time",group:"Trends",icon:LineChartIcon},
- {value:"stacked_area",label:"Stacked area",description:"Trends split by category",mode:"timeSeries",group:"Trends",icon:Activity},
- {value:"sparkline",label:"Sparkline",description:"Compact time series",mode:"time",group:"Trends",icon:LineChartIcon},
- {value:"combo",label:"Bar + line combo",description:"Compare two metrics",mode:"time",group:"Trends",icon:BarChart3},
- {value:"pie",label:"Pie chart",description:"Shares across categories",mode:"category",group:"Part-to-whole",icon:PieChartIcon},
- {value:"donut",label:"Donut chart",description:"Category contribution",mode:"category",group:"Part-to-whole",icon:CircleDot},
- {value:"treemap",label:"Treemap",description:"Space by relative size",mode:"category",group:"Part-to-whole",icon:Columns3},
- {value:"waffle",label:"Waffle chart",description:"100-square percentages",mode:"category",group:"Part-to-whole",icon:Columns3},
- {value:"histogram",label:"Histogram",description:"Numeric distribution",mode:"distribution",group:"Distribution",icon:Columns3},
- {value:"box",label:"Box plot",description:"Quartiles and outliers",mode:"distribution",group:"Distribution",icon:BarChart3},
- {value:"violin",label:"Violin plot",description:"Distribution shape",mode:"distribution",group:"Distribution",icon:LineChartIcon},
- {value:"density",label:"Density plot",description:"Smoothed distribution",mode:"distribution",group:"Distribution",icon:Activity},
- {value:"scatter",label:"Scatter plot",description:"Two numeric variables",mode:"scatter",group:"Relationship",icon:CircleDot},
- {value:"bubble",label:"Bubble chart",description:"X, Y and marker size",mode:"scatter",group:"Relationship",icon:CircleDot},
- {value:"heatmap",label:"Heatmap",description:"Values across two fields",mode:"twoDim",group:"Relationship",icon:Columns3},
- {value:"correlation",label:"Correlation matrix",description:"Pearson relationships",mode:"multi",group:"Relationship",icon:BarChart3},
- {value:"kpi",label:"KPI number",description:"Headline numeric metric",mode:"single",group:"KPIs",icon:Sigma},
- {value:"gauge",label:"Gauge",description:"Metric on a target scale",mode:"single",group:"KPIs",icon:Gauge},
- {value:"progress",label:"Progress bar",description:"Progress toward target",mode:"single",group:"KPIs",icon:BarChart3},
- {value:"thermometer",label:"Thermometer",description:"Goal or quota progress",mode:"single",group:"KPIs",icon:Activity},
- {value:"funnel",label:"Funnel",description:"Stage size breakdown",mode:"category",group:"Flow",icon:Activity},
- {value:"waterfall",label:"Waterfall",description:"Signed contributions",mode:"category",group:"Flow",icon:Columns3},
- {value:"sankey",label:"Sankey-style flow",description:"Links across two fields",mode:"twoDim",group:"Flow",icon:Activity},
- {value:"slope",label:"Slope chart",description:"Values between periods",mode:"timeSeries",group:"Ranking",icon:LineChartIcon},
- {value:"bump",label:"Bump chart",description:"Rank evolution",mode:"timeSeries",group:"Ranking",icon:LineChartIcon},
- {value:"radar",label:"Radar",description:"Category value profile",mode:"category",group:"Multi-dimensional",icon:Scan},
- {value:"parallel",label:"Parallel coordinates",description:"Compare numeric fields",mode:"multi",group:"Multi-dimensional",icon:Sigma},
- {value:"network",label:"Network graph",description:"Category relationships",mode:"twoDim",group:"Multi-dimensional",icon:Scan},
- {value:"table",label:"Data table",description:"Detailed grouped values",mode:"category",group:"Tables",icon:Table2},
- {value:"pivot",label:"Pivot table",description:"Two-field summary table",mode:"twoDim",group:"Tables",icon:Table2}
+ {value:"bar",label:"Horizontal bar",description:"Rank categories",mode:"category",group:"Comparison"},
+ {value:"column",label:"Column chart",description:"Compare category values",mode:"category",group:"Comparison"},
+ {value:"grouped_bar",label:"Grouped bars",description:"Compare two category fields",mode:"twoDim",group:"Comparison"},
+ {value:"stacked_bar",label:"Stacked bars",description:"Category totals and parts",mode:"twoDim",group:"Comparison"},
+ {value:"stacked_100",label:"100% stacked",description:"Relative proportions",mode:"twoDim",group:"Comparison"},
+ {value:"bullet",label:"Bullet chart",description:"Actual versus target",mode:"single",group:"Comparison"},
+ {value:"lollipop",label:"Lollipop",description:"Minimal dot ranking",mode:"category",group:"Comparison"},
+ {value:"line",label:"Line chart",description:"Month-to-month trends",mode:"time",group:"Trends"},
+ {value:"area",label:"Area chart",description:"Trend and volume",mode:"time",group:"Trends"},
+ {value:"stacked_area",label:"Stacked area",description:"Trends split by category",mode:"timeSeries",group:"Trends"},
+ {value:"sparkline",label:"Sparkline",description:"Compact time series",mode:"time",group:"Trends"},
+ {value:"combo",label:"Bar + line combo",description:"Compare two metrics",mode:"time",group:"Trends"},
+ {value:"pie",label:"Pie chart",description:"Shares across categories",mode:"category",group:"Part-to-whole"},
+ {value:"donut",label:"Donut chart",description:"Category contribution",mode:"category",group:"Part-to-whole"},
+ {value:"treemap",label:"Treemap",description:"Space by relative size",mode:"category",group:"Part-to-whole"},
+ {value:"waffle",label:"Waffle chart",description:"100-square percentages",mode:"category",group:"Part-to-whole"},
+ {value:"histogram",label:"Histogram",description:"Numeric distribution",mode:"distribution",group:"Distribution"},
+ {value:"box",label:"Box plot",description:"Quartiles and outliers",mode:"distribution",group:"Distribution"},
+ {value:"violin",label:"Violin plot",description:"Distribution shape",mode:"distribution",group:"Distribution"},
+ {value:"density",label:"Density plot",description:"Smoothed distribution",mode:"distribution",group:"Distribution"},
+ {value:"scatter",label:"Scatter plot",description:"Two numeric variables",mode:"scatter",group:"Relationship"},
+ {value:"bubble",label:"Bubble chart",description:"X, Y and marker size",mode:"scatter",group:"Relationship"},
+ {value:"heatmap",label:"Heatmap",description:"Values across two fields",mode:"twoDim",group:"Relationship"},
+ {value:"correlation",label:"Correlation matrix",description:"Pearson relationships",mode:"multi",group:"Relationship"},
+ {value:"kpi",label:"KPI number",description:"Headline numeric metric",mode:"single",group:"KPIs"},
+ {value:"gauge",label:"Gauge",description:"Metric on a target scale",mode:"single",group:"KPIs"},
+ {value:"progress",label:"Progress bar",description:"Progress toward target",mode:"single",group:"KPIs"},
+ {value:"thermometer",label:"Thermometer",description:"Goal or quota progress",mode:"single",group:"KPIs"},
+ {value:"funnel",label:"Funnel",description:"Stage size breakdown",mode:"category",group:"Flow"},
+ {value:"waterfall",label:"Waterfall",description:"Signed contributions",mode:"category",group:"Flow"},
+ {value:"sankey",label:"Sankey-style flow",description:"Links across two fields",mode:"twoDim",group:"Flow"},
+ {value:"slope",label:"Slope chart",description:"Values between periods",mode:"timeSeries",group:"Ranking"},
+ {value:"bump",label:"Bump chart",description:"Rank evolution",mode:"timeSeries",group:"Ranking"},
+ {value:"radar",label:"Radar",description:"Category value profile",mode:"category",group:"Multi-dimensional"},
+ {value:"parallel",label:"Parallel coordinates",description:"Compare numeric fields",mode:"multi",group:"Multi-dimensional"},
+ {value:"network",label:"Network graph",description:"Category relationships",mode:"twoDim",group:"Multi-dimensional"},
+ {value:"table",label:"Data table",description:"Detailed grouped values",mode:"category",group:"Tables"},
+ {value:"pivot",label:"Pivot table",description:"Two-field summary table",mode:"twoDim",group:"Tables"}
 ];
 const chartGroups: ChartGroup[] = ["Comparison","Trends","Part-to-whole","Distribution","Relationship","KPIs","Flow","Ranking","Multi-dimensional","Tables"];
 function compatible(option:ChartItem,fields:Fields):string|null {
@@ -132,6 +132,8 @@ export default function VisualPanelBuilder({table,filters,initialSpec,initialWid
   const [error,setError]=useState("");
   const requestRef=useRef<AbortController|null>(null);
   const closeRef=useRef<HTMLButtonElement|null>(null);
+  const scrollRef=useRef<HTMLDivElement|null>(null);
+  const [step,setStep]=useState<"gallery"|"configure">(initialSpec?.chart?"configure":"gallery");
   const filterKey=JSON.stringify(filters);
 
   useEffect(()=>{
@@ -215,6 +217,15 @@ export default function VisualPanelBuilder({table,filters,initialSpec,initialWid
     setChosenMetrics(fields.metrics.slice(0,next.value==="parallel"?3:2));
     setAggregation("sum");
     setCustomTitle(next.label+" · "+table);
+    setStep("configure");
+    scrollRef.current?.scrollTo({top:0,behavior:"auto"});
+  }
+
+  function returnToGallery() {
+    requestRef.current?.abort();
+    setValidating(false);
+    setStep("gallery");
+    scrollRef.current?.scrollTo({top:0,behavior:"auto"});
   }
 
   async function validate() {
@@ -263,21 +274,22 @@ export default function VisualPanelBuilder({table,filters,initialSpec,initialWid
 
   return <div className="qp-visual-overlay" role="presentation">
     <button type="button" className="qp-visual-backdrop" aria-label="Close visualization builder" onClick={onClose}/>
-    <aside className="qp-visual-drawer" role="dialog" aria-modal="true" aria-labelledby="qp-visual-title">
+    <aside className={"qp-visual-drawer"+(step==="configure"?" qp-visual-drawer-config":"")} role="dialog" aria-modal="true" aria-labelledby="qp-visual-title">
       <header className="qp-visual-header">
-        <div className="qp-visual-header-icon"><BarChart3 size={19}/></div>
+        {step==="configure" ? <button type="button" className="qp-visual-back" onClick={returnToGallery} aria-label="Back to chart gallery"><ChevronLeft size={21}/></button> :
+          <div className="qp-visual-header-icon"><BarChart3 size={19}/></div>}
         <div className="qp-visual-header-copy">
           <span>VISUAL BUILDER</span>
-          <h2 id="qp-visual-title">{initialSpec?"Edit visualization":"Add visualization"}</h2>
+          <h2 id="qp-visual-title">{step==="configure" ? (initialSpec?"Edit ":"Customize ")+(selected?.label||"chart") : "Choose a visualization"}</h2>
           <p><Database size={12}/> {table}</p>
         </div>
         <button ref={closeRef} className="qp-visual-close" type="button" onClick={onClose} aria-label="Close builder"><X size={18}/></button>
       </header>
 
-      <div className="qp-visual-scroll">
+      <div className="qp-visual-scroll" ref={scrollRef}>
         {schemaError && <div className="qp-visual-error" role="alert">{schemaError}<button type="button" onClick={()=>setReload(value=>value+1)}>Retry</button></div>}
         {!fields && !schemaError && <div className="qp-visual-loading" role="status"><LoaderCircle size={19} className="spinning"/> Checking compatible dataset fields…</div>}
-        {fields && <>
+        {fields && step==="gallery" && <>
           <div className="qp-visual-section-heading">
             <div><span className="qp-visual-step">01</span><h3>Choose a visualization</h3></div>
             <p>Options are checked against the selected dataset.</p>
@@ -293,20 +305,24 @@ export default function VisualPanelBuilder({table,filters,initialSpec,initialWid
           <div className="qp-visual-gallery">
             {visibleCharts.map(option=>{
               const unavailable=compatible(option,fields);
-              const Icon=option.icon;
               return <button key={option.value} type="button" disabled={Boolean(unavailable)} title={unavailable||option.description}
                 className={"qp-visual-option"+(chart===option.value?" selected":"")} onClick={()=>chooseChart(option)}
                 aria-pressed={chart===option.value}>
-                <span className="qp-visual-option-icon"><Icon size={20} strokeWidth={1.8}/></span>
+                <span className="qp-visual-option-icon"><ChartTypeGlyph chart={option.value} size={36}/></span>
                 <strong>{option.label}</strong>
                 <small>{unavailable||option.description}</small>
               </button>;
             })}
           </div>
           {!visibleCharts.length&&<p className="qp-visual-guidance">No chart types match that search. Try another category.</p>}
-          {!chart && <div className="qp-visual-guidance"><CheckCircle2 size={16}/> Select a chart above to configure its dataset fields.</div>}
-
-          {chart && selected && <>
+          <div className="qp-visual-guidance"><CheckCircle2 size={16}/> Choose a chart to open its setup. You can return to this gallery at any time.</div>
+        </>}
+          {fields && step==="configure" && chart && selected && <>
+            <div className="qp-visual-selected-card">
+              <span className="qp-visual-selected-icon"><ChartTypeGlyph chart={chart} size={44}/></span>
+              <div><strong>{selected.label}</strong><p>{selected.description}</p></div>
+              <button type="button" className="qp-visual-change-link" onClick={returnToGallery}>Change</button>
+            </div>
             <div className="qp-visual-section-heading qp-visual-config-heading"><div><span className="qp-visual-step">02</span><h3>Configure your data</h3></div><p>Only compatible fields are offered.</p></div>
             <div className="qp-visual-fields">
               {needsAxis && <label className="qp-visual-field"><span>{primaryIsDate?"X axis · Date / time":"X axis · Category"}</span>
@@ -382,14 +398,13 @@ export default function VisualPanelBuilder({table,filters,initialSpec,initialWid
             {error && <div className="qp-visual-error" role="alert"><span>{error}</span><small>Change the X/Y fields, calculation, chart type or filters and try again.</small></div>}
             {filters.length>0 && <p className="qp-visual-filter-note">Current dashboard filters ({filters.length}) will also apply to this visualization.</p>}
           </>}
-        </>}
       </div>
       <footer className="qp-visual-footer">
         <button type="button" className="qp-visual-cancel" onClick={onClose}>Cancel</button>
-        {chart && fields ? <>
+        {step==="configure" && chart && fields ? <>
           <button type="button" className="qp-visual-preview-button" disabled={!canPreview||validating} onClick={()=>void validate()}>{validating?<LoaderCircle size={15} className="spinning"/>:<Activity size={15}/>} {validating?"Validating…":"Preview"}</button>
           <button type="button" className="qp-visual-add-button" disabled={!canAdd} title={atLimit&&!initialSpec?"Maximum 12 dashboard panels":!preview?"Validate a preview first":"Add the chart"} onClick={addPanel}>{initialSpec?"Update panel":"Add to dashboard"} <ArrowRight size={16}/></button>
-        </>:<span className="qp-visual-footer-hint"><ChevronLeft size={14}/> Select a chart to continue</span>}
+        </>:<span className="qp-visual-footer-hint"><ArrowRight size={14}/> Choose a chart to configure</span>}
       </footer>
     </aside>
   </div>;

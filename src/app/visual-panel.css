@@ -619,3 +619,134 @@
 .qp-viz-thermometer small{color:#2F4A63;font-size:11px}
 @media(max-width:620px){.qp-visual-available-count{display:none}.qp-visual-searchline{width:100%}.qp-viz-matrix{font-size:10px}}
 @media(prefers-reduced-motion:reduce){.qp-viz-progress-track>div{transition:none}}
+
+
+/* Two-step chart creation. The gallery never pushes configuration below itself. */
+.qp-visual-drawer-config {
+  width:min(590px,100vw);
+}
+.qp-visual-back {
+  display:grid;
+  flex:0 0 40px;
+  width:40px;
+  height:40px;
+  place-items:center;
+  border:1px solid #D9E4EA;
+  border-radius:11px;
+  color:#2F4A63;
+  background:#fff;
+  cursor:pointer;
+  transition:background .16s ease,border-color .16s ease;
+}
+.qp-visual-back:hover {
+  background:#CFEAE0;
+  border-color:#5B91A3;
+}
+.qp-visual-back:focus-visible,
+.qp-visual-change-link:focus-visible {
+  outline:2px solid #5B91A3;
+  outline-offset:2px;
+}
+.qp-visual-drawer .qp-visual-option {
+  min-height:118px;
+  padding:15px;
+  gap:6px;
+}
+.qp-visual-drawer .qp-visual-option-icon {
+  width:49px;
+  height:49px;
+  margin-bottom:6px;
+  border:1px solid rgba(91,145,163,.15);
+  border-radius:12px;
+  background:rgba(207,234,224,.48);
+  display:grid;
+  place-items:center;
+  color:#131B2B;
+}
+.qp-visual-drawer .qp-visual-option.selected .qp-visual-option-icon {
+  background:#CFEAE0;
+}
+.qp-visual-drawer .qp-visual-option-icon svg {
+  display:block;
+  width:37px;
+  height:37px;
+}
+.qp-visual-selected-card {
+  display:grid;
+  grid-template-columns:62px minmax(0,1fr) auto;
+  gap:14px;
+  align-items:center;
+  min-height:88px;
+  margin:0 0 20px;
+  padding:12px 14px;
+  border:1px solid rgba(91,145,163,.20);
+  border-radius:15px;
+  background:rgba(207,234,224,.22);
+}
+.qp-visual-selected-icon {
+  display:grid;
+  place-items:center;
+  width:60px;
+  height:60px;
+  border-radius:12px;
+  border:1px solid rgba(91,145,163,.2);
+  background:#fff;
+}
+.qp-visual-selected-icon svg {
+  display:block;
+}
+.qp-visual-selected-card>div {
+  min-width:0;
+}
+.qp-visual-selected-card strong {
+  display:block;
+  color:#131B2B;
+  font-size:14px;
+  font-weight:750;
+  line-height:1.35;
+}
+.qp-visual-selected-card p {
+  margin:5px 0 0;
+  color:#2F4A63;
+  font-size:11px;
+  line-height:1.45;
+}
+.qp-visual-change-link {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:33px;
+  padding:8px 10px;
+  border:1px solid #D9E4EA;
+  border-radius:9px;
+  color:#2F4A63;
+  background:#fff;
+  font-size:11px;
+  font-weight:750;
+}
+.qp-visual-change-link:hover {
+  border-color:#5B91A3;
+  background:#CFEAE0;
+}
+.qp-visual-drawer-config .qp-visual-config-heading {
+  padding-top:0;
+  margin-top:0;
+  border-top:0;
+}
+.qp-visual-drawer-config .qp-visual-preview-box {
+  min-height:170px;
+}
+.qp-visual-drawer-config .qp-visual-scroll {
+  scroll-behavior:auto;
+}
+@media(max-width:620px) {
+  .qp-visual-drawer-config {width:100vw;}
+  .qp-visual-drawer .qp-visual-option {min-height:104px;padding:12px;}
+  .qp-visual-selected-card {grid-template-columns:52px minmax(0,1fr);gap:10px;padding:11px;}
+  .qp-visual-selected-icon {width:52px;height:52px;}
+  .qp-visual-selected-icon svg {width:40px;height:40px;}
+  .qp-visual-selected-card .qp-visual-change-link {grid-column:2;justify-self:start;}
+}
+@media(prefers-reduced-motion:reduce) {
+  .qp-visual-back {transition:none;}
+}
