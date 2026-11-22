@@ -43,7 +43,7 @@ export type DashboardPanel = {
   spec?: CustomPanelSpec;
 };
 
-export type CustomChart = "kpi" | "bar" | "line" | "area" | "pie" | "table";
+export type CustomChart = "kpi" | "gauge" | "bullet" | "progress" | "thermometer" | "bar" | "column" | "grouped_bar" | "stacked_bar" | "stacked_100" | "lollipop" | "line" | "area" | "stacked_area" | "sparkline" | "combo" | "pie" | "donut" | "treemap" | "waffle" | "radar" | "histogram" | "box" | "density" | "violin" | "scatter" | "bubble" | "heatmap" | "correlation" | "funnel" | "waterfall" | "slope" | "bump" | "parallel" | "network" | "sankey" | "table" | "pivot";
 export type CustomAggregation = "count" | "sum" | "average" | "min" | "max";
 export type CustomPanelSpec = {
   chart: CustomChart;
@@ -55,8 +55,24 @@ export type CustomPanelSpec = {
   description: string;
   resultLimit?: number;
   sortDirection?: "asc" | "desc";
+  gaugeMin?: number;
+  gaugeMax?: number;
+  secondDimension?: string | null;
+  secondaryMetric?: string | null;
+  xMetric?: string | null;
+  sizeMetric?: string | null;
+  metrics?: string[];
 };
-export type CustomPanelPoint = { label: string; value: number; records: number };
-export type CustomPanelData = { points: CustomPanelPoint[]; total: number | null; sql: string };
+export type CustomPanelPoint = { label: string; value: number; records: number; secondValue?: number };
+export type VisualCell = { label: string; series: string; value: number; records: number };
+export type VisualSample = { x: number; y?: number; size?: number; values?: number[] };
+export type CustomPanelData = {
+  points: CustomPanelPoint[];
+  total: number | null;
+  sql: string;
+  cells?: VisualCell[];
+  samples?: VisualSample[];
+  columns?: string[];
+};
 
 export type DashboardFilter = { column: string; value: string };

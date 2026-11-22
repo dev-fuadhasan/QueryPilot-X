@@ -2,10 +2,11 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Activity, ArrowDown, ArrowUp, BarChart3, Check, Database, Download, Expand, GripVertical, LineChart as LineChartIcon, LoaderCircle, Pencil, PieChart as PieChartIcon, Plus, RotateCcw, Save, Sigma, Table2, Trash2, Sparkles, AlertCircle, CheckCircle2, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, BarChart3, Check, Database, Download, Expand, GripVertical, LineChart as LineChartIcon, LoaderCircle, Pencil, PieChart as PieChartIcon, Plus, RotateCcw, Save, Sigma, Table2, Trash2, Sparkles, AlertCircle, CheckCircle2, X, LayoutGrid, Settings2 } from "lucide-react";
 import CustomPanelView from "./CustomPanelView";
+import VisualPanelBuilder from "./VisualPanelBuilder";
 import { CategoryTick, ChartCategoryLegend, FullCategoryLabels, ScrollableChart, categoryAxisWidth } from "./ReadableCharts";
-import type { DashboardFilter, DashboardPanel, DashboardPanelKind, GroupPoint, InvestigationBundle, OverviewData, TrendPoint } from "../lib/intelligence";
+import type { CustomPanelSpec, DashboardFilter, DashboardPanel, DashboardPanelKind, GroupPoint, InvestigationBundle, OverviewData, TrendPoint } from "../lib/intelligence";
 
 type Props = {
   bundle: InvestigationBundle;
@@ -54,6 +55,8 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
   const [customPrompt, setCustomPrompt] = useState("");
   const [customTitle, setCustomTitle] = useState("");
   const [creating, setCreating] = useState(false);
+  const [visualOpen, setVisualOpen] = useState(false);
+  const [editingVisualId, setEditingVisualId] = useState<string | null>(null);
   const [toast, setToast] = useState<{message:string;type:"error"|"success"}|null>(null);
   const [loaded, setLoaded] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -81,7 +84,7 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
             const good: DashboardPanel[] = item.panels.filter(panel =>
               panel && panel.id !== "metrics" && typeof panel.id === "string" && typeof panel.title === "string" &&
               (panelKinds.some(kind => kind.value === panel.kind) ||
-                (panel.kind === "custom" && panel.spec && typeof panel.spec.title === "string" && ["kpi","bar","line","area","pie","table"].includes(panel.spec.chart))) &&
+                (panel.kind === "custom" && panel.spec && typeof panel.spec.title === "string" && ["kpi","gauge","bullet","progress","thermometer","bar","column","grouped_bar","stacked_bar","stacked_100","lollipop","line","area","stacked_area","sparkline","combo","pie","donut","treemap","waffle","radar","histogram","box","density","violin","scatter","bubble","heatmap","correlation","funnel","waterfall","slope","bump","parallel","network","sankey","table","pivot"].includes(panel.spec.chart))) &&
               ["bar", "line", "area", "pie"].includes(panel.chart) &&
               typeof panel.wide === "boolean"
             ).slice(0, 12);
@@ -189,6 +192,25 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
       setToast({type:"error",message:problem instanceof Error ? problem.message : "Unable to create panel."});
     } finally { setCreating(false); }
   }
+  function openVisualBuilder(id: string | null = null) {
+    setEditingVisualId(id);
+    setVisualOpen(true);
+  }
+  function saveVisualPanel(spec: CustomPanelSpec, wide: boolean) {
+    if (!editingVisualId && panels.length >= 12) {
+      setToast({type:"error",message:"Maximum 12 panels. Remove one before adding another visualization."});
+      return;
+    }
+    if (editingVisualId) {
+      setPanels(current=>current.map(panel=>panel.id===editingVisualId ? {...panel,kind:"custom" as const,spec,title:spec.title,wide,chart:"bar" as const} : panel));
+    } else {
+      setPanels(current=>[...current,{id:"visual-"+Date.now()+"-"+Math.random().toString(36).slice(2,7),
+        kind:"custom" as const,spec,title:spec.title,wide,chart:"bar" as const}]);
+    }
+    setVisualOpen(false);
+    setEditingVisualId(null);
+    setToast({type:"success",message:editingVisualId?"Visualization updated.":"Visualization added to your dashboard."});
+  }
   function saveDashboardTitle() {
     const value = draftTitle.trim();
     if (!value) {
@@ -213,6 +235,8 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
     setTitle("Dashboard");
     setDraftTitle("Dashboard");
     setEditingTitle(false);
+    setVisualOpen(false);
+    setEditingVisualId(null);
     onChangeFilters([]);
     setToast({type:"success",message:"Dashboard layout and filters reset."});
   }
@@ -316,6 +340,7 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
         <button type="button" onClick={saveLayout}><Save size={15}/> Save layout</button>
         <button type="button" onClick={() => window.print()}><Download size={15}/> Print / PDF</button>
         <button type="button" onClick={resetLayout}><RotateCcw size={15}/> Reset</button>
+        <button type="button" className="qp-open-visual-builder" onClick={()=>openVisualBuilder()}><LayoutGrid size={16}/> Add visualization <Plus size={15}/></button>
       </div>
     </div>
     <section className="qp-snapshot-card" aria-label="Performance snapshot and filters">
@@ -384,6 +409,7 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
           </div>
           <div className="qp-panel-actions">
             <span className="qp-panel-drag-hint" aria-label="Drag to reorder" title="Drag to reorder"><GripVertical size={15}/></span>
+            {panel.kind === "custom" && panel.spec && <button type="button" title="Edit visualization" aria-label="Edit visualization" onClick={()=>openVisualBuilder(panel.id)}><Settings2 size={15}/></button>}
             {(panel.kind === "trend" || panel.kind === "drivers") && <select aria-label="Chart type" value={panel.chart} onChange={event => editPanel(panel.id,{chart:event.target.value as DashboardPanel["chart"]})}>
               {panel.kind === "trend" ? <><option value="line">Line</option><option value="area">Area</option></> : <option value="bar">Bars</option>}
             </select>}
@@ -396,6 +422,12 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
         {renderPanel(panel)}
       </article>)}
     </div>
+    {visualOpen && <VisualPanelBuilder key={plan.table+":"+(editingVisualId||"new")} table={plan.table} filters={filters}
+      initialSpec={editingVisualId ? panels.find(panel=>panel.id===editingVisualId)?.spec||null : null}
+      initialWide={Boolean(editingVisualId && panels.find(panel=>panel.id===editingVisualId)?.wide)}
+      atLimit={panels.length>=12}
+      onClose={()=>{setVisualOpen(false);setEditingVisualId(null);}}
+      onSave={saveVisualPanel}/>}
     <form className="qp-custom-create" onSubmit={createCustomPanel}>
       <div className="qp-custom-heading"><Sparkles size={18}/><strong>Create your own panel</strong></div>
       <input aria-label="Custom panel title" placeholder="Panel title (optional)" maxLength={65}

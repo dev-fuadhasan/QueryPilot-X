@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import "./landing.css";
 import "./ask-ai.css";
+import "./visual-panel.css";
 
 export const metadata: Metadata = {
   title: "QueryPilot",
