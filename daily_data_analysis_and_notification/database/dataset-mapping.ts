@@ -1,3 +1,6 @@
+import type { DomainTableUnderstanding, TableProfile } from "../profiler/types";
+import { toLegacySalesMapping, understandTableForDomain } from "../profiler/semantic-detector";
+
 export type DatasetMapping = {
   orderId: string;
   orderDate: string;
@@ -72,5 +75,44 @@ export function availableMetricsForMapping(mapping: Partial<DatasetMapping>): st
     ...(mapping.discount ? ["totalDiscounts"] : []),
     ...(mapping.rating ? ["averageCustomerRating"] : [])
   ];
+}
+
+export function detectSalesDatasetFromProfile(
+  tableProfile: TableProfile,
+  overrides: Partial<DatasetMapping> = {}
+): {
+  mapping: Partial<DatasetMapping>;
+  understanding: DomainTableUnderstanding;
+  availableMetrics: string[];
+} {
+  const roleOverrides: Record<string, string> = {};
+  const mapOverride = (legacyKey: keyof DatasetMapping, role: string) => {
+    const value = overrides[legacyKey];
+    if (typeof value === "string" && value.trim()) roleOverrides[role] = value.trim();
+  };
+  mapOverride("orderId", "orderId");
+  mapOverride("orderDate", "transactionDate");
+  mapOverride("product", "product");
+  mapOverride("category", "category");
+  mapOverride("quantity", "quantity");
+  mapOverride("revenue", "revenue");
+  mapOverride("cost", "cost");
+  mapOverride("profit", "profit");
+  mapOverride("discount", "discount");
+  mapOverride("status", "status");
+  mapOverride("gender", "gender");
+  mapOverride("region", "region");
+  mapOverride("rating", "rating");
+
+  const understanding = understandTableForDomain(tableProfile, "sales_ecommerce", {
+    isSelectedDomain: true,
+    overrides: roleOverrides
+  });
+  const mapping = toLegacySalesMapping(understanding);
+  return {
+    mapping,
+    understanding,
+    availableMetrics: availableMetricsForMapping(mapping)
+  };
 }
 
