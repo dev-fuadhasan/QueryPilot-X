@@ -1,0 +1,388 @@
+/* QueryPilot Ask AI: scoped, responsive workspace polish */
+.qp-unified-shell.qp-chat-mode > .qp-studio-content > .analysis-canvas {
+  background: #F7F9FB;
+}
+
+.qp-unified-shell .canvas-results.qp-chat-results {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  padding: 24px clamp(16px, 2.5vw, 34px) 26px;
+  background: #F7F9FB;
+}
+
+.qp-chat-results > .qp-chat-results-heading {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  padding: 0 0 22px;
+  margin: 0;
+  gap: 0;
+  background: transparent;
+  border: 0;
+}
+
+.qp-chat-results .qp-chat-heading-group {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.qp-chat-results .qp-chat-heading-eyebrow {
+  display: block;
+  margin: 0 0 9px;
+  color: #5B91A3;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  line-height: 1.4;
+}
+
+.qp-chat-results .qp-chat-heading-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px 14px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.qp-chat-results .qp-chat-heading-row h2 {
+  flex: 0 0 auto;
+  margin: 0;
+  color: #131B2B;
+  font-size: clamp(22px, 2vw, 27px);
+  line-height: 1.24;
+  font-weight: 750;
+  letter-spacing: -.75px;
+}
+
+.qp-chat-results .qp-chat-heading-row .qp-chat-source {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  width: auto;
+  max-width: min(100%, 300px);
+  min-width: 0;
+  margin: 0;
+  padding: 6px 10px;
+  gap: 7px;
+  border: 1px solid rgba(91,145,163,.16);
+  border-radius: 9px;
+  background: rgba(207,234,224,.45);
+  color: #2F4A63;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.4;
+  overflow: hidden;
+}
+
+.qp-chat-results .qp-chat-source svg {
+  flex: 0 0 14px;
+  color: #5B91A3;
+}
+
+.qp-chat-results .qp-chat-source > span {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qp-chat-results .qp-chat-empty {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 275px;
+  margin: 0;
+  padding: clamp(24px, 4vw, 52px);
+  gap: 0;
+  border: 1px solid #E1E8EE;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 3px 14px rgba(19,27,43,.025);
+}
+
+.qp-chat-results .qp-chat-empty-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 440px;
+  text-align: center;
+}
+
+.qp-chat-results .qp-chat-empty-symbol {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 0 18px;
+  border: 1px solid rgba(91,145,163,.16);
+  border-radius: 16px;
+  background: rgba(207,234,224,.56);
+  color: #5B91A3;
+}
+
+.qp-chat-results .qp-chat-empty h3 {
+  margin: 0 0 8px;
+  color: #131B2B;
+  font-size: 20px;
+  letter-spacing: -.4px;
+  font-weight: 740;
+  line-height: 1.35;
+}
+
+.qp-chat-results .qp-chat-empty p {
+  max-width: 355px;
+  margin: 0;
+  color: #2F4A63;
+  font-size: 12px;
+  line-height: 1.75;
+}
+
+.qp-chat-results .qp-chat-empty-highlights {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 19px;
+}
+
+.qp-chat-results .qp-chat-empty-highlights span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 5px 9px;
+  border: 1px solid #E1E8EE;
+  border-radius: 7px;
+  background: #F7F9FB;
+  color: #2F4A63;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.qp-chat-results .qp-chat-analysis-results {
+  width: 100%;
+  min-width: 0;
+}
+
+.qp-chat-results .qp-chat-analysis-results:empty {
+  display: none;
+}
+
+/* Chat composer: send button is physically inside the input boundary. */
+.qp-chat-mode .ai-chat.qp-chat-sidebar {
+  min-width: 0;
+  background: #fff;
+}
+
+.qp-chat-sidebar .ai-chat-history {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 20px 18px;
+}
+
+.qp-chat-sidebar .chat-greeting {
+  padding: 17px 16px 18px;
+  margin: 0 0 16px;
+  border: 1px solid #E1E8EE;
+  border-radius: 15px;
+  background: rgba(207,234,224,.22);
+}
+
+.qp-chat-sidebar .chat-greeting h3 {
+  margin: 12px 0 6px;
+  color: #131B2B;
+  font-size: 14px;
+}
+
+.qp-chat-sidebar .chat-greeting p {
+  margin: 0;
+  color: #2F4A63;
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.qp-chat-sidebar .ai-chat-form.qp-chat-composer {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  margin-top: auto;
+  padding: 15px 16px 13px;
+  border-top: 1px solid #E1E8EE;
+  background: #fff;
+}
+
+.qp-chat-sidebar .qp-chat-composer-box {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #D7E2EA;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 2px 9px rgba(19,27,43,.025);
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+
+.qp-chat-sidebar .qp-chat-composer-box:focus-within {
+  border-color: #5B91A3;
+  box-shadow: 0 0 0 3px rgba(91,145,163,.12);
+}
+
+.qp-chat-sidebar .qp-chat-composer-box textarea,
+.qp-chat-sidebar .qp-chat-composer-box textarea:focus {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 121px;
+  min-height: 121px;
+  max-height: 170px;
+  margin: 0;
+  padding: 15px 15px 53px;
+  border: 0;
+  border-radius: 15px;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: #131B2B;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: none;
+}
+
+.qp-chat-sidebar .qp-chat-composer-box textarea::placeholder {
+  color: #2F4A63;
+  opacity: .64;
+}
+
+.qp-chat-sidebar .qp-chat-composer-status {
+  position: absolute;
+  left: 14px;
+  bottom: 15px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 76px);
+  color: #5B91A3;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.3;
+  pointer-events: none;
+}
+
+.qp-chat-sidebar .qp-chat-composer-status svg {
+  flex-shrink: 0;
+}
+
+.qp-chat-sidebar .qp-chat-send-button {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 37px;
+  width: 37px;
+  height: 37px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: #2F4A63;
+  color: #fff;
+  cursor: pointer;
+  transition: background .18s ease, transform .18s ease;
+}
+
+.qp-chat-sidebar .qp-chat-send-button:hover:not(:disabled) {
+  background: #131B2B;
+  transform: translateY(-1px);
+}
+
+.qp-chat-sidebar .qp-chat-send-button:disabled {
+  background: #CFEAE0;
+  color: #2F4A63;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+.qp-chat-sidebar .qp-chat-send-button:focus-visible {
+  outline: 2px solid #5B91A3;
+  outline-offset: 3px;
+}
+
+.qp-chat-sidebar .qp-chat-composer-hint {
+  margin: 9px 2px 0;
+  color: #2F4A63;
+  opacity: .72;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+/* Mobile: make the input easy to reach before navigating long results. */
+@media (max-width: 780px) {
+  .qp-unified-shell.qp-chat-mode > .qp-studio-content > .ai-chat.qp-chat-sidebar {
+    grid-column: 1;
+    grid-row: 1;
+    margin: 12px 12px 16px;
+  }
+  .qp-unified-shell.qp-chat-mode > .qp-studio-content > .analysis-canvas {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .qp-unified-shell .canvas-results.qp-chat-results {
+    min-height: 360px;
+    padding: 18px 14px 24px;
+  }
+  .qp-chat-results .qp-chat-empty {
+    min-height: 260px;
+    padding: 24px 18px;
+  }
+  .qp-chat-sidebar .ai-chat-form.qp-chat-composer {
+    padding: 12px 13px 14px;
+  }
+}
+
+@media (max-width: 420px) {
+  .qp-chat-results .qp-chat-heading-row {
+    gap: 8px;
+  }
+  .qp-chat-results .qp-chat-heading-row .qp-chat-source {
+    max-width: 100%;
+  }
+  .qp-chat-results .qp-chat-empty {
+    border-radius: 16px;
+  }
+  .qp-chat-sidebar .ai-chat-history {
+    padding: 15px 13px;
+  }
+  .qp-chat-sidebar .qp-chat-composer-box textarea,
+  .qp-chat-sidebar .qp-chat-composer-box textarea:focus {
+    height: 110px;
+    min-height: 110px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qp-chat-sidebar .qp-chat-composer-box,
+  .qp-chat-sidebar .qp-chat-send-button {
+    transition: none;
+  }
+  .qp-chat-sidebar .qp-chat-send-button:hover:not(:disabled) {
+    transform: none;
+  }
+}
