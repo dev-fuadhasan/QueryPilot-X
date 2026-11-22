@@ -167,6 +167,17 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
         tokenHints: ["rating", "star", "review"],
         negativeTokens: ["credit", "risk", "fraud", "nps"],
         valueConstraints: { min: 0, max: 5 }
+      },
+      {
+        role: "channel",
+        label: "Sales Channel",
+        description: "Channel or storefront where the sale occurred (Web, POS, Mobile, Marketplace).",
+        required: false,
+        expectedCategories: ["categorical", "text"],
+        aliases: ["sales_channel", "channel", "storefront", "order_channel", "marketplace", "source_channel"],
+        tokenHints: ["channel", "storefront", "marketplace"],
+        negativeTokens: ["payment", "shipping", "carrier"],
+        valueConstraints: { preferLowCardinality: true }
       }
     ],
     expectedRelationships: [
@@ -345,6 +356,29 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
           preferLowCardinality: true,
           expectedTokens: ["in stock", "low stock", "out of stock", "backorder", "backordered", "discontinued", "active"]
         }
+      },
+      {
+        role: "movementType",
+        label: "Movement Type",
+        description: "Distinguishes stock movement rows (inbound, outbound, adjustment, sale) from snapshots.",
+        required: false,
+        expectedCategories: ["categorical", "text"],
+        aliases: ["movement_type", "stock_movement_type", "transaction_type", "adjustment_type"],
+        tokenHints: ["movement", "adjustment"],
+        valueConstraints: {
+          preferLowCardinality: true,
+          expectedTokens: ["in", "out", "inbound", "outbound", "received", "shipped", "sale", "adjustment", "return"]
+        }
+      },
+      {
+        role: "quantitySold",
+        label: "Units Sold / Consumed",
+        description: "Historical units sold or consumed for turnover and days-of-inventory calculations.",
+        required: false,
+        expectedCategories: ["numeric"],
+        aliases: ["units_sold", "quantity_sold", "sold_qty", "consumption_qty", "daily_demand", "demand_qty"],
+        tokenHints: ["sold", "demand", "consumption"],
+        valueConstraints: { min: 0 }
       }
     ],
     expectedRelationships: [
@@ -641,6 +675,25 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
         genericAliases: ["status"],
         tokenHints: ["status", "approval"],
         valueConstraints: { preferLowCardinality: true, expectedTokens: ["paid", "approved", "pending", "rejected", "reimbursed", "void", "posted"] }
+      },
+      {
+        role: "operatingExpense",
+        label: "Operating Expense (OpEx)",
+        description: "Explicit operating expense amount.",
+        required: false,
+        expectedCategories: ["numeric"],
+        aliases: ["operating_expense", "operating_expenses", "opex", "operating_cost"],
+        tokenHints: ["opex", "operating"],
+        negativeTokens: ["income", "revenue", "budget"]
+      },
+      {
+        role: "dueDate",
+        label: "Due Date",
+        description: "Payment due date for receivables or payables overdue tracking.",
+        required: false,
+        expectedCategories: ["temporal", "text"],
+        aliases: ["due_date", "payment_due_date", "invoice_due_date", "maturity_date"],
+        tokenHints: ["due", "maturity"]
       }
     ],
     expectedRelationships: [
@@ -683,10 +736,10 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
         description: "Date the customer signed up, converted, or was updated.",
         required: true,
         expectedCategories: ["temporal", "text"],
-        aliases: ["signup_date", "joined_at", "registered_at", "customer_since", "acquisition_date", "created_date", "last_activity_at", "close_date"],
+        aliases: ["signup_date", "joined_at", "registered_at", "customer_since", "acquisition_date", "created_date", "close_date"],
         genericAliases: ["created_at", "date", "timestamp"],
-        tokenHints: ["signup", "joined", "registered", "acquisition", "activity", "close", "created", "date"],
-        negativeTokens: ["birth", "dob"]
+        tokenHints: ["signup", "joined", "registered", "acquisition", "close", "created", "date"],
+        negativeTokens: ["birth", "dob", "last_activity", "last_seen", "last_active"]
       },
       {
         role: "segment",
@@ -771,6 +824,25 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
         aliases: ["region", "country", "city", "state", "territory", "market"],
         tokenHints: ["region", "country", "city", "territory", "market"],
         valueConstraints: { preferLowCardinality: true }
+      },
+      {
+        role: "lastActivityDate",
+        label: "Last Activity Date",
+        description: "Most recent customer interaction or purchase date.",
+        required: false,
+        expectedCategories: ["temporal", "text"],
+        aliases: ["last_activity_at", "last_seen_at", "last_active_at", "last_order_date", "last_purchase_date"],
+        tokenHints: ["last_activity", "last_seen", "last_active", "last_order"]
+      },
+      {
+        role: "totalSpent",
+        label: "Actual Customer Spend",
+        description: "Verified cumulative or transaction spend per customer (used for actual CLV & RFM).",
+        required: false,
+        expectedCategories: ["numeric"],
+        aliases: ["total_spent", "cumulative_revenue", "actual_clv", "order_amount", "purchase_amount", "spend_amount"],
+        tokenHints: ["spent", "purchase_amount", "cumulative_revenue"],
+        negativeTokens: ["deal", "pipeline", "cost", "discount"]
       }
     ],
     expectedRelationships: [
@@ -814,10 +886,48 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
         description: "Timestamp of dispatch, shipment, or operational ticket.",
         required: true,
         expectedCategories: ["temporal", "text"],
-        aliases: ["shipped_at", "ship_date", "dispatch_date", "fulfillment_date", "delivered_at", "delivery_date", "opened_at", "resolved_at"],
+        aliases: ["shipped_at", "ship_date", "dispatch_date", "fulfillment_date", "delivery_date", "opened_at", "resolved_at"],
         genericAliases: ["created_at", "date", "timestamp"],
-        tokenHints: ["ship", "dispatch", "fulfillment", "deliver", "opened", "resolved", "date", "time"],
-        negativeTokens: ["birth", "dob"]
+        tokenHints: ["ship", "dispatch", "fulfillment", "opened", "resolved", "date"],
+        negativeTokens: ["birth", "dob", "promised", "expected", "delivered", "order_created", "packed"]
+      },
+      {
+        role: "orderCreatedAt",
+        label: "Order Created Timestamp",
+        description: "Timestamp when the order entered fulfillment.",
+        required: false,
+        expectedCategories: ["temporal", "text"],
+        aliases: ["order_created_at", "ordered_at", "placed_at", "received_at"],
+        tokenHints: ["order_created", "placed", "ordered"],
+        negativeTokens: ["delivered", "shipped", "promised"]
+      },
+      {
+        role: "packedAt",
+        label: "Packed / Processed Timestamp",
+        description: "Timestamp when order packing or processing completed.",
+        required: false,
+        expectedCategories: ["temporal", "text"],
+        aliases: ["packed_at", "processed_at", "ready_to_ship_at"],
+        tokenHints: ["packed", "processed"]
+      },
+      {
+        role: "deliveredAt",
+        label: "Delivered Timestamp",
+        description: "Timestamp when shipment was actually delivered.",
+        required: false,
+        expectedCategories: ["temporal", "text"],
+        aliases: ["delivered_at", "actual_delivery_at", "completed_at"],
+        tokenHints: ["delivered", "actual_delivery"],
+        negativeTokens: ["promised", "expected", "sla"]
+      },
+      {
+        role: "promisedDate",
+        label: "Promised / SLA Delivery Date",
+        description: "Expected or SLA-promised delivery timestamp.",
+        required: false,
+        expectedCategories: ["temporal", "text"],
+        aliases: ["promised_date", "promised_delivery_at", "expected_delivery_at", "sla_due_at", "estimated_delivery_at"],
+        tokenHints: ["promised", "expected_delivery", "sla_due"]
       },
       {
         role: "orderId",
@@ -892,6 +1002,17 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
         valueConstraints: { preferLowCardinality: true }
       },
       {
+        role: "region",
+        label: "Destination Region",
+        description: "Delivery region, zone, city, or country.",
+        required: false,
+        expectedCategories: ["categorical", "text"],
+        aliases: ["region", "destination_region", "delivery_region", "zone", "city", "country"],
+        tokenHints: ["region", "destination", "zone", "city"],
+        negativeTokens: ["warehouse", "origin"],
+        valueConstraints: { preferLowCardinality: true }
+      },
+      {
         role: "shippingCost",
         label: "Shipping / Fulfillment Cost",
         description: "Cost to ship or fulfill the order.",
@@ -956,7 +1077,7 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
         aliases: ["event_timestamp", "event_time", "occurred_at", "activity_at", "logged_at", "session_start", "started_at", "event_date"],
         genericAliases: ["created_at", "timestamp", "date"],
         tokenHints: ["event", "occurred", "activity", "logged", "session", "started", "timestamp", "time"],
-        negativeTokens: ["birth", "dob", "expiry"]
+        negativeTokens: ["birth", "dob", "expiry", "churned", "cancelled", "canceled"]
       },
       {
         role: "eventId",
@@ -1039,14 +1160,72 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
         tokenHints: ["error", "failed", "success"]
       },
       {
+        role: "activationFlag",
+        label: "Activation Flag",
+        description: "Explicit boolean indicating user onboarding/activation completion.",
+        required: false,
+        expectedCategories: ["boolean"],
+        aliases: ["is_activated", "activated", "onboarding_completed", "activation_flag"],
+        tokenHints: ["activated", "onboarding"]
+      },
+      {
+        role: "subscriptionId",
+        label: "Subscription ID",
+        description: "Identifier for a recurring SaaS subscription.",
+        required: false,
+        expectedCategories: ["identifier", "text", "numeric"],
+        aliases: ["subscription_id", "sub_id"],
+        tokenHints: ["subscription"]
+      },
+      {
+        role: "subscriptionStatus",
+        label: "Subscription Status",
+        description: "Lifecycle state of a SaaS subscription (Active, Trialing, Cancelled, Churned).",
+        required: false,
+        expectedCategories: ["categorical", "text"],
+        aliases: ["subscription_status", "sub_status", "billing_status"],
+        tokenHints: ["subscription_status", "sub_status"],
+        valueConstraints: { preferLowCardinality: true, expectedTokens: ["active", "trialing", "cancelled", "canceled", "churned", "past_due", "expired"] }
+      },
+      {
+        role: "billingInterval",
+        label: "Billing Interval",
+        description: "Billing cadence distinguishing recurring (monthly, annual) from one-time charges.",
+        required: false,
+        expectedCategories: ["categorical", "text"],
+        aliases: ["billing_interval", "billing_cycle", "plan_interval", "charge_type"],
+        tokenHints: ["interval", "cycle"],
+        valueConstraints: { preferLowCardinality: true, expectedTokens: ["monthly", "annual", "yearly", "quarterly", "one_time", "one-time"] }
+      },
+      {
         role: "mrr",
         label: "MRR / Recurring Revenue",
-        description: "Monthly recurring revenue associated with the account.",
+        description: "Monthly recurring revenue associated with the subscription.",
         required: false,
         expectedCategories: ["numeric"],
-        aliases: ["mrr", "monthly_recurring_revenue", "subscription_amount", "plan_revenue"],
+        aliases: ["mrr", "monthly_recurring_revenue", "recurring_revenue", "plan_mrr"],
         tokenHints: ["mrr", "recurring"],
+        negativeTokens: ["one_time", "annual", "arr"],
         valueConstraints: { min: 0 }
+      },
+      {
+        role: "arr",
+        label: "ARR / Annual Recurring Revenue",
+        description: "Annual recurring revenue associated with the subscription.",
+        required: false,
+        expectedCategories: ["numeric"],
+        aliases: ["arr", "annual_recurring_revenue", "plan_arr"],
+        tokenHints: ["arr", "annual_recurring"],
+        valueConstraints: { min: 0 }
+      },
+      {
+        role: "churnedAt",
+        label: "Churned / Cancelled Timestamp",
+        description: "Timestamp when a subscription was cancelled or churned.",
+        required: false,
+        expectedCategories: ["temporal", "text"],
+        aliases: ["churned_at", "cancelled_at", "canceled_at", "ended_at"],
+        tokenHints: ["churned", "cancelled", "canceled"]
       }
     ],
     expectedRelationships: [
