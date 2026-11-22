@@ -5,12 +5,12 @@
 
 .qp-unified-shell .canvas-results.qp-chat-results {
   display: flex;
-  flex: 1 0 auto;
+  flex: 0 0 auto;
   flex-direction: column;
   width: 100%;
   min-width: 0;
-  min-height: 100%;
-  padding: 24px clamp(16px, 2.5vw, 34px) 26px;
+  min-height: 0;
+  padding: 13px clamp(16px, 2.3vw, 30px) 20px;
   background: #F7F9FB;
 }
 
@@ -21,7 +21,7 @@
   justify-content: flex-start;
   width: 100%;
   min-width: 0;
-  padding: 0 0 22px;
+  padding: 0 0 11px;
   margin: 0;
   gap: 0;
   background: transparent;
@@ -35,9 +35,9 @@
 
 .qp-chat-results .qp-chat-heading-eyebrow {
   display: block;
-  margin: 0 0 9px;
+  margin: 0 0 5px;
   color: #5B91A3;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
   letter-spacing: 1.5px;
   line-height: 1.4;
@@ -57,7 +57,7 @@
   flex: 0 0 auto;
   margin: 0;
   color: #131B2B;
-  font-size: clamp(22px, 2vw, 27px);
+  font-size: clamp(21px, 1.65vw, 24px);
   line-height: 1.24;
   font-weight: 750;
   letter-spacing: -.75px;
@@ -71,7 +71,7 @@
   max-width: min(100%, 300px);
   min-width: 0;
   margin: 0;
-  padding: 6px 10px;
+  padding: 5px 9px;
   gap: 7px;
   border: 1px solid rgba(91,145,163,.16);
   border-radius: 9px;
@@ -99,14 +99,14 @@
 
 .qp-chat-results .qp-chat-empty {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   width: 100%;
   min-width: 0;
-  min-height: 275px;
+  min-height: 205px;
   margin: 0;
-  padding: clamp(24px, 4vw, 52px);
+  padding: 23px 20px;
   gap: 0;
   border: 1px solid #E1E8EE;
   border-radius: 20px;
@@ -345,12 +345,12 @@
     grid-row: 2;
   }
   .qp-unified-shell .canvas-results.qp-chat-results {
-    min-height: 360px;
-    padding: 18px 14px 24px;
+    min-height: 0;
+    padding: 12px 14px 22px;
   }
   .qp-chat-results .qp-chat-empty {
-    min-height: 260px;
-    padding: 24px 18px;
+    min-height: 190px;
+    padding: 22px 16px;
   }
   .qp-chat-sidebar .ai-chat-form.qp-chat-composer {
     padding: 12px 13px 14px;
@@ -384,5 +384,214 @@
   }
   .qp-chat-sidebar .qp-chat-send-button:hover:not(:disabled) {
     transform: none;
+  }
+}
+
+
+/* Shared Studio subheader: identical geometry on Dashboard, Ask AI and Datasets.
+   Keep these selectors independent of which tab is active. */
+.smart-workspace.qp-unified-shell > .canvas-top,
+.smart-workspace.qp-unified-shell.qp-chat-mode > .canvas-top {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr);
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  width: 100%;
+  height: 96px;
+  min-height: 96px;
+  max-height: 96px;
+  margin: 0;
+  padding: 17px clamp(20px, 2.3vw, 36px);
+  gap: 16px;
+  background: #fff;
+  border-bottom: 1px solid #E1E8EE;
+  flex-wrap: nowrap;
+}
+
+.smart-workspace.qp-unified-shell > .canvas-top .canvas-heading,
+.smart-workspace.qp-unified-shell.qp-chat-mode > .canvas-top .canvas-heading {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  gap: 5px;
+}
+
+.smart-workspace.qp-unified-shell > .canvas-top .canvas-heading h1 {
+  margin: 0;
+  color: #131B2B;
+  font-size: 18px;
+  font-weight: 740;
+  line-height: 1.25;
+  letter-spacing: -.5px;
+}
+
+.smart-workspace.qp-unified-shell > .canvas-top .canvas-heading p {
+  overflow: hidden;
+  max-width: 100%;
+  margin: 0;
+  color: #5B91A3;
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.smart-workspace.qp-unified-shell > .canvas-top .canvas-controls,
+.smart-workspace.qp-unified-shell.qp-chat-mode > .canvas-top .canvas-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  flex: 0 1 auto;
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  gap: 12px;
+}
+
+.smart-workspace.qp-unified-shell > .canvas-top .canvas-scope {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  gap: 9px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.smart-workspace.qp-unified-shell > .canvas-top .canvas-scope label {
+  flex: 0 0 auto;
+  color: #2F4A63;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.smart-workspace.qp-unified-shell > .canvas-top .canvas-scope select {
+  box-sizing: border-box;
+  flex: 0 1 auto;
+  width: 146px;
+  min-width: 104px;
+  max-width: 100%;
+  height: 39px;
+  padding: 0 10px;
+  border: 1px solid #D9E4EA;
+  border-radius: 10px;
+  background: #fff;
+  color: #131B2B;
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+
+.smart-workspace.qp-unified-shell > .canvas-top .canvas-tabs,
+.smart-workspace.qp-unified-shell.qp-chat-mode > .canvas-top .canvas-tabs {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 4px;
+  gap: 3px;
+  border-radius: 12px;
+  background: #EDF2F6;
+}
+
+.smart-workspace.qp-unified-shell > .canvas-top .canvas-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: 35px;
+  min-height: 35px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 9px;
+  color: #2F4A63;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+  gap: 7px;
+}
+
+.smart-workspace.qp-unified-shell > .canvas-top .canvas-tabs button.selected {
+  color: #fff;
+  background: #2F4A63;
+}
+
+.smart-workspace.qp-unified-shell > .canvas-top .canvas-tabs button svg {
+  flex: 0 0 auto;
+}
+
+/* Once the layout cannot fit side by side, use the same two-row header
+   across every tab. Only viewport width controls this switch. */
+@media (max-width: 1040px) {
+  .smart-workspace.qp-unified-shell > .canvas-top,
+  .smart-workspace.qp-unified-shell.qp-chat-mode > .canvas-top {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    height: auto;
+    min-height: 112px;
+    max-height: none;
+    padding: 15px 20px;
+    gap: 11px;
+  }
+  .smart-workspace.qp-unified-shell > .canvas-top .canvas-controls,
+  .smart-workspace.qp-unified-shell.qp-chat-mode > .canvas-top .canvas-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 620px) {
+  .smart-workspace.qp-unified-shell > .canvas-top,
+  .smart-workspace.qp-unified-shell.qp-chat-mode > .canvas-top {
+    min-height: 114px;
+    padding: 13px 16px;
+    gap: 11px;
+  }
+  .smart-workspace.qp-unified-shell > .canvas-top .canvas-controls,
+  .smart-workspace.qp-unified-shell.qp-chat-mode > .canvas-top .canvas-controls {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 9px;
+  }
+  .smart-workspace.qp-unified-shell > .canvas-top .canvas-scope {
+    width: auto;
+    flex: 1 1 100%;
+  }
+  .smart-workspace.qp-unified-shell > .canvas-top .canvas-scope select {
+    flex: 1 1 auto;
+    max-width: 260px;
+  }
+  .smart-workspace.qp-unified-shell > .canvas-top .canvas-tabs,
+  .smart-workspace.qp-unified-shell.qp-chat-mode > .canvas-top .canvas-tabs {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+  .smart-workspace.qp-unified-shell > .canvas-top .canvas-tabs button {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 7px;
+    gap: 5px;
+  }
+}
+
+@media (max-width: 390px) {
+  .smart-workspace.qp-unified-shell > .canvas-top .canvas-tabs button {
+    font-size: 10px;
+    padding: 0 4px;
+    gap: 4px;
+  }
+  .smart-workspace.qp-unified-shell > .canvas-top .canvas-tabs button svg {
+    width: 14px;
+    height: 14px;
   }
 }
