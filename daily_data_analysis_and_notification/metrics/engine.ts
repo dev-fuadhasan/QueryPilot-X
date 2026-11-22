@@ -560,7 +560,12 @@ export async function runDynamicAnalysisWithExecutor(
   tableName: string,
   options: DynamicAnalysisOptions,
   precomputedTableProfile?: TableProfile
-): Promise<{ analysis: DynamicAnalysisResult; tableProfile: TableProfile; understanding: DomainTableUnderstanding }> {
+): Promise<{
+  analysis: DynamicAnalysisResult;
+  tableProfile: TableProfile;
+  understanding: DomainTableUnderstanding;
+  scopedRows: Array<Record<string, unknown>>;
+}> {
   const timezone = assertValidTimezone(options.timezone || DEFAULT_TIMEZONE);
   const period = buildPeriodWindow(options.periodStart, options.periodEnd, timezone);
   const comparison = resolveComparisonWindow(
@@ -601,7 +606,7 @@ export async function runDynamicAnalysisWithExecutor(
 
   if (tableProfile.isEmpty || !dateColumn || safeColumns.length === 0) {
     const analysis = assembleAnalysisResult(tableProfile, understanding, [], options, "scoped_records");
-    return { analysis, tableProfile, understanding };
+    return { analysis, tableProfile, understanding, scopedRows: [] };
   }
 
   const windowStart = computeHistoryStart(domainId, period, comparison);
@@ -635,7 +640,7 @@ export async function runDynamicAnalysisWithExecutor(
   }
 
   const analysis = assembleAnalysisResult(tableProfile, understanding, rows, options, executionMode, extraWarnings);
-  return { analysis, tableProfile, understanding };
+  return { analysis, tableProfile, understanding, scopedRows: rows };
 }
 
 export async function runDynamicAnalysisForSession(
