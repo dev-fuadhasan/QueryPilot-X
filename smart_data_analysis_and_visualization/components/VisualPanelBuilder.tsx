@@ -353,7 +353,7 @@ export default function VisualPanelBuilder({table,filters,initialSpec,initialWid
               <label className="qp-visual-field qp-visual-field-full"><span>Panel title</span>
                 <input maxLength={65} value={customTitle} onChange={event=>setCustomTitle(event.target.value)} placeholder={defaultTitle}/>
               </label>
-              {(needsAxis || mode==="twoDim") && <><label className="qp-visual-field"><span>{primaryIsDate?"Periods":"Category limit"}</span>
+              {needsAxis && <><label className="qp-visual-field"><span>{primaryIsDate?"Periods":"Category limit"}</span>
                 <select value={resultLimit} onChange={event=>setResultLimit(Number(event.target.value))}>
                   {[...new Set([5,10,12,15,20,24,30,initialSpec?.resultLimit||10])].sort((a,b)=>a-b).map(count=><option key={count} value={count}>{count}</option>)}
                 </select>
