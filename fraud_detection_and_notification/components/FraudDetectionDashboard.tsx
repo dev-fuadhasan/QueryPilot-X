@@ -17,11 +17,20 @@ import {
   Clock,
   Filter,
   AlertTriangle,
+  ShieldAlert,
+  Cloud,
+  UploadCloud,
+  Flame,
   Play,
   Pause
 } from "lucide-react";
-import type { ChangeNotification } from "../types";
+import type { ChangeNotification, BusinessProfileType } from "../types";
 import { exportChangeNotificationsToCSV } from "../notification-service";
+import { evaluateChangeRisk, type RiskSeverity } from "../risk-engine";
+import { BUSINESS_PROFILES, detectBestProfile } from "../business-profiles";
+import IncidentForensicModal from "./IncidentForensicModal";
+import CloudArchivesModal from "./CloudArchivesModal";
+import SimulationStudioModal from "./SimulationStudioModal";
 
 const SNAPSHOT_KEY = "qp_table_snapshot_v2";
 const HISTORY_KEY = "qp_change_notifications_v2";
@@ -81,8 +90,20 @@ export default function FraudDetectionDashboard() {
   // Monitored tables and primary keys discovered
   const [monitoredTables, setMonitoredTables] = useState<string[]>([]);
   const [selectedTable, setSelectedTable] = useState<string>("ALL");
+  const [selectedSeverity, setSelectedSeverity] = useState<string>("ALL");
+  const [selectedProfile, setSelectedProfile] = useState<BusinessProfileType>("universal");
+  const [detectionSensitivity, setDetectionSensitivity] = useState<"low" | "medium" | "high">("medium");
   const [searchQuery, setSearchQuery] = useState("");
   const [primaryKeyMap, setPrimaryKeyMap] = useState<Record<string, string>>({});
+  const [activeForensicIncident, setActiveForensicIncident] = useState<ChangeNotification | null>(null);
+
+  // Supabase Cloud Storage States
+  const [showCloudArchives, setShowCloudArchives] = useState(false);
+  const [archivingToCloud, setArchivingToCloud] = useState(false);
+  const [cloudArchiveNotice, setCloudArchiveNotice] = useState<string | null>(null);
+
+  // Live Incident Simulation Studio State
+  const [showSimulationStudio, setShowSimulationStudio] = useState(false);
 
   // Change Notifications List
   const [notifications, setNotifications] = useState<ChangeNotification[]>([]);
@@ -117,8 +138,26 @@ export default function FraudDetectionDashboard() {
       if (stored) {
         const parsed = JSON.parse(stored) as ChangeNotification[];
         if (Array.isArray(parsed)) {
-          setNotifications(parsed);
-          parsed.forEach((item) => {
+          const enriched = parsed.map((item) => {
+            if (!item.riskAssessment) {
+              const assessment = evaluateChangeRisk(
+                item.tableName,
+                item.columnName,
+                item.oldValue,
+                item.newValue,
+                item.timestamp
+              );
+              return {
+                ...item,
+                riskScore: assessment.score,
+                riskSeverity: assessment.severity,
+                riskAssessment: assessment,
+              };
+            }
+            return item;
+          });
+          setNotifications(enriched);
+          enriched.forEach((item) => {
             if (item.id) seenHashesRef.current.add(item.id);
           });
         }
@@ -173,6 +212,12 @@ export default function FraudDetectionDashboard() {
 
         const newTables: string[] = data.tables || [];
         setMonitoredTables(newTables);
+        if (newTables.length > 0 && selectedProfile === "universal") {
+          const auto = detectBestProfile(newTables);
+          if (auto !== "universal") {
+            setSelectedProfile(auto);
+          }
+        }
 
         const pks: Record<string, string> = data.primaryKeys || {};
         setPrimaryKeyMap(pks);
@@ -194,6 +239,15 @@ export default function FraudDetectionDashboard() {
           
           if (!seenHashesRef.current.has(stableAuditId)) {
             seenHashesRef.current.add(stableAuditId);
+            const risk = evaluateChangeRisk(
+              ac.tableName,
+              ac.columnName,
+              ac.oldValue,
+              ac.newValue,
+              ac.changedAt || nowIso,
+              selectedProfile,
+              detectionSensitivity
+            );
             detectedChanges.push({
               id: stableAuditId,
               tableName: ac.tableName,
@@ -206,6 +260,9 @@ export default function FraudDetectionDashboard() {
               changeType: ac.eventType || "UPDATE",
               reason: `Audited update on "${ac.columnName}": "${String(ac.oldValue)}" → "${String(ac.newValue)}".`,
               isRead: false,
+              riskScore: risk.score,
+              riskSeverity: risk.severity,
+              riskAssessment: risk,
             });
           }
         }
@@ -259,6 +316,15 @@ export default function FraudDetectionDashboard() {
 
                   if (!seenHashesRef.current.has(changeId)) {
                     seenHashesRef.current.add(changeId);
+                    const risk = evaluateChangeRisk(
+                      tableName,
+                      colName,
+                      oldVal,
+                      curVal,
+                      nowIso,
+                      selectedProfile,
+                      detectionSensitivity
+                    );
                     detectedChanges.push({
                       id: changeId,
                       tableName,
@@ -271,6 +337,9 @@ export default function FraudDetectionDashboard() {
                       changeType: "UPDATE",
                       reason: `Field "${colName}" changed from "${strOld}" to "${strCur}".`,
                       isRead: false,
+                      riskScore: risk.score,
+                      riskSeverity: risk.severity,
+                      riskAssessment: risk,
                     });
                   }
                 }
@@ -282,6 +351,15 @@ export default function FraudDetectionDashboard() {
 
               if (!seenHashesRef.current.has(insertId)) {
                 seenHashesRef.current.add(insertId);
+                const risk = evaluateChangeRisk(
+                  tableName,
+                  "Record Insert",
+                  null,
+                  cur,
+                  nowIso,
+                  selectedProfile,
+                  detectionSensitivity
+                );
                 detectedChanges.push({
                   id: insertId,
                   tableName,
@@ -294,6 +372,9 @@ export default function FraudDetectionDashboard() {
                   changeType: "INSERT",
                   reason: `New record #${rowId} was inserted into "${tableName}".`,
                   isRead: false,
+                  riskScore: risk.score,
+                  riskSeverity: risk.severity,
+                  riskAssessment: risk,
                 });
               }
             }
@@ -402,6 +483,12 @@ export default function FraudDetectionDashboard() {
       if (selectedTable !== "ALL" && item.tableName !== selectedTable) {
         return false;
       }
+      if (selectedSeverity !== "ALL") {
+        const itemSev = item.riskSeverity || item.riskAssessment?.severity || "LOW";
+        if (itemSev !== selectedSeverity) {
+          return false;
+        }
+      }
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matches =
@@ -415,7 +502,7 @@ export default function FraudDetectionDashboard() {
       }
       return true;
     });
-  }, [notifications, selectedTable, searchQuery]);
+  }, [notifications, selectedTable, selectedSeverity, searchQuery]);
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
 
@@ -430,6 +517,80 @@ export default function FraudDetectionDashboard() {
     a.download = `querypilot-data-changes-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  // Archive to Supabase Cloud Storage
+  const handleArchiveToCloud = async () => {
+    if (notifications.length === 0) {
+      alert("No notifications available to archive.");
+      return;
+    }
+    setArchivingToCloud(true);
+    try {
+      const now = new Date();
+      const reportPayload = {
+        reportId: `fraud_audit_${Date.now()}`,
+        generatedAt: now.toISOString(),
+        totalRecordedEvents: notifications.length,
+        monitoredDatasets: monitoredTables,
+        severityBreakdown: {
+          critical: notifications.filter(
+            (n) => (n.riskSeverity || n.riskAssessment?.severity) === "CRITICAL"
+          ).length,
+          high: notifications.filter(
+            (n) => (n.riskSeverity || n.riskAssessment?.severity) === "HIGH"
+          ).length,
+          medium: notifications.filter(
+            (n) => (n.riskSeverity || n.riskAssessment?.severity) === "MEDIUM"
+          ).length,
+          low: notifications.filter(
+            (n) => (n.riskSeverity || n.riskAssessment?.severity) === "LOW"
+          ).length,
+        },
+        incidents: notifications,
+      };
+
+      const fileContent = JSON.stringify(reportPayload, null, 2);
+      const filename = `fraud_audit_report_${now.toISOString().replace(/[:.]/g, "-")}.json`;
+      const blob = new Blob([fileContent], { type: "application/json" });
+
+      const formData = new FormData();
+      formData.append("file", blob, filename);
+      formData.append("category", "reports");
+
+      const res = await fetch("/api/storage/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setCloudArchiveNotice(
+          `☁️ Report archived to Supabase Storage: ${data.file?.filename || filename}`
+        );
+        setTimeout(() => setCloudArchiveNotice(null), 6000);
+      } else {
+        alert(data.error || "Failed to archive report to Supabase Storage.");
+      }
+    } catch {
+      alert("Error uploading report to cloud storage.");
+    } finally {
+      setArchivingToCloud(false);
+    }
+  };
+
+  // Inject Simulated Incident from Simulation Studio
+  const handleInjectSimulatedIncident = (incident: ChangeNotification) => {
+    seenHashesRef.current.add(incident.id);
+    setNotifications((prev) => {
+      const combined = [incident, ...prev];
+      persistNotifications(combined);
+      return combined;
+    });
+    setNewAlertNotice(
+      `🚨 Incident Injected: ${incident.columnName} (${incident.riskSeverity})`
+    );
+    setTimeout(() => setNewAlertNotice(null), 5000);
   };
 
   return (
@@ -477,6 +638,36 @@ export default function FraudDetectionDashboard() {
 
           <button
             type="button"
+            className="secondary-button"
+            onClick={handleArchiveToCloud}
+            disabled={archivingToCloud || notifications.length === 0}
+            title="Archive tamper-evident audit report to private Supabase Storage"
+          >
+            <UploadCloud size={14} className={archivingToCloud ? "spinning" : undefined} />
+            {archivingToCloud ? "Archiving..." : "Archive to Cloud"}
+          </button>
+
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setShowCloudArchives(true)}
+            title="Browse reports archived in Supabase Storage"
+          >
+            <Cloud size={14} style={{ color: "#2563eb" }} /> Cloud Archives
+          </button>
+
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setShowSimulationStudio(true)}
+            style={{ color: "#e11d48", borderColor: "#fecdd3", background: "#fff1f2" }}
+            title="Launch Live Incident & Attack Simulation Studio for demonstration"
+          >
+            <Flame size={14} style={{ color: "#e11d48" }} /> Simulate Incident
+          </button>
+
+          <button
+            type="button"
             className="primary"
             style={{ minHeight: "38px", padding: "8px 16px" }}
             onClick={() => void checkForChanges(true)}
@@ -510,6 +701,28 @@ export default function FraudDetectionDashboard() {
         >
           <Bell size={16} />
           <span>{newAlertNotice}</span>
+        </div>
+      )}
+
+      {/* CLOUD ARCHIVE SUCCESS NOTICE */}
+      {cloudArchiveNotice && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            background: "#f0fdf4",
+            border: "1px solid #bbf7d0",
+            color: "#166534",
+            padding: "12px 18px",
+            borderRadius: "10px",
+            marginBottom: "20px",
+            fontSize: "12px",
+            fontWeight: 600,
+          }}
+        >
+          <Cloud size={16} />
+          <span>{cloudArchiveNotice}</span>
         </div>
       )}
 
@@ -591,6 +804,76 @@ export default function FraudDetectionDashboard() {
                   {t}
                 </option>
               ))}
+            </select>
+          </div>
+
+          {/* BUSINESS PROFILE SELECTOR */}
+          <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+            <Sparkles size={14} style={{ color: "#2563eb" }} />
+            <select
+              value={selectedProfile}
+              onChange={(e) => setSelectedProfile(e.target.value as BusinessProfileType)}
+              style={{
+                border: "1px solid #bfdbfe",
+                borderRadius: "8px",
+                padding: "7px 10px",
+                fontSize: "12px",
+                background: "#eff6ff",
+                color: "#1d4ed8",
+                fontWeight: 600,
+              }}
+              title="Select industry profile to adjust domain-specific detection heuristics"
+            >
+              <option value="universal">🌐 Universal Model</option>
+              <option value="ecommerce">🛒 E-Commerce & Retail</option>
+              <option value="fintech">💳 Fintech & Banking</option>
+              <option value="saas">⚡ SaaS & Subscriptions</option>
+              <option value="social_platform">👥 Social / Community</option>
+            </select>
+          </div>
+
+          {/* SENSITIVITY SELECTOR */}
+          <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+            <span style={{ fontSize: "11px", color: "#64748b", fontWeight: 600 }}>Tuning:</span>
+            <select
+              value={detectionSensitivity}
+              onChange={(e) => setDetectionSensitivity(e.target.value as "low" | "medium" | "high")}
+              style={{
+                border: "1px solid #e1e5e9",
+                borderRadius: "8px",
+                padding: "7px 10px",
+                fontSize: "12px",
+                background: "#fff",
+                color: "#25282d",
+              }}
+              title="Adjust anomaly detection threshold"
+            >
+              <option value="medium">⚖️ Balanced</option>
+              <option value="high">⚡ Aggressive</option>
+              <option value="low">🛡️ Strict</option>
+            </select>
+          </div>
+
+          {/* SEVERITY SELECTOR */}
+          <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+            <ShieldCheck size={14} style={{ color: "#79828d" }} />
+            <select
+              value={selectedSeverity}
+              onChange={(e) => setSelectedSeverity(e.target.value)}
+              style={{
+                border: "1px solid #e1e5e9",
+                borderRadius: "8px",
+                padding: "7px 10px",
+                fontSize: "12px",
+                background: "#fff",
+                color: "#25282d",
+              }}
+            >
+              <option value="ALL">All Severities</option>
+              <option value="CRITICAL">🔴 Critical Risk</option>
+              <option value="HIGH">🟠 High Risk</option>
+              <option value="MEDIUM">🟡 Medium Risk</option>
+              <option value="LOW">🟢 Low Risk</option>
             </select>
           </div>
 
@@ -736,9 +1019,65 @@ export default function FraudDetectionDashboard() {
                     >
                       {item.changeType}
                     </span>
+
+                    {/* RISK SEVERITY BADGE */}
+                    {(() => {
+                      const sev = (item.riskSeverity || item.riskAssessment?.severity || "LOW") as RiskSeverity;
+                      const score = item.riskScore ?? item.riskAssessment?.score ?? 15;
+                      const sevConfig = {
+                        CRITICAL: { bg: "#fef2f2", color: "#dc2626", border: "#fecaca" },
+                        HIGH: { bg: "#fff7ed", color: "#ea580c", border: "#fed7aa" },
+                        MEDIUM: { bg: "#fefce8", color: "#ca8a04", border: "#fef08a" },
+                        LOW: { bg: "#f0fdf4", color: "#16a34a", border: "#bbf7d0" },
+                      }[sev] || { bg: "#f0fdf4", color: "#16a34a", border: "#bbf7d0" };
+                      return (
+                        <span
+                          style={{
+                            fontSize: "10px",
+                            fontWeight: 800,
+                            padding: "2px 7px",
+                            borderRadius: "4px",
+                            background: sevConfig.bg,
+                            color: sevConfig.color,
+                            border: `1px solid ${sevConfig.border}`,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "4px",
+                          }}
+                        >
+                          <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: sevConfig.color }} />
+                          {sev} ({score})
+                        </span>
+                      );
+                    })()}
                   </div>
 
                   <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveForensicIncident(item);
+                      }}
+                      className="small-button"
+                      style={{
+                        padding: "3px 8px",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        background: "#f8fafc",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: "6px",
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "4px",
+                        color: "#334155",
+                      }}
+                      title="Open forensic analysis"
+                    >
+                      <ShieldAlert size={12} style={{ color: "#dc2626" }} /> Forensic
+                    </button>
+
                     {!item.isRead && (
                       <span
                         style={{
@@ -855,6 +1194,25 @@ export default function FraudDetectionDashboard() {
           </div>
         )}
       </div>
+
+      {/* FORENSIC INVESTIGATION MODAL */}
+      <IncidentForensicModal
+        incident={activeForensicIncident}
+        onClose={() => setActiveForensicIncident(null)}
+      />
+
+      {/* SUPABASE CLOUD ARCHIVES MODAL */}
+      <CloudArchivesModal
+        isOpen={showCloudArchives}
+        onClose={() => setShowCloudArchives(false)}
+      />
+
+      {/* LIVE ATTACK & INCIDENT SIMULATION STUDIO */}
+      <SimulationStudioModal
+        isOpen={showSimulationStudio}
+        onClose={() => setShowSimulationStudio(false)}
+        onInjectIncident={handleInjectSimulatedIncident}
+      />
     </div>
   );
 }

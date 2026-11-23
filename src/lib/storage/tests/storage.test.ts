@@ -202,7 +202,7 @@ async function runTests() {
     const originalEnv = process.env.NODE_ENV;
     try {
       // Simulate production environment
-      process.env.NODE_ENV = "production";
+      (process.env as Record<string, string | undefined>).NODE_ENV = "production";
 
       await assert.rejects(
         async () => {
@@ -218,7 +218,7 @@ async function runTests() {
       passed++;
       console.log("  ✔ 9. Production cloud safety: Cloud failure fails loudly and blocks silent local fallback.");
     } finally {
-      process.env.NODE_ENV = originalEnv;
+      (process.env as Record<string, string | undefined>).NODE_ENV = originalEnv;
     }
   }
 
