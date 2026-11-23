@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { addDays, generateAutomaticReport, generateAutomaticReportForDate, generateHistoricalReport, type HistoricalRange } from "@/../daily_data_analysis_and_notification/analysis-service";
 import { deriveOrganizationId, readDailyAnalysisSession } from "@/../daily_data_analysis_and_notification/api-helpers";
 import { createSupabaseSalesRepository, type DatasetSelection } from "@/../daily_data_analysis_and_notification/database/supabase-sales-repository";
-import { BUSINESS_DOMAIN_IDS, createSessionQueryExecutor, isValidIdentifier, type BusinessDomainId } from "@/../daily_data_analysis_and_notification/profiler";
+import {
+  BUSINESS_DOMAIN_IDS,
+  createSessionQueryExecutor,
+  isValidIdentifier,
+  profileConnectedDatabase,
+  type BusinessDomainId
+} from "@/../daily_data_analysis_and_notification/profiler";
 import { isValidIsoDate, type ComparisonPreset } from "@/../daily_data_analysis_and_notification/metrics";
 import {
   generateAndPersistManualReport,
@@ -167,6 +173,32 @@ export async function POST(request: NextRequest) {
       const organizationId = deriveOrganizationId(access.session);
       const repository = getPersistentReportRepository();
       const executor = createSessionQueryExecutor(access.session);
+
+      let earliestAvailableDate = typeof body.earliestAvailableDate === "string" && isValidIsoDate(body.earliestAvailableDate.trim())
+        ? body.earliestAvailableDate.trim()
+        : null;
+      let latestAvailableDate = typeof body.latestAvailableDate === "string" && isValidIsoDate(body.latestAvailableDate.trim())
+        ? body.latestAvailableDate.trim()
+        : null;
+
+      if (quickRange === "all_history" && (!earliestAvailableDate || !latestAvailableDate)) {
+        try {
+          const tableProfile = await profileConnectedDatabase(access.session, {
+            selectedDomain: domainId || null,
+            tableNames: [table]
+          });
+          const profiledTable = tableProfile.tables.find(t => t.name === table);
+          if (profiledTable?.freshness.earliestDate) {
+            earliestAvailableDate = earliestAvailableDate || profiledTable.freshness.earliestDate.slice(0, 10);
+          }
+          if (profiledTable?.freshness.latestDate) {
+            latestAvailableDate = latestAvailableDate || profiledTable.freshness.latestDate.slice(0, 10);
+          }
+        } catch {
+          // Proceed with safe defaults if freshness bounds cannot be pre-fetched
+        }
+      }
+
       const { record, downloadUrl } = await generateAndPersistManualReport({
         organizationId,
         ownerRef: access.session.projectName || access.session.projectRef || "authenticated_user",
@@ -179,7 +211,9 @@ export async function POST(request: NextRequest) {
         endDate: typeof body.endDate === "string" ? body.endDate : undefined,
         timezone: typeof body.timezone === "string" ? body.timezone : undefined,
         comparisonPreset: typeof body.comparisonPreset === "string" ? body.comparisonPreset as ComparisonPreset : undefined,
-        overrides: Object.keys(overrides).length ? overrides : undefined
+        overrides: Object.keys(overrides).length ? overrides : undefined,
+        earliestAvailableDate,
+        latestAvailableDate
       });
 
       return access.applyCookie(NextResponse.json(

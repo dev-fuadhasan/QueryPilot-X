@@ -1,703 +1,747 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertCircle,
-  AlertTriangle,
-  BarChart3,
-  Bell,
-  BellOff,
-  CalendarDays,
-  CheckCheck,
-  CheckCircle2,
+  ArrowLeft,
+  CalendarClock,
   Clock,
-  Database,
-  DollarSign,
-  Download,
-  FileSpreadsheet,
-  Info,
-  RefreshCw,
-  Settings2,
-  ShieldCheck,
-  SlidersHorizontal,
-  Star,
-  Trash2,
-  TrendingUp,
-  type LucideIcon
+  FileSpreadsheet
 } from "lucide-react";
-import type { AnalysisDimension, AnalysisReport } from "../types";
-import type { AnalysisSettings } from "../settings";
-import { detectDatasetColumns, type DatasetMapping } from "../database/dataset-mapping";
+import type { BusinessDomainId, DatabaseProfile } from "../profiler/types";
+import type { ComparisonPreset } from "../metrics/types";
+import type { ReportArchiveComparisonResult, UnifiedDailyAnalysisResult } from "../intelligence/types";
+import { DEFAULT_ALERT_RULES, sanitizeAlertRules, type AlertRules } from "../notifications";
+import type {
+  ManualQuickRange,
+  PersistentDailySettings,
+  PersistentReportRecord,
+  PersistentReportSummary,
+  ReportFrequency,
+  StorageCapabilityStatus
+} from "../storage/types";
+import type { ScheduleRuntimeSummary } from "../storage/schedule-provider";
 import {
-  DEFAULT_ALERT_RULES,
-  evaluateReportAlerts,
-  mergeAlerts,
-  sanitizeAlertRules,
-  type AlertRules,
-  type AlertSeverity,
-  type DailyReportAlert
-} from "../notifications";
-import { buildReportCsv, csvFilename } from "../export-csv";
-import type { Table } from "../../src/lib/database";
-import styles from "./DailyAnalysisNotifications.module.css";
+  createStaleResetSnapshot,
+  formatShortTimestamp,
+  mergeToolAlertsWithReadState,
+  type DashboardSectionTab
+} from "./dashboard-helpers";
+import DomainDatasetBar from "./DomainDatasetBar";
+import DailyReportPanel from "./DailyReportPanel";
+import ManualReportPanel from "./ManualReportPanel";
+import DailyToolsSection from "./DailyToolsSection";
+import styles from "./DailyAnalysisDashboard.module.css";
 
 type Props = { onBack: () => void };
-type DayMode = "daily" | "weekly" | "monthly" | "manual";
-type AlertFilter = "all" | "unread" | "issues" | "positive";
 
-const ALERTS_STORAGE_KEY = "querypilot.dailyAlerts";
-const ALERT_RULES_STORAGE_KEY = "querypilot.dailyAlertRules";
+const READ_ALERTS_KEY = "querypilot.dailyAnalysis.readAlertIds";
 
-const mappingFields = [
-  ["orderId", "Order ID"], ["orderDate", "Order date"], ["product", "Product"], ["category", "Category"],
-  ["quantity", "Quantity"], ["revenue", "Revenue / price"], ["cost", "Cost"], ["profit", "Profit"], ["discount", "Discount"],
-  ["status", "Order status"], ["gender", "Customer gender"], ["region", "Region"], ["rating", "Customer rating"]
-] as const;
-
-const money = (value: number) => value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const number = (value: number) => value.toLocaleString("en-US", { maximumFractionDigits: 2 });
-const displayMetric = (report: AnalysisReport, key: string, value: string) => !report.availableMetrics || report.availableMetrics.includes(key) ? value : "Unavailable";
-
-function currentClockInTimezone(timeZone: string) {
+function loadReadAlertIds(): Set<string> {
   try {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23"
-    }).formatToParts(new Date()).reduce<Record<string, string>>((acc, part) => {
-      if (part.type !== "literal") acc[part.type] = part.value;
-      return acc;
-    }, {});
-    const hour = (parts.hour === "24" ? "00" : parts.hour || "00").padStart(2, "0");
-    const minute = (parts.minute || "00").padStart(2, "0");
-    return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${hour}:${minute}` };
+    const raw = localStorage.getItem(READ_ALERTS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter((item): item is string => typeof item === "string")) : new Set();
   } catch {
-    const now = new Date();
-    const date = now.toISOString().slice(0, 10);
-    const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-    return { date, time };
+    return new Set();
   }
 }
 
-function MiniBars({ title, items, valueKey }: { title: string; items: AnalysisDimension[]; valueKey: "revenue" | "orders" | "units" }) {
-  const max = Math.max(...items.map(item => item[valueKey]), 1);
-  return <section className="analysis-card chart-card"><h2>{title}</h2>{items.length ? items.slice(0, 8).map(item => (
-    <div className="bar-row" key={item.label}><span title={item.label}>{item.label}</span><div><i style={{ width: `${Math.max((item[valueKey] / max) * 100, 2)}%` }}/></div><b>{valueKey === "revenue" ? money(item[valueKey]) : number(item[valueKey])}</b></div>
-  )) : <p className="analysis-empty">No completed records in this period.</p>}</section>;
-}
-
-function AlertSeverityIcon({ severity }: { severity: AlertSeverity }) {
-  if (severity === "critical") return <AlertCircle size={15} className={`${styles.alertIcon} ${styles.iconCritical}`}/>;
-  if (severity === "warning") return <AlertTriangle size={15} className={`${styles.alertIcon} ${styles.iconWarning}`}/>;
-  if (severity === "positive") return <CheckCircle2 size={15} className={`${styles.alertIcon} ${styles.iconPositive}`}/>;
-  return <Info size={15} className={`${styles.alertIcon} ${styles.iconInfo}`}/>;
-}
-
-function alertSeverityClass(severity: AlertSeverity) {
-  if (severity === "critical") return styles.severityCritical;
-  if (severity === "warning") return styles.severityWarning;
-  if (severity === "positive") return styles.severityPositive;
-  return styles.severityInfo;
+function saveReadAlertIds(ids: Set<string>) {
+  try {
+    localStorage.setItem(READ_ALERTS_KEY, JSON.stringify(Array.from(ids).slice(-200)));
+  } catch {
+    // ignore quota errors
+  }
 }
 
 export default function DailyAnalysisDashboard({ onBack }: Props) {
-  const [report, setReport] = useState<AnalysisReport | null>(null);
-  const [history, setHistory] = useState<AnalysisReport[]>([]);
-  const [dayMode, setDayMode] = useState<DayMode>("daily");
-  const [customStart, setCustomStart] = useState("");
-  const [customEnd, setCustomEnd] = useState("");
-  const [selectedTime, setSelectedTime] = useState("00:15");
-  const [scheduleStatus, setScheduleStatus] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [pdfBusyId, setPdfBusyId] = useState<number | null>(null);
-  const [pdfMessage, setPdfMessage] = useState("");
-  const [settings, setSettings] = useState<AnalysisSettings>({ comparisonDays: 30, timezone: "Asia/Dhaka", dailyReportEnabled: true, notificationEnabled: true, scheduledTime: "00:15" });
-  const [datasetOpen, setDatasetOpen] = useState(false);
-  const [tables, setTables] = useState<Table[]>([]);
-  const [selectedTable, setSelectedTable] = useState("");
-  const [mapping, setMapping] = useState<Record<string, string>>({});
-  const [alerts, setAlerts] = useState<DailyReportAlert[]>([]);
-  const [alertRules, setAlertRules] = useState<AlertRules>(DEFAULT_ALERT_RULES);
-  const [draftRules, setDraftRules] = useState<AlertRules>(DEFAULT_ALERT_RULES);
-  const [alertsOpen, setAlertsOpen] = useState(true);
-  const [rulesOpen, setRulesOpen] = useState(false);
-  const [alertFilter, setAlertFilter] = useState<AlertFilter>("all");
-  const lastAutoRunRef = useRef<string>("");
-  const armedScheduleRef = useRef<{ date: string; time: string; armedAt: string } | null>(null);
-  const alertRulesRef = useRef<AlertRules>(DEFAULT_ALERT_RULES);
+  const [activeTab, setActiveTab] = useState<DashboardSectionTab>("daily_report");
+  const [selectedDomain, setSelectedDomain] = useState<BusinessDomainId>("sales_ecommerce");
+  const [selectedDataset, setSelectedDataset] = useState<string>("");
+  const [columnOverrides, setColumnOverrides] = useState<Record<string, string>>({});
+  const [comparisonPreset, setComparisonPreset] = useState<ComparisonPreset>("previous_day");
 
-  function persistAlerts(nextAlerts: DailyReportAlert[]) {
-    setAlerts(nextAlerts);
-    try { localStorage.setItem(ALERTS_STORAGE_KEY, JSON.stringify(nextAlerts)); } catch { /* ignore storage quota */ }
+  const [profile, setProfile] = useState<DatabaseProfile | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState<boolean>(true);
+  const [profileError, setProfileError] = useState<string | null>(null);
+
+  const [settings, setSettings] = useState<PersistentDailySettings | null>(null);
+  const [storageStatus, setStorageStatus] = useState<StorageCapabilityStatus | null>(null);
+  const [scheduleSummary, setScheduleSummary] = useState<ScheduleRuntimeSummary | null>(null);
+  const [loadingSettings, setLoadingSettings] = useState<boolean>(true);
+  const [savingSchedule, setSavingSchedule] = useState<boolean>(false);
+  const [saveFeedback, setSaveFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const [intelligence, setIntelligence] = useState<UnifiedDailyAnalysisResult | null>(null);
+  const [loadingIntelligence, setLoadingIntelligence] = useState<boolean>(false);
+  const [intelligenceError, setIntelligenceError] = useState<string | null>(null);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
+
+  const [generatingManual, setGeneratingManual] = useState<boolean>(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [manualResult, setManualResult] = useState<PersistentReportRecord | null>(null);
+
+  const [archivedReports, setArchivedReports] = useState<PersistentReportSummary[]>([]);
+  const [loadingArchive, setLoadingArchive] = useState<boolean>(false);
+  const [archiveComparison, setArchiveComparison] = useState<ReportArchiveComparisonResult | null>(null);
+  const [comparingArchive, setComparingArchive] = useState<boolean>(false);
+  const [archiveCompareError, setArchiveCompareError] = useState<string | null>(null);
+
+  const [readAlertIds, setReadAlertIds] = useState<Set<string>>(() => new Set());
+  const [savingAlertRules, setSavingAlertRules] = useState<boolean>(false);
+  const [downloadingReportId, setDownloadingReportId] = useState<string | null>(null);
+  const [pdfDownloadError, setPdfDownloadError] = useState<string | null>(null);
+
+  // Request sequence guards prevent stale async responses from flashing after a domain/dataset switch
+  const profileSeqRef = useRef(0);
+  const intelSeqRef = useRef(0);
+  const initializedRef = useRef(false);
+
+  const timezone = settings?.timezone || "Asia/Dhaka";
+  const alertRules: AlertRules = useMemo(
+    () => sanitizeAlertRules(settings?.alertRules || DEFAULT_ALERT_RULES),
+    [settings?.alertRules]
+  );
+
+  const availableTables = profile?.tables || [];
+  const currentTableProfile = useMemo(
+    () => availableTables.find(item => item.name === selectedDataset) || null,
+    [availableTables, selectedDataset]
+  );
+  const currentUnderstanding = selectedDataset && profile?.tableUnderstandings
+    ? profile.tableUnderstandings[selectedDataset] || null
+    : null;
+
+  const displayAlerts = useMemo(
+    () => mergeToolAlertsWithReadState(intelligence?.tools.alerts || [], readAlertIds),
+    [intelligence?.tools.alerts, readAlertIds]
+  );
+
+  const loadArchiveReports = useCallback(async () => {
+    setLoadingArchive(true);
+    try {
+      const response = await fetch("/api/daily-analysis/reports?page=1&pageSize=20", { cache: "no-store" });
+      const data = await response.json();
+      if (response.ok && Array.isArray(data.reports)) {
+        setArchivedReports(data.reports as PersistentReportSummary[]);
+      }
+    } catch {
+      // keep existing archive state
+    } finally {
+      setLoadingArchive(false);
+    }
+  }, []);
+
+  const loadProfile = useCallback(async (domain: BusinessDomainId, preferredTable?: string | null) => {
+    const seq = ++profileSeqRef.current;
+    setLoadingProfile(true);
+    setProfileError(null);
+    try {
+      const response = await fetch(`/api/daily-analysis/profile?domain=${encodeURIComponent(domain)}`, { cache: "no-store" });
+      const data = await response.json();
+      if (seq !== profileSeqRef.current) return null;
+      if (!response.ok) {
+        throw new Error(data.error || "Could not profile the connected database.");
+      }
+      const nextProfile = data.profile as DatabaseProfile;
+      setProfile(nextProfile);
+
+      const tables = nextProfile.tables || [];
+      const resolvedTable =
+        (preferredTable && tables.find(t => t.name === preferredTable)?.name)
+        || (selectedDataset && tables.find(t => t.name === selectedDataset)?.name)
+        || nextProfile.domainSuggestions.find(s => s.domainId === domain)?.matchedTables[0]
+        || tables[0]?.name
+        || "";
+
+      if (resolvedTable && resolvedTable !== selectedDataset) {
+        setSelectedDataset(resolvedTable);
+      }
+      return { nextProfile, resolvedTable };
+    } catch (error) {
+      if (seq !== profileSeqRef.current) return null;
+      setProfileError(error instanceof Error ? error.message : "Could not profile the connected database.");
+      return null;
+    } finally {
+      if (seq === profileSeqRef.current) {
+        setLoadingProfile(false);
+      }
+    }
+  }, [selectedDataset]);
+
+  const loadIntelligence = useCallback(async (params: {
+    domain: BusinessDomainId;
+    table: string;
+    preset: ComparisonPreset;
+    overrides: Record<string, string>;
+    tz: string;
+    rules: AlertRules;
+  }) => {
+    if (!params.table) return;
+    const seq = ++intelSeqRef.current;
+    setLoadingIntelligence(true);
+    setIntelligenceError(null);
+    try {
+      const response = await fetch("/api/daily-analysis/intelligence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          table: params.table,
+          domain: params.domain,
+          timezone: params.tz,
+          comparisonPreset: params.preset,
+          overrides: Object.keys(params.overrides).length ? params.overrides : undefined,
+          alertRules: params.rules
+        })
+      });
+      const data = await response.json();
+      if (seq !== intelSeqRef.current) return;
+      if (!response.ok) {
+        throw new Error(data.error || "Could not run Daily Analysis intelligence.");
+      }
+      const nextIntel = data.intelligence as UnifiedDailyAnalysisResult;
+      setIntelligence(nextIntel);
+      setLastRefreshedAt(nextIntel.generatedAt || new Date().toISOString());
+    } catch (error) {
+      if (seq !== intelSeqRef.current) return;
+      setIntelligence(null);
+      setIntelligenceError(error instanceof Error ? error.message : "Could not run Daily Analysis intelligence.");
+    } finally {
+      if (seq === intelSeqRef.current) {
+        setLoadingIntelligence(false);
+      }
+    }
+  }, []);
+
+  // Initial load: read persistent settings + profile connected DB + load archive
+  useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+    setReadAlertIds(loadReadAlertIds());
+
+    void (async () => {
+      setLoadingSettings(true);
+      let initialDomain: BusinessDomainId = "sales_ecommerce";
+      let initialTable: string | null = null;
+      let initialOverrides: Record<string, string> = {};
+      let initialTz = "Asia/Dhaka";
+      let initialRules: AlertRules = DEFAULT_ALERT_RULES;
+
+      try {
+        const res = await fetch("/api/daily-analysis/settings", { cache: "no-store" });
+        const data = await res.json();
+        if (res.ok && data.settings) {
+          const loaded = data.settings as PersistentDailySettings;
+          setSettings(loaded);
+          setStorageStatus(data.storageStatus || null);
+          setScheduleSummary(data.scheduleSummary || null);
+          initialDomain = loaded.selectedDomain || "sales_ecommerce";
+          initialTable = loaded.selectedDataset || null;
+          initialOverrides = loaded.columnOverrides || {};
+          initialTz = loaded.timezone || "Asia/Dhaka";
+          initialRules = sanitizeAlertRules(loaded.alertRules || DEFAULT_ALERT_RULES);
+          setSelectedDomain(initialDomain);
+          if (initialTable) setSelectedDataset(initialTable);
+          setColumnOverrides(initialOverrides);
+        }
+      } catch {
+        // Keep safe defaults if settings request fails
+      } finally {
+        setLoadingSettings(false);
+      }
+
+      const [profileResult] = await Promise.all([
+        loadProfile(initialDomain, initialTable),
+        loadArchiveReports()
+      ]);
+
+      const tableToRun = profileResult?.resolvedTable || initialTable || "";
+      if (tableToRun) {
+        await loadIntelligence({
+          domain: initialDomain,
+          table: tableToRun,
+          preset: "previous_day",
+          overrides: initialOverrides,
+          tz: initialTz,
+          rules: initialRules
+        });
+      }
+    })();
+  }, [loadArchiveReports, loadIntelligence, loadProfile]);
+
+  // Event-driven refresh hook prepared for Stage 7 live update integration (without claiming active real-time push today)
+  useEffect(() => {
+    const handleRefreshEvent = () => {
+      if (!selectedDataset) return;
+      void loadIntelligence({
+        domain: selectedDomain,
+        table: selectedDataset,
+        preset: comparisonPreset,
+        overrides: columnOverrides,
+        tz: timezone,
+        rules: alertRules
+      });
+      void loadArchiveReports();
+    };
+    window.addEventListener("querypilot:daily-analysis-refresh", handleRefreshEvent);
+    return () => window.removeEventListener("querypilot:daily-analysis-refresh", handleRefreshEvent);
+  }, [alertRules, columnOverrides, comparisonPreset, loadArchiveReports, loadIntelligence, selectedDataset, selectedDomain, timezone]);
+
+  function resetStaleResults() {
+    const reset = createStaleResetSnapshot();
+    setIntelligence(reset.intelligence);
+    setManualResult(reset.manualResult);
+    setArchiveComparison(reset.archiveComparison);
+    setManualError(null);
+    setIntelligenceError(null);
+    setArchiveCompareError(null);
   }
 
-  function evaluateAndRecordAlerts(targetReport: AnalysisReport, rulesOverride?: AlertRules) {
-    const activeRules = rulesOverride || alertRulesRef.current;
-    const generated = evaluateReportAlerts(targetReport, activeRules);
-    if (!generated.length) return;
-    setAlerts(prev => {
-      const next = mergeAlerts(prev, generated, 50);
-      try { localStorage.setItem(ALERTS_STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore storage quota */ }
+  async function handleDomainChange(nextDomain: BusinessDomainId) {
+    if (nextDomain === selectedDomain) return;
+    resetStaleResults();
+    setSelectedDomain(nextDomain);
+    setColumnOverrides({});
+    const result = await loadProfile(nextDomain, selectedDataset);
+    const nextTable = result?.resolvedTable || selectedDataset;
+    if (nextTable) {
+      await loadIntelligence({
+        domain: nextDomain,
+        table: nextTable,
+        preset: comparisonPreset,
+        overrides: {},
+        tz: timezone,
+        rules: alertRules
+      });
+    }
+  }
+
+  async function handleDatasetChange(nextTable: string) {
+    if (nextTable === selectedDataset) return;
+    resetStaleResults();
+    setSelectedDataset(nextTable);
+    setColumnOverrides({});
+    if (nextTable) {
+      await loadIntelligence({
+        domain: selectedDomain,
+        table: nextTable,
+        preset: comparisonPreset,
+        overrides: {},
+        tz: timezone,
+        rules: alertRules
+      });
+    }
+  }
+
+  async function handleRefreshAll() {
+    if (!selectedDataset) return;
+    await Promise.all([
+      loadProfile(selectedDomain, selectedDataset),
+      loadIntelligence({
+        domain: selectedDomain,
+        table: selectedDataset,
+        preset: comparisonPreset,
+        overrides: columnOverrides,
+        tz: timezone,
+        rules: alertRules
+      }),
+      loadArchiveReports()
+    ]);
+  }
+
+  async function handleComparisonPresetChange(nextPreset: ComparisonPreset) {
+    setComparisonPreset(nextPreset);
+    if (!selectedDataset) return;
+    await loadIntelligence({
+      domain: selectedDomain,
+      table: selectedDataset,
+      preset: nextPreset,
+      overrides: columnOverrides,
+      tz: timezone,
+      rules: alertRules
+    });
+  }
+
+  async function handleSaveSchedule(payload: {
+    autoReportEnabled: boolean;
+    frequency: ReportFrequency;
+    scheduledTime: string;
+    timezone: string;
+  }) {
+    setSavingSchedule(true);
+    setSaveFeedback(null);
+    try {
+      const response = await fetch("/api/daily-analysis/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...payload,
+          selectedDomain,
+          selectedDataset: selectedDataset || null,
+          columnOverrides
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Could not save schedule settings.");
+      }
+      setSettings(data.settings as PersistentDailySettings);
+      if (data.storageStatus) setStorageStatus(data.storageStatus as StorageCapabilityStatus);
+      if (data.scheduleSummary) setScheduleSummary(data.scheduleSummary as ScheduleRuntimeSummary);
+
+      const syncNotice = (data.scheduleSummary as ScheduleRuntimeSummary | undefined)?.lastSync?.notice;
+      setSaveFeedback({
+        type: "success",
+        text: syncNotice || "Schedule settings confirmed and saved by the backend."
+      });
+    } catch (error) {
+      setSaveFeedback({
+        type: "error",
+        text: error instanceof Error ? error.message : "Could not save schedule settings."
+      });
+    } finally {
+      setSavingSchedule(false);
+    }
+  }
+
+  async function handleGenerateManualReport(input: {
+    quickRange: ManualQuickRange;
+    startDate?: string;
+    endDate?: string;
+  }) {
+    if (generatingManual) return;
+    setGeneratingManual(true);
+    setManualError(null);
+    try {
+      const response = await fetch("/api/daily-analysis/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "manual",
+          table: selectedDataset,
+          domain: selectedDomain,
+          quickRange: input.quickRange,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          timezone,
+          overrides: Object.keys(columnOverrides).length ? columnOverrides : undefined,
+          earliestAvailableDate: currentTableProfile?.freshness.earliestDate?.slice(0, 10) || undefined,
+          latestAvailableDate: currentTableProfile?.freshness.latestDate?.slice(0, 10) || undefined
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Could not generate manual report.");
+      }
+      setManualResult(data.report as PersistentReportRecord);
+      await loadArchiveReports();
+    } catch (error) {
+      setManualError(error instanceof Error ? error.message : "Could not generate manual report.");
+    } finally {
+      setGeneratingManual(false);
+    }
+  }
+
+  async function handleDownloadPdf(report: PersistentReportSummary | PersistentReportRecord, compareWithId?: string) {
+    if (downloadingReportId) return;
+    setDownloadingReportId(report.id);
+    setPdfDownloadError(null);
+    try {
+      const query = compareWithId ? `?compareWith=${encodeURIComponent(compareWithId)}` : "";
+      const response = await fetch(`/api/daily-analysis/reports/${encodeURIComponent(report.id)}/pdf${query}`, {
+        method: "GET",
+        cache: "no-store"
+      });
+      if (!response.ok) {
+        let message = "Could not download the PDF.";
+        try {
+          const err = await response.json();
+          if (err?.error) message = err.error;
+        } catch {
+          // ignore non-json error body
+        }
+        throw new Error(message);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      const suffix = compareWithId ? "-comparison" : "";
+      anchor.download = report.pdfFilename || `querypilot-x-${report.domainId}-${report.periodStart}-to-${report.periodEnd}${suffix}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setPdfDownloadError(error instanceof Error ? error.message : "Could not download the PDF.");
+    } finally {
+      setDownloadingReportId(null);
+    }
+  }
+
+  async function handleCompareArchivedReports(leftId: string, rightId: string) {
+    setComparingArchive(true);
+    setArchiveCompareError(null);
+    try {
+      const response = await fetch("/api/daily-analysis/reports/compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leftReportId: leftId, rightReportId: rightId })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Could not compare selected reports.");
+      }
+      setArchiveComparison(data.comparison as ReportArchiveComparisonResult);
+    } catch (error) {
+      setArchiveCompareError(error instanceof Error ? error.message : "Could not compare selected reports.");
+    } finally {
+      setComparingArchive(false);
+    }
+  }
+
+  function handleToggleAlertRead(alertId: string) {
+    setReadAlertIds(prev => {
+      const next = new Set(prev);
+      if (next.has(alertId)) next.delete(alertId);
+      else next.add(alertId);
+      saveReadAlertIds(next);
       return next;
     });
   }
 
-  function toggleAlertRead(alertId: string) {
-    persistAlerts(alerts.map(item => item.id === alertId ? { ...item, isRead: !item.isRead } : item));
+  function handleMarkAllAlertsRead() {
+    setReadAlertIds(prev => {
+      const next = new Set(prev);
+      for (const alert of displayAlerts) next.add(alert.id);
+      saveReadAlertIds(next);
+      return next;
+    });
   }
 
-  function markAllAlertsRead() {
-    persistAlerts(alerts.map(item => ({ ...item, isRead: true })));
-  }
-
-  function clearReadAlerts() {
-    persistAlerts(alerts.filter(item => !item.isRead));
-  }
-
-  function handleSaveAlertRules() {
-    const cleaned = sanitizeAlertRules(draftRules);
-    setAlertRules(cleaned);
-    setDraftRules(cleaned);
-    alertRulesRef.current = cleaned;
-    try { localStorage.setItem(ALERT_RULES_STORAGE_KEY, JSON.stringify(cleaned)); } catch { /* ignore */ }
-    const updatedSettings: AnalysisSettings = { ...settings, notificationEnabled: cleaned.enabled };
-    setSettings(updatedSettings);
-    try { localStorage.setItem("querypilot.dailySettings", JSON.stringify(updatedSettings)); } catch { /* ignore */ }
-    if (report) {
-      if (cleaned.enabled) {
-        const fresh = evaluateReportAlerts(report, cleaned);
-        const currentReportKey = report.generationKey || `${report.reportKind}|${report.periodStart}|${report.periodEnd}`;
-        const otherReportAlerts = alerts.filter(item => item.reportKey !== currentReportKey);
-        persistAlerts(mergeAlerts(otherReportAlerts, fresh, 50));
-      } else {
-        setPdfMessage("Daily alert notifications paused.");
-      }
-    }
-    setRulesOpen(false);
-    if (cleaned.enabled) setPdfMessage("Alert rules saved and applied to the current report.");
-  }
-
-  function downloadCsv(target: AnalysisReport) {
-    setError("");
+  async function handleSaveAlertRules(nextRules: AlertRules) {
+    setSavingAlertRules(true);
     try {
-      const csv = buildReportCsv(target);
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = csvFilename(target);
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
-      setPdfMessage("CSV export downloaded.");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not export CSV.");
-    }
-  }
-
-  async function loadHistory() {
-    try { setHistory(JSON.parse(localStorage.getItem("querypilot.dailyReports") || "[]")); } catch { setHistory([]); }
-  }
-
-  async function loadTables() {
-    const response = await fetch("/api/tables", { cache: "no-store" });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Could not load Supabase tables.");
-    const availableTables = (data.tables || []) as Table[];
-    setTables(availableTables);
-    if (!availableTables.length) {
-      setError("No readable public tables were found in the connected Supabase project.");
-      return;
-    }
-    const saved = localStorage.getItem("querypilot.dailyDataset");
-    let selected: { table?: string; mapping?: Record<string, string> } = {};
-    if (saved) try { selected = JSON.parse(saved); } catch { selected = {}; }
-    const table = availableTables.find(item => item.name === selected.table)
-      || availableTables.find(item => item.name === "daily_sales_orders")
-      || availableTables.find(item => {
-        const detected = detectDatasetColumns(item);
-        return Boolean(detected.orderId && detected.orderDate);
-      })
-      || availableTables[0];
-    if (table) {
-      setSelectedTable(table.name);
-      if (selected.table === table.name && selected.mapping) {
-        const validMapping = Object.fromEntries(
-          Object.entries(selected.mapping).filter(([, col]) => typeof col === "string" && table.columns.includes(col))
-        );
-        setMapping(validMapping);
-      } else {
-        setMapping({});
-      }
-    }
-  }
-
-  function buildPayload(mode: DayMode) {
-    if (mode === "weekly") return { kind: "historical", range: "week" };
-    if (mode === "monthly") return { kind: "historical", range: "month" };
-    if (mode === "manual") return { kind: "historical", range: "custom", start: customStart, end: customEnd };
-    return { comparisonDays: settings.comparisonDays || 30 };
-  }
-
-  async function generate(modeOverride?: DayMode, scheduledAt?: string) {
-    const activeMode = modeOverride || dayMode;
-    if (activeMode === "manual" && (!/^\d{4}-\d{2}-\d{2}$/.test(customStart) || !/^\d{4}-\d{2}-\d{2}$/.test(customEnd) || customStart > customEnd)) {
-      setError("Select a valid start date and end date for Manual mode.");
-      return;
-    }
-    setBusy(true); setError("");
-    try {
-      if (!selectedTable) throw new Error("Select a Supabase table before generating a report.");
-      const dataset = { table: selectedTable, mapping };
-      localStorage.setItem("querypilot.dailyDataset", JSON.stringify(dataset));
-      const payload = { ...buildPayload(activeMode), dataset };
-      const response = await fetch("/api/daily-analysis/reports", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const cleaned = sanitizeAlertRules(nextRules);
+      const response = await fetch("/api/daily-analysis/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alertRules: cleaned })
+      });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not generate report.");
-      const generatedReport: AnalysisReport = scheduledAt
-        ? { ...data.report, generationKey: `${data.report.generationKey || data.report.reportingDate}|scheduled|${scheduledAt}|${Date.now()}` }
-        : data.report;
-      setReport(generatedReport);
-      evaluateAndRecordAlerts(generatedReport);
-      setHistory(prev => {
-        const nextHistory = [generatedReport, ...prev.filter(item => item.generationKey !== generatedReport.generationKey)].slice(0, 20);
-        try { localStorage.setItem("querypilot.dailyReports", JSON.stringify(nextHistory)); } catch { /* ignore storage quota */ }
-        return nextHistory;
-      });
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not generate report.");
-    } finally { setBusy(false); }
-  }
-
-  function handleDayModeChange(nextMode: DayMode) {
-    setDayMode(nextMode);
-    setError("");
-    if (nextMode !== "manual" && selectedTable && hasRequiredColumns) {
-      void generate(nextMode);
-    }
-  }
-
-  function handleTimeChange(nextTime: string) {
-    setSelectedTime(nextTime);
-    lastAutoRunRef.current = "";
-    const now = currentClockInTimezone(settings.timezone || "Asia/Dhaka");
-    armedScheduleRef.current = nextTime ? { date: now.date, time: nextTime, armedAt: now.time } : null;
-    const updated: AnalysisSettings = { ...settings, scheduledTime: nextTime, dailyReportEnabled: true };
-    setSettings(updated);
-    try { localStorage.setItem("querypilot.dailySettings", JSON.stringify(updated)); } catch { /* ignore */ }
-    setScheduleStatus(nextTime ? `Scheduled at ${nextTime} (${updated.timezone || "Asia/Dhaka"})` : "");
-  }
-
-  async function downloadPdf(target: AnalysisReport) {
-    const busyKey = target.id || -1;
-    setPdfBusyId(busyKey);
-    setPdfMessage("");
-    setError("");
-    try {
-      const downloadResponse = await fetch(`/api/daily-analysis/reports/${target.id || 1}/pdf`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(target) });
-      if (!downloadResponse.ok) throw new Error((await downloadResponse.json()).error || "Could not download the PDF.");
-      const blob = await downloadResponse.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      const filename = `querypilot-x-report-${target.reportKind}-${target.periodStart}-to-${target.periodEnd}.pdf`;
-      anchor.download = filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
-      const generatedAt = new Date().toISOString();
-      setReport(current => current && current.generationKey === target.generationKey ? { ...current, pdfStatus: "generated", pdfFilename: filename, pdfGeneratedAt: generatedAt } : current);
-      setHistory(prev => {
-        const nextHistory = prev.map(item => item.generationKey === target.generationKey ? { ...item, pdfStatus: "generated" as const, pdfFilename: filename, pdfGeneratedAt: generatedAt } : item);
-        try { localStorage.setItem("querypilot.dailyReports", JSON.stringify(nextHistory)); } catch { /* ignore */ }
-        return nextHistory;
-      });
-      setPdfMessage("PDF download completed.");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not download the PDF.");
-    } finally {
-      setPdfBusyId(null);
-    }
-  }
-
-  useEffect(() => {
-    const savedSettings = localStorage.getItem("querypilot.dailySettings");
-    if (savedSettings) {
-      try {
-        const parsed = JSON.parse(savedSettings) as AnalysisSettings;
-        setSettings(parsed);
-        if (parsed.scheduledTime) {
-          setSelectedTime(parsed.scheduledTime);
-          setScheduleStatus(`Scheduled at ${parsed.scheduledTime} (${parsed.timezone || "Asia/Dhaka"})`);
+      if (response.ok && data.settings) {
+        setSettings(data.settings as PersistentDailySettings);
+        if (selectedDataset) {
+          await loadIntelligence({
+            domain: selectedDomain,
+            table: selectedDataset,
+            preset: comparisonPreset,
+            overrides: columnOverrides,
+            tz: timezone,
+            rules: cleaned
+          });
         }
-      } catch { /* use defaults */ }
-    }
-    const savedRules = localStorage.getItem(ALERT_RULES_STORAGE_KEY);
-    if (savedRules) {
-      try {
-        const parsedRules = sanitizeAlertRules(JSON.parse(savedRules) as Partial<AlertRules>);
-        setAlertRules(parsedRules);
-        setDraftRules(parsedRules);
-        alertRulesRef.current = parsedRules;
-      } catch { /* use defaults */ }
-    }
-    const savedAlerts = localStorage.getItem(ALERTS_STORAGE_KEY);
-    if (savedAlerts) {
-      try {
-        const parsedAlerts = JSON.parse(savedAlerts) as DailyReportAlert[];
-        if (Array.isArray(parsedAlerts)) setAlerts(parsedAlerts);
-      } catch { /* ignore */ }
-    }
-    void Promise.all([loadTables(), loadHistory()]).catch(reason => setError(reason instanceof Error ? reason.message : "Could not load Supabase data."));
-  }, []);
-
-  const currentTable = useMemo(() => tables.find(table => table.name === selectedTable), [tables, selectedTable]);
-  const autoMapping = useMemo<Partial<DatasetMapping>>(() => currentTable ? detectDatasetColumns(currentTable) : {}, [currentTable]);
-  const hasRequiredColumns = Boolean((mapping.orderId || autoMapping.orderId) && (mapping.orderDate || autoMapping.orderDate));
-  const customManualRangeValid = dayMode !== "manual" || (/^\d{4}-\d{2}-\d{2}$/.test(customStart) && /^\d{4}-\d{2}-\d{2}$/.test(customEnd) && customStart <= customEnd);
-
-  useEffect(() => {
-    if (selectedTable && !report && hasRequiredColumns) void generate("daily");
-  }, [selectedTable, hasRequiredColumns]);
-
-  useEffect(() => {
-    if (!selectedTime || !selectedTable || !hasRequiredColumns) return;
-    const checkSchedule = () => {
-      const now = currentClockInTimezone(settings.timezone || "Asia/Dhaka");
-      const slot = `${now.date}|${selectedTime}`;
-      const isExactMinute = now.time === selectedTime;
-      const passedWhileTabHidden = Boolean(
-        armedScheduleRef.current
-        && armedScheduleRef.current.date === now.date
-        && armedScheduleRef.current.time === selectedTime
-        && armedScheduleRef.current.armedAt <= selectedTime
-        && now.time > selectedTime
-      );
-      if ((isExactMinute || passedWhileTabHidden) && lastAutoRunRef.current !== slot) {
-        lastAutoRunRef.current = slot;
-        armedScheduleRef.current = null;
-        setScheduleStatus(`Auto-generated at ${now.time} (${now.date})`);
-        void generate(undefined, now.time);
       }
-    };
-    checkSchedule();
-    const timer = window.setInterval(checkSchedule, 1000);
-    window.addEventListener("focus", checkSchedule);
-    document.addEventListener("visibilitychange", checkSchedule);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("focus", checkSchedule);
-      document.removeEventListener("visibilitychange", checkSchedule);
-    };
-  }, [selectedTime, selectedTable, hasRequiredColumns, settings.timezone, dayMode, customStart, customEnd, mapping]);
+    } finally {
+      setSavingAlertRules(false);
+    }
+  }
 
-  const comparison = report?.comparisonDailyAverage;
-  const revenueAvailable = !report?.availableMetrics || report.availableMetrics.includes("totalRevenue");
-  const change = useMemo(() => revenueAvailable && report && comparison && comparison.totalRevenue ? ((report.current.totalRevenue - comparison.totalRevenue) / comparison.totalRevenue) * 100 : null, [revenueAvailable, report, comparison]);
-  const unreadAlertsCount = useMemo(() => alerts.filter(item => !item.isRead).length, [alerts]);
-  const filteredAlerts = useMemo(() => {
-    if (alertFilter === "unread") return alerts.filter(item => !item.isRead);
-    if (alertFilter === "issues") return alerts.filter(item => item.severity === "critical" || item.severity === "warning");
-    if (alertFilter === "positive") return alerts.filter(item => item.severity === "positive" || item.severity === "info");
-    return alerts;
-  }, [alerts, alertFilter]);
-  const dailyTrendMaxRevenue = useMemo(() => Math.max(...(report?.dailyPerformance || []).map(day => day.totalRevenue), 1), [report]);
+  return (
+    <div className={styles.shell}>
+      {/* Header */}
+      <header className={styles.topBar}>
+        <div className={styles.topLeft}>
+          <button type="button" className={styles.backLink} onClick={onBack}>
+            <ArrowLeft size={13} /> Back to Smart Dashboard
+          </button>
+          <span className={styles.eyebrow}>DAILY INTELLIGENCE &amp; AUTOMATED REPORTING</span>
+          <h1 className={styles.pageTitle}>Daily Analysis</h1>
+          <p className={styles.pageSubtitle}>
+            Automated Daily/Weekly/Monthly PDF reporting, on-demand manual reports, and live multi-domain business intelligence across your connected read-only database.
+          </p>
+        </div>
 
-  return <div className="analysis-dashboard">
-    <div className="analysis-toolbar">
-      <button className="back-button" onClick={onBack}>Back to workspace</button>
-      <div className="analysis-toolbar-actions">
-        <span className="connection-status" title="Read-only Supabase connection"><ShieldCheck size={14}/> Read-only Supabase{selectedTable ? ` · ${selectedTable}` : ""}</span>
-        <button className={`secondary-button ${styles.alertButton}`} onClick={() => setAlertsOpen(!alertsOpen)}>
-          {alertRules.enabled ? <Bell size={14}/> : <BellOff size={14}/>} Alerts
-          {unreadAlertsCount > 0 && <span className={styles.unreadBadge}>{unreadAlertsCount}</span>}
-        </button>
-        <button className="secondary-button" onClick={() => setDatasetOpen(!datasetOpen)}><SlidersHorizontal size={14}/> Dataset</button>
-        <button className="secondary-button" disabled={busy || pdfBusyId !== null || !selectedTable || !customManualRangeValid} onClick={() => void generate()}><RefreshCw size={14} className={busy ? "spinning" : ""}/> Refresh</button>
-        {report && <button className="secondary-button" disabled={busy} onClick={() => downloadCsv(report)}><FileSpreadsheet size={14}/> Export CSV</button>}
-        {report && <button className="secondary-button" disabled={busy || pdfBusyId !== null} onClick={() => void downloadPdf(report)}><Download size={14}/>{pdfBusyId === (report.id || -1) ? "Generating PDF..." : "Download PDF"}</button>}
-      </div>
-    </div>
-
-    <div className="section-heading"><div><div className="section-eyebrow">DAILY ANALYSIS & REPORTS</div><h1>Performance at a glance.</h1><p>Completed orders are recognized; other statuses remain visible separately.</p></div></div>
-
-    <div className="report-controls">
-      <label>
-        <CalendarDays size={14}/> Select day
-        <select aria-label="Select day" value={dayMode} onChange={event => handleDayModeChange(event.target.value as DayMode)} disabled={busy || !selectedTable}>
-          <option value="daily">Daily</option>
-          <option value="weekly">Weekly</option>
-          <option value="monthly">Monthly</option>
-          <option value="manual">Manual</option>
-        </select>
-      </label>
-
-      {dayMode === "manual" && <>
-        <input className="days-input" type="date" value={customStart} onChange={event => setCustomStart(event.target.value)} aria-label="Manual start date"/>
-        <input className="days-input" type="date" value={customEnd} onChange={event => setCustomEnd(event.target.value)} aria-label="Manual end date"/>
-        <button className="secondary-button" disabled={busy || !selectedTable || !customManualRangeValid} onClick={() => void generate("manual")}>Apply</button>
-      </>}
-
-      <label>
-        <Clock size={14}/> Select time
-        <input className="settings-input" type="time" aria-label="Select time" value={selectedTime} onChange={event => handleTimeChange(event.target.value)}/>
-      </label>
-      {scheduleStatus && <span className="schedule-badge">{scheduleStatus}</span>}
-    </div>
-
-    {alertsOpen && <section className={`analysis-card ${styles.panel}`}>
-      <div className={styles.panelHeader}>
-        <div className={styles.panelTitle}>
-          {alertRules.enabled ? <Bell size={15}/> : <BellOff size={15}/>}
-          <h2>Daily Alerts & Notifications</h2>
-          <span className={styles.panelSubtitle}>
-            {alertRules.enabled
-              ? unreadAlertsCount > 0 ? `${unreadAlertsCount} unread` : "All caught up"
-              : "Paused"}
+        <div className={styles.topActions}>
+          <span className={styles.freshnessChip} title="Analysis refreshes on dataset changes and manual refresh (on-demand)">
+            <Clock size={13} />
+            {lastRefreshedAt
+              ? `Last analyzed: ${formatShortTimestamp(lastRefreshedAt, timezone)}`
+              : loadingIntelligence
+                ? "Analyzing dataset..."
+                : "On-demand analysis"}
           </span>
         </div>
-        <div className={styles.panelActions}>
-          <button className="secondary-button" onClick={() => { setDraftRules(alertRules); setRulesOpen(!rulesOpen); }}>
-            <Settings2 size={13}/> Alert rules
-          </button>
-          {unreadAlertsCount > 0 && (
-            <button className="secondary-button" onClick={markAllAlertsRead}>
-              <CheckCheck size={13}/> Mark all read
-            </button>
-          )}
-          {alerts.some(item => item.isRead) && (
-            <button className="secondary-button" onClick={clearReadAlerts}>
-              <Trash2 size={13}/> Clear read
-            </button>
-          )}
-        </div>
-      </div>
+      </header>
 
-      {rulesOpen && <div className={styles.rulesBox}>
-        <div className={styles.rulesHeader}>
-          <strong>KPI Alert Thresholds</strong>
-          <label className={styles.ruleCheckbox}>
-            <input
-              type="checkbox"
-              checked={draftRules.enabled}
-              onChange={event => setDraftRules({ ...draftRules, enabled: event.target.checked })}
-            />
-            Enable automatic KPI alerts
-          </label>
+      {/* Global errors (profile or PDF download) */}
+      {profileError && (
+        <div className={styles.errorBanner} role="alert">
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <AlertCircle size={15} /> {profileError}
+          </span>
+          <button type="button" className={styles.ghostBtn} onClick={() => setProfileError(null)}>Dismiss</button>
         </div>
-        <div className={styles.rulesGrid}>
-          <label className={styles.ruleField}>
-            Revenue drop warning (%)
-            <input
-              className={styles.ruleInput}
-              type="number"
-              min={1}
-              max={100}
-              value={draftRules.revenueDropPercent}
-              onChange={event => setDraftRules({ ...draftRules, revenueDropPercent: Number(event.target.value) })}
-            />
-          </label>
-          <label className={styles.ruleField}>
-            Revenue surge highlight (%)
-            <input
-              className={styles.ruleInput}
-              type="number"
-              min={1}
-              max={500}
-              value={draftRules.revenueGrowthPercent}
-              onChange={event => setDraftRules({ ...draftRules, revenueGrowthPercent: Number(event.target.value) })}
-            />
-          </label>
-          <label className={styles.ruleField}>
-            Min profit margin (%)
-            <input
-              className={styles.ruleInput}
-              type="number"
-              min={0}
-              max={100}
-              value={draftRules.minProfitMarginPercent}
-              onChange={event => setDraftRules({ ...draftRules, minProfitMarginPercent: Number(event.target.value) })}
-            />
-          </label>
-          <label className={styles.ruleField}>
-            Max cancel / return rate (%)
-            <input
-              className={styles.ruleInput}
-              type="number"
-              min={1}
-              max={100}
-              value={draftRules.maxCancellationRatePercent}
-              onChange={event => setDraftRules({ ...draftRules, maxCancellationRatePercent: Number(event.target.value) })}
-            />
-          </label>
-          <label className={styles.ruleField}>
-            Min customer rating (1–5)
-            <input
-              className={styles.ruleInput}
-              type="number"
-              min={1}
-              max={5}
-              step={0.1}
-              value={draftRules.minCustomerRating}
-              onChange={event => setDraftRules({ ...draftRules, minCustomerRating: Number(event.target.value) })}
-            />
-          </label>
+      )}
+      {pdfDownloadError && (
+        <div className={styles.errorBanner} role="alert">
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <AlertCircle size={15} /> {pdfDownloadError}
+          </span>
+          <button type="button" className={styles.ghostBtn} onClick={() => setPdfDownloadError(null)}>Dismiss</button>
         </div>
-        <div className={styles.ruleToggles}>
-          <label className={styles.ruleCheckbox}>
-            <input
-              type="checkbox"
-              checked={draftRules.alertOnZeroRevenue}
-              onChange={event => setDraftRules({ ...draftRules, alertOnZeroRevenue: event.target.checked })}
-            />
-            Alert on zero-sales periods
-          </label>
-          <label className={styles.ruleCheckbox}>
-            <input
-              type="checkbox"
-              checked={draftRules.highlightTopPerformer}
-              onChange={event => setDraftRules({ ...draftRules, highlightTopPerformer: event.target.checked })}
-            />
-            Highlight top performing product
-          </label>
-        </div>
-        <div className={styles.rulesFooter}>
-          <button className="secondary-button" onClick={() => setRulesOpen(false)}>Cancel</button>
-          <button className="secondary-button" onClick={handleSaveAlertRules}>Save &amp; apply</button>
-        </div>
-      </div>}
+      )}
 
-      <div className={styles.filterBar}>
-        {([
-          ["all", `All (${alerts.length})`],
-          ["unread", `Unread (${unreadAlertsCount})`],
-          ["issues", "Warnings & Critical"],
-          ["positive", "Highlights"]
-        ] as Array<[AlertFilter, string]>).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            className={`${styles.filterChip} ${alertFilter === value ? styles.filterChipActive : ""}`}
-            onClick={() => setAlertFilter(value)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {/* Primary 3-section navigation: Daily Report | Manual Report | Daily Analysis Tools */}
+      <nav className={styles.sectionNav} aria-label="Daily Analysis main sections">
+        <button
+          type="button"
+          className={`${styles.sectionTab} ${activeTab === "daily_report" ? styles.sectionTabActive : ""}`}
+          aria-current={activeTab === "daily_report" ? "page" : undefined}
+          onClick={() => setActiveTab("daily_report")}
+        >
+          <span className={styles.sectionTabIcon}><CalendarClock size={18} /></span>
+          <span className={styles.sectionTabText}>
+            <strong>Daily Report</strong>
+            <small>Automatic Daily, Weekly &amp; Monthly PDF schedule</small>
+          </span>
+        </button>
 
-      {filteredAlerts.length ? <div className={styles.alertList}>
-        {filteredAlerts.slice(0, 10).map(alert => (
-          <div
-            key={alert.id}
-            className={`${styles.alertItem} ${alertSeverityClass(alert.severity)} ${alert.isRead ? styles.alertRead : styles.alertUnread}`}
-          >
-            <div className={styles.alertBody}>
-              <AlertSeverityIcon severity={alert.severity}/>
-              <div className={styles.alertContent}>
-                <div className={styles.alertTopLine}>
-                  <strong>{alert.title}</strong>
-                  <span className={styles.metricPill}>{alert.metricLabel}: {alert.metricValue}</span>
-                </div>
-                <p className={styles.alertMessage}>{alert.message}</p>
-                <div className={styles.alertMeta}>
-                  Period: {alert.periodLabel} · {new Date(alert.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                </div>
-              </div>
-            </div>
-            <button type="button" className={styles.alertAction} onClick={() => toggleAlertRead(alert.id)}>
-              {alert.isRead ? "Mark unread" : "Mark read"}
-            </button>
-          </div>
-        ))}
-      </div> : <p className="analysis-empty">
-        {alerts.length ? "No alerts match this filter." : "Alerts will appear here automatically after a report is generated."}
-      </p>}
-    </section>}
+        <button
+          type="button"
+          className={`${styles.sectionTab} ${activeTab === "manual_report" ? styles.sectionTabActive : ""}`}
+          aria-current={activeTab === "manual_report" ? "page" : undefined}
+          onClick={() => setActiveTab("manual_report")}
+        >
+          <span className={styles.sectionTabIcon}><FileSpreadsheet size={18} /></span>
+          <span className={styles.sectionTabText}>
+            <strong>Manual Report</strong>
+            <small>Quick ranges (7–365d, all history) &amp; custom dates</small>
+          </span>
+        </button>
 
-    {(datasetOpen || (selectedTable && !hasRequiredColumns)) && <section className="analysis-card settings-card">
-      <div className="card-title"><h2>Supabase dataset & column mapping</h2><span>Read-only table selection</span></div>
-      <div className="report-controls">
-        <label>Supabase table <select value={selectedTable} onChange={event => { setSelectedTable(event.target.value); setMapping({}); setError(""); setReport(null); }}><option value="">Select a table</option>{tables.map(table => <option key={table.name} value={table.name}>{table.name}</option>)}</select></label>
-        {mappingFields.map(([key, label]) => selectedTable && (
-          <label key={key}>{label} <select value={mapping[key] || ""} onChange={event => setMapping({ ...mapping, [key]: event.target.value })}>
-            <option value="">{autoMapping[key] ? `Auto (${autoMapping[key]})` : "Automatic / unavailable"}</option>
-            {currentTable?.columns.map(column => <option key={column} value={column}>{column}</option>)}
-          </select></label>
-        ))}
-        <button className="secondary-button" disabled={busy || !selectedTable || !hasRequiredColumns} onClick={() => { setDatasetOpen(false); void generate(); }}>Apply dataset</button>
-      </div>
-    </section>}
+        <button
+          type="button"
+          className={`${styles.sectionTab} ${activeTab === "tools" ? styles.sectionTabActive : ""}`}
+          aria-current={activeTab === "tools" ? "page" : undefined}
+          onClick={() => setActiveTab("tools")}
+        >
+          <span className={styles.sectionTabIcon}><Activity size={18} /></span>
+          <span className={styles.sectionTabText}>
+            <strong>Daily Analysis Tools</strong>
+            <small>Brief, Comparison, Alerts, Root Cause, Actions &amp; Health</small>
+          </span>
+        </button>
+      </nav>
 
-    {selectedTable && !hasRequiredColumns && !error && <div className="analysis-empty-panel">Select the <strong>Order ID</strong> and <strong>Order date</strong> columns above, then click <strong>Apply dataset</strong>.</div>}
-    {error && <div className="analysis-error">{error}</div>}
-    {pdfMessage && <div className="pdf-status">{pdfMessage}</div>}
-    {!report && !error && hasRequiredColumns && <div className="analysis-empty-panel">Loading read-only Supabase records...</div>}
-    {report && <>
-      <div className="report-meta">
-        <CalendarDays size={15}/> Reporting date: <strong>{report.reportingDate}</strong>
-        <span>Period: {report.periodStart} to {report.periodEnd}</span>
-        {report.comparisonStart && <span>Comparison: {report.comparisonStart} to {report.comparisonEnd} ({report.comparisonDays} days)</span>}
-        <span><Database size={13}/> Table: <strong>{report.dataset?.table || selectedTable}</strong></span>
-      </div>
-      <div className="analysis-stat-grid">{([
-        ["Revenue", "totalRevenue", money(report.current.totalRevenue), DollarSign],
-        ["Orders", "totalOrders", number(report.current.totalOrders), BarChart3],
-        ["Units sold", "totalUnitsSold", number(report.current.totalUnitsSold), Activity],
-        ["Product lines", "totalProductLines", number(report.current.totalProductLines), BarChart3],
-        ["Gross profit", "grossProfit", money(report.current.grossProfit), TrendingUp],
-        ["Profit margin", "grossProfitMargin", `${number(report.current.grossProfitMargin)}%`, TrendingUp],
-        ["Discounts", "totalDiscounts", money(report.current.totalDiscounts), DollarSign],
-        ["Avg. order value", "averageOrderValue", money(report.current.averageOrderValue), DollarSign],
-        ["Avg. rating", "averageCustomerRating", report.current.averageCustomerRating === null ? "—" : number(report.current.averageCustomerRating), Star]
-      ] as Array<[string, string, string, LucideIcon]>).map(([label, key, value, Icon]) => <div className="analysis-stat" key={label}><Icon size={16}/><span>{label}</span><strong>{displayMetric(report, key, value)}</strong></div>)}</div>
-      {report.availableMetrics && report.availableMetrics.length < 9 && <div className="analysis-empty">Some KPIs are unavailable because the selected Supabase table does not provide those columns.</div>}
-      {change !== null && <div className={"comparison-note " + (change >= 0 ? "positive" : "negative")}>{change >= 0 ? "Growth" : "Decline"} of {Math.abs(change).toFixed(1)}% revenue versus the comparison daily average.</div>}
-      <div className="analysis-grid"><section className="analysis-card"><h2>Order status distribution</h2>{Object.entries(report.current.statusDistribution).map(([label, value]) => <div className="status-row" key={label}><span>{label}</span><strong>{value}</strong></div>)}</section></div>
-      {report.dailyPerformance.length > 1 && <section className="analysis-card" style={{ marginBottom: 16 }}>
-        <h2>Daily performance breakdown ({report.dailyPerformance.length} days)</h2>
-        <div className={styles.trendTableWrap}>
-          <table className={styles.trendTable}>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Revenue trend</th>
-                <th className={styles.numericCell}>Revenue</th>
-                <th className={styles.numericCell}>Orders</th>
-                <th className={styles.numericCell}>Units</th>
-                <th className={styles.numericCell}>Gross profit</th>
-                <th className={styles.numericCell}>Margin</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.dailyPerformance.map(day => (
-                <tr key={day.date}>
-                  <td>{day.date}</td>
-                  <td>
-                    <div className={styles.trendBarTrack}>
-                      <div className={styles.trendBarFill} style={{ width: `${revenueAvailable && day.totalRevenue > 0 ? Math.max((day.totalRevenue / dailyTrendMaxRevenue) * 100, 3) : 0}%` }}/>
-                    </div>
-                  </td>
-                  <td className={styles.numericCell}>{displayMetric(report, "totalRevenue", money(day.totalRevenue))}</td>
-                  <td className={styles.numericCell}>{displayMetric(report, "totalOrders", number(day.totalOrders))}</td>
-                  <td className={styles.numericCell}>{displayMetric(report, "totalUnitsSold", number(day.totalUnitsSold))}</td>
-                  <td className={styles.numericCell}>{displayMetric(report, "grossProfit", money(day.grossProfit))}</td>
-                  <td className={styles.numericCell}>{displayMetric(report, "grossProfitMargin", `${number(day.grossProfitMargin)}%`)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>}
-      <div className="analysis-grid"><MiniBars title="Product performance" items={report.productPerformance} valueKey="revenue"/><MiniBars title="Category performance" items={report.categoryPerformance} valueKey="revenue"/><MiniBars title="Region performance" items={report.regionPerformance} valueKey="revenue"/><MiniBars title="Gender performance" items={report.genderPerformance} valueKey="orders"/></div>
-      <section className="analysis-card history-card"><h2>Report history</h2>{history.length ? history.map((item, index) => <div className="history-entry" key={item.generationKey || item.id || index}><button onClick={() => setReport(item)}><span>{item.reportKind} · {item.reportingDate}{item.dataset?.table ? ` (${item.dataset.table})` : ""}{item.generationKey?.includes("|scheduled|") ? " · Scheduled" : ""}</span><small>{item.periodStart} to {item.periodEnd} · {new Date(item.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · {item.status} · PDF: {item.pdfStatus === "generated" ? "ready" : item.pdfStatus === "failed" ? "failed" : "not generated"}</small></button><button className="history-download" disabled={pdfBusyId !== null} onClick={() => void downloadPdf(item)}><Download size={13}/>{pdfBusyId === (item.id || -1) ? "Generating..." : item.pdfStatus === "generated" ? "PDF" : "Generate PDF"}</button></div>) : <p className="analysis-empty">No generated reports yet.</p>}</section>
-    </>}
-  </div>;
+      {/* Dynamic Business Domain, Dataset & Automatic Column Understanding Bar */}
+      <DomainDatasetBar
+        selectedDomain={selectedDomain}
+        selectedDataset={selectedDataset}
+        profile={profile}
+        availableTables={availableTables}
+        understanding={currentUnderstanding}
+        columnOverrides={columnOverrides}
+        loadingProfile={loadingProfile}
+        loadingAnalysis={loadingIntelligence}
+        onDomainChange={domain => void handleDomainChange(domain)}
+        onDatasetChange={table => void handleDatasetChange(table)}
+        onOverrideChange={(role, columnName) => {
+          setColumnOverrides(prev => {
+            const next = { ...prev };
+            if (!columnName) delete next[role];
+            else next[role] = columnName;
+            return next;
+          });
+        }}
+        onClearOverrides={() => {
+          setColumnOverrides({});
+          if (selectedDataset) {
+            void loadIntelligence({
+              domain: selectedDomain,
+              table: selectedDataset,
+              preset: comparisonPreset,
+              overrides: {},
+              tz: timezone,
+              rules: alertRules
+            });
+          }
+        }}
+        onApplyOverrides={() => {
+          if (!selectedDataset) return;
+          void loadIntelligence({
+            domain: selectedDomain,
+            table: selectedDataset,
+            preset: comparisonPreset,
+            overrides: columnOverrides,
+            tz: timezone,
+            rules: alertRules
+          });
+        }}
+        onRefreshAll={() => void handleRefreshAll()}
+      />
+
+      {/* Section 1: Daily Report (Primary Feature) */}
+      {activeTab === "daily_report" && (
+        <DailyReportPanel
+          settings={settings}
+          selectedDataset={selectedDataset}
+          storageStatus={storageStatus}
+          scheduleSummary={scheduleSummary}
+          loadingSettings={loadingSettings}
+          savingSchedule={savingSchedule}
+          downloadingReportId={downloadingReportId}
+          saveFeedback={saveFeedback}
+          onSaveSchedule={handleSaveSchedule}
+          onDownloadPdf={report => handleDownloadPdf(report)}
+        />
+      )}
+
+      {/* Section 2: Manual Report Generation */}
+      {activeTab === "manual_report" && (
+        <ManualReportPanel
+          selectedDomain={selectedDomain}
+          selectedDataset={selectedDataset}
+          timezone={timezone}
+          earliestAvailableDate={currentTableProfile?.freshness.earliestDate || null}
+          latestAvailableDate={currentTableProfile?.freshness.latestDate || null}
+          generating={generatingManual}
+          downloadingReportId={downloadingReportId}
+          error={manualError}
+          generatedReport={manualResult}
+          onGenerateManualReport={handleGenerateManualReport}
+          onDownloadPdf={report => handleDownloadPdf(report)}
+        />
+      )}
+
+      {/* Section 3: Seven Daily Analysis Tools */}
+      {activeTab === "tools" && (
+        <DailyToolsSection
+          intelligence={intelligence}
+          loadingIntelligence={loadingIntelligence}
+          intelligenceError={intelligenceError}
+          comparisonPreset={comparisonPreset}
+          onComparisonPresetChange={preset => void handleComparisonPresetChange(preset)}
+          alerts={displayAlerts}
+          alertRules={alertRules}
+          savingAlertRules={savingAlertRules}
+          onToggleAlertRead={handleToggleAlertRead}
+          onMarkAllAlertsRead={handleMarkAllAlertsRead}
+          onSaveAlertRules={handleSaveAlertRules}
+          archivedReports={archivedReports}
+          loadingArchive={loadingArchive}
+          archiveComparison={archiveComparison}
+          comparingArchive={comparingArchive}
+          archiveCompareError={archiveCompareError}
+          downloadingReportId={downloadingReportId}
+          timezone={timezone}
+          onCompareArchivedReports={handleCompareArchivedReports}
+          onDownloadReportPdf={handleDownloadPdf}
+        />
+      )}
+    </div>
+  );
 }
