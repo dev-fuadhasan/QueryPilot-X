@@ -487,3 +487,6 @@ export async function readAnalysisReportPdf(report: AnalysisReport) {
     throw error;
   }
 }
+
+export { renderDynamicAnalysisPdf } from "./dynamic-pdf-builder";
+export type { DynamicPdfReportInput, HistoricalContextBundle, PdfReportMetadata } from "./types";

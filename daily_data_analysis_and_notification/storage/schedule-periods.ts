@@ -249,3 +249,77 @@ export function resolveManualReportPeriod(input: {
   const start = addDaysToDate(end, -lookbackDays[input.quickRange]);
   return { periodStart: start, periodEnd: end, reportingDate: end };
 }
+
+export type VercelCronValidationResult = {
+  valid: boolean;
+  expression: string;
+  hobbyCompatible: boolean;
+  runsPerDayEstimate: number | null;
+  precisionLimitation: string;
+  reason: string | null;
+};
+
+/**
+ * Validates a standard 5-field UTC cron expression and evaluates Vercel Hobby plan compatibility.
+ * Vercel Hobby limits Cron Jobs to at most once per day and invokes with per-hour precision
+ * (not exact-minute guarantees).
+ */
+export function evaluateVercelCronCompatibility(expression: string): VercelCronValidationResult {
+  const trimmed = (expression || "").trim();
+  const fields = trimmed.split(/\s+/);
+  if (fields.length !== 5) {
+    return {
+      valid: false,
+      expression: trimmed,
+      hobbyCompatible: false,
+      runsPerDayEstimate: null,
+      precisionLimitation: "Invalid cron expression.",
+      reason: "Cron expression must contain exactly 5 space-separated fields (minute hour day-of-month month day-of-week)."
+    };
+  }
+
+  const [minute, hour, dom, month, dow] = fields;
+  const fieldPattern = /^(\*|\d+|\d+-\d+|\*\/\d+|\d+\/\d+|(\d+,)+\d+)$/;
+  if (![minute, hour, dom, month, dow].every(f => fieldPattern.test(f))) {
+    return {
+      valid: false,
+      expression: trimmed,
+      hobbyCompatible: false,
+      runsPerDayEstimate: null,
+      precisionLimitation: "Invalid cron syntax.",
+      reason: "One or more cron fields contain unsupported syntax."
+    };
+  }
+
+  const countSingleDayTriggers = (expr: string, max: number): number => {
+    if (expr === "*") return max;
+    if (expr.startsWith("*/")) {
+      const step = Number(expr.slice(2));
+      return step > 0 ? Math.ceil(max / step) : max;
+    }
+    if (expr.includes(",")) return expr.split(",").length;
+    if (expr.includes("-")) {
+      const [a, b] = expr.split("-").map(Number);
+      return Number.isFinite(a) && Number.isFinite(b) && b >= a ? b - a + 1 : max;
+    }
+    return 1;
+  };
+
+  const minsPerHour = countSingleDayTriggers(minute, 60);
+  const hoursPerDay = countSingleDayTriggers(hour, 24);
+  const runsPerDay = minsPerHour * hoursPerDay;
+  const hobbyCompatible = runsPerDay <= 1;
+
+  return {
+    valid: true,
+    expression: trimmed,
+    hobbyCompatible,
+    runsPerDayEstimate: runsPerDay,
+    precisionLimitation: hobbyCompatible
+      ? "Vercel Hobby invokes daily crons within the scheduled UTC hour (not at an exact custom minute); arbitrary per-organisation custom times require Vercel Pro or an external scheduler."
+      : `Expression triggers ~${runsPerDay} time(s)/day, exceeding Vercel Hobby's once-per-day Cron limit (requires Vercel Pro or an external scheduler).`,
+    reason: hobbyCompatible
+      ? null
+      : `Cron expression "${trimmed}" runs more than once per day (${runsPerDay}x/day) and is rejected on Vercel Hobby.`
+  };
+}
