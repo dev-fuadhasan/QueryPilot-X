@@ -20,6 +20,7 @@ import {
   ShieldAlert,
   Cloud,
   UploadCloud,
+  Flame,
   Play,
   Pause
 } from "lucide-react";
@@ -29,6 +30,7 @@ import { evaluateChangeRisk, type RiskSeverity } from "../risk-engine";
 import { BUSINESS_PROFILES, detectBestProfile } from "../business-profiles";
 import IncidentForensicModal from "./IncidentForensicModal";
 import CloudArchivesModal from "./CloudArchivesModal";
+import SimulationStudioModal from "./SimulationStudioModal";
 
 const SNAPSHOT_KEY = "qp_table_snapshot_v2";
 const HISTORY_KEY = "qp_change_notifications_v2";
@@ -99,6 +101,9 @@ export default function FraudDetectionDashboard() {
   const [showCloudArchives, setShowCloudArchives] = useState(false);
   const [archivingToCloud, setArchivingToCloud] = useState(false);
   const [cloudArchiveNotice, setCloudArchiveNotice] = useState<string | null>(null);
+
+  // Live Incident Simulation Studio State
+  const [showSimulationStudio, setShowSimulationStudio] = useState(false);
 
   // Change Notifications List
   const [notifications, setNotifications] = useState<ChangeNotification[]>([]);
@@ -574,6 +579,20 @@ export default function FraudDetectionDashboard() {
     }
   };
 
+  // Inject Simulated Incident from Simulation Studio
+  const handleInjectSimulatedIncident = (incident: ChangeNotification) => {
+    seenHashesRef.current.add(incident.id);
+    setNotifications((prev) => {
+      const combined = [incident, ...prev];
+      persistNotifications(combined);
+      return combined;
+    });
+    setNewAlertNotice(
+      `🚨 Incident Injected: ${incident.columnName} (${incident.riskSeverity})`
+    );
+    setTimeout(() => setNewAlertNotice(null), 5000);
+  };
+
   return (
     <div className="datasets-panel">
       {/* SECTION HEADER (MATCHING MAIN) */}
@@ -635,6 +654,16 @@ export default function FraudDetectionDashboard() {
             title="Browse reports archived in Supabase Storage"
           >
             <Cloud size={14} style={{ color: "#2563eb" }} /> Cloud Archives
+          </button>
+
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setShowSimulationStudio(true)}
+            style={{ color: "#e11d48", borderColor: "#fecdd3", background: "#fff1f2" }}
+            title="Launch Live Incident & Attack Simulation Studio for demonstration"
+          >
+            <Flame size={14} style={{ color: "#e11d48" }} /> Simulate Incident
           </button>
 
           <button
@@ -1176,6 +1205,13 @@ export default function FraudDetectionDashboard() {
       <CloudArchivesModal
         isOpen={showCloudArchives}
         onClose={() => setShowCloudArchives(false)}
+      />
+
+      {/* LIVE ATTACK & INCIDENT SIMULATION STUDIO */}
+      <SimulationStudioModal
+        isOpen={showSimulationStudio}
+        onClose={() => setShowSimulationStudio(false)}
+        onInjectIncident={handleInjectSimulatedIncident}
       />
     </div>
   );
