@@ -18,6 +18,8 @@ import {
   Filter,
   AlertTriangle,
   ShieldAlert,
+  Cloud,
+  UploadCloud,
   Play,
   Pause
 } from "lucide-react";
@@ -25,6 +27,7 @@ import type { ChangeNotification } from "../types";
 import { exportChangeNotificationsToCSV } from "../notification-service";
 import { evaluateChangeRisk, type RiskSeverity } from "../risk-engine";
 import IncidentForensicModal from "./IncidentForensicModal";
+import CloudArchivesModal from "./CloudArchivesModal";
 
 const SNAPSHOT_KEY = "qp_table_snapshot_v2";
 const HISTORY_KEY = "qp_change_notifications_v2";
@@ -88,6 +91,11 @@ export default function FraudDetectionDashboard() {
   const [searchQuery, setSearchQuery] = useState("");
   const [primaryKeyMap, setPrimaryKeyMap] = useState<Record<string, string>>({});
   const [activeForensicIncident, setActiveForensicIncident] = useState<ChangeNotification | null>(null);
+
+  // Supabase Cloud Storage States
+  const [showCloudArchives, setShowCloudArchives] = useState(false);
+  const [archivingToCloud, setArchivingToCloud] = useState(false);
+  const [cloudArchiveNotice, setCloudArchiveNotice] = useState<string | null>(null);
 
   // Change Notifications List
   const [notifications, setNotifications] = useState<ChangeNotification[]>([]);
@@ -491,6 +499,66 @@ export default function FraudDetectionDashboard() {
     URL.revokeObjectURL(url);
   };
 
+  // Archive to Supabase Cloud Storage
+  const handleArchiveToCloud = async () => {
+    if (notifications.length === 0) {
+      alert("No notifications available to archive.");
+      return;
+    }
+    setArchivingToCloud(true);
+    try {
+      const now = new Date();
+      const reportPayload = {
+        reportId: `fraud_audit_${Date.now()}`,
+        generatedAt: now.toISOString(),
+        totalRecordedEvents: notifications.length,
+        monitoredDatasets: monitoredTables,
+        severityBreakdown: {
+          critical: notifications.filter(
+            (n) => (n.riskSeverity || n.riskAssessment?.severity) === "CRITICAL"
+          ).length,
+          high: notifications.filter(
+            (n) => (n.riskSeverity || n.riskAssessment?.severity) === "HIGH"
+          ).length,
+          medium: notifications.filter(
+            (n) => (n.riskSeverity || n.riskAssessment?.severity) === "MEDIUM"
+          ).length,
+          low: notifications.filter(
+            (n) => (n.riskSeverity || n.riskAssessment?.severity) === "LOW"
+          ).length,
+        },
+        incidents: notifications,
+      };
+
+      const fileContent = JSON.stringify(reportPayload, null, 2);
+      const filename = `fraud_audit_report_${now.toISOString().replace(/[:.]/g, "-")}.json`;
+      const blob = new Blob([fileContent], { type: "application/json" });
+
+      const formData = new FormData();
+      formData.append("file", blob, filename);
+      formData.append("category", "reports");
+
+      const res = await fetch("/api/storage/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setCloudArchiveNotice(
+          `☁️ Report archived to Supabase Storage: ${data.file?.filename || filename}`
+        );
+        setTimeout(() => setCloudArchiveNotice(null), 6000);
+      } else {
+        alert(data.error || "Failed to archive report to Supabase Storage.");
+      }
+    } catch {
+      alert("Error uploading report to cloud storage.");
+    } finally {
+      setArchivingToCloud(false);
+    }
+  };
+
   return (
     <div className="datasets-panel">
       {/* SECTION HEADER (MATCHING MAIN) */}
@@ -536,6 +604,26 @@ export default function FraudDetectionDashboard() {
 
           <button
             type="button"
+            className="secondary-button"
+            onClick={handleArchiveToCloud}
+            disabled={archivingToCloud || notifications.length === 0}
+            title="Archive tamper-evident audit report to private Supabase Storage"
+          >
+            <UploadCloud size={14} className={archivingToCloud ? "spinning" : undefined} />
+            {archivingToCloud ? "Archiving..." : "Archive to Cloud"}
+          </button>
+
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setShowCloudArchives(true)}
+            title="Browse reports archived in Supabase Storage"
+          >
+            <Cloud size={14} style={{ color: "#2563eb" }} /> Cloud Archives
+          </button>
+
+          <button
+            type="button"
             className="primary"
             style={{ minHeight: "38px", padding: "8px 16px" }}
             onClick={() => void checkForChanges(true)}
@@ -569,6 +657,28 @@ export default function FraudDetectionDashboard() {
         >
           <Bell size={16} />
           <span>{newAlertNotice}</span>
+        </div>
+      )}
+
+      {/* CLOUD ARCHIVE SUCCESS NOTICE */}
+      {cloudArchiveNotice && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            background: "#f0fdf4",
+            border: "1px solid #bbf7d0",
+            color: "#166534",
+            padding: "12px 18px",
+            borderRadius: "10px",
+            marginBottom: "20px",
+            fontSize: "12px",
+            fontWeight: 600,
+          }}
+        >
+          <Cloud size={16} />
+          <span>{cloudArchiveNotice}</span>
         </div>
       )}
 
@@ -998,6 +1108,12 @@ export default function FraudDetectionDashboard() {
       <IncidentForensicModal
         incident={activeForensicIncident}
         onClose={() => setActiveForensicIncident(null)}
+      />
+
+      {/* SUPABASE CLOUD ARCHIVES MODAL */}
+      <CloudArchivesModal
+        isOpen={showCloudArchives}
+        onClose={() => setShowCloudArchives(false)}
       />
     </div>
   );
