@@ -2,10 +2,12 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Activity, ArrowDown, ArrowUp, BarChart3, Check, Database, Expand, GripVertical, LineChart as LineChartIcon, LoaderCircle, Pencil, PieChart as PieChartIcon, Plus, Sigma, Table2, Trash2, Sparkles, AlertCircle, CheckCircle2, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, BarChart3, Check, Database, Download, Expand, GripVertical, LineChart as LineChartIcon, LoaderCircle, Pencil, PieChart as PieChartIcon, Plus, RotateCcw, Save, Sigma, Table2, Trash2, Sparkles, AlertCircle, CheckCircle2, X, LayoutGrid, Settings2 } from "lucide-react";
 import CustomPanelView from "./CustomPanelView";
+import ChartTypeGlyph from "./ChartTypeGlyph";
+import VisualPanelBuilder from "./VisualPanelBuilder";
 import { CategoryTick, ChartCategoryLegend, FullCategoryLabels, ScrollableChart, categoryAxisWidth } from "./ReadableCharts";
-import type { DashboardPanel, DashboardPanelKind, GroupPoint, InvestigationBundle, OverviewData, TrendPoint } from "../lib/intelligence";
+import type { CustomChart, CustomPanelSpec, DashboardFilter, DashboardPanel, DashboardPanelKind, GroupPoint, InvestigationBundle, OverviewData, TrendPoint } from "../lib/intelligence";
 
 type Props = {
   bundle: InvestigationBundle;
@@ -13,10 +15,13 @@ type Props = {
   overview: OverviewData;
   drivers: GroupPoint[];
   trend: TrendPoint[];
-  selectedGroup: string | null;
+  filters: DashboardFilter[];
+  onChangeFilters: (value: DashboardFilter[]) => void;
   onSelectGroup: (value: string | null) => void;
   filterBusy: boolean;
   filterError: string;
+  lastUpdated: number | null;
+  refreshVersion: number;
 };
 const colors = ["#2F4A63", "#5B91A3", "#8AB7C2", "#96B9AE", "#CFEAE0", "#73859E", "#A9C8BA"];
 const panelKinds: { value: DashboardPanelKind; label: string }[] = [
@@ -30,10 +35,17 @@ function format(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2, notation: Math.abs(value) >= 1000000 ? "compact" : "standard" }).format(value);
 }
+function panelChartType(panel: DashboardPanel): CustomChart {
+  if (panel.kind === "custom" && panel.spec) return panel.spec.chart;
+  if (panel.kind === "trend") return panel.chart === "area" ? "area" : "line";
+  if (panel.kind === "mix") return "pie";
+  if (panel.kind === "drivers") return "bar";
+  if (panel.kind === "table") return "table";
+  return "kpi";
+}
 function defaultPanels(bundle: InvestigationBundle): DashboardPanel[] {
-  const panels: DashboardPanel[] = [
-    { id: "metrics", kind: "kpi", title: "Performance snapshot", wide: true, chart: "bar" }
-  ];
+  // The snapshot is permanently visible with filters in one unified card.
+  const panels: DashboardPanel[] = [];
   if (bundle.trend?.length) panels.push({ id: "trend", kind: "trend", title: "Performance over time", wide: false, chart: "line" });
   if (bundle.drivers?.length) {
     panels.push({ id: "drivers", kind: "drivers", title: "Category performance", wide: false, chart: "bar" });
@@ -42,7 +54,7 @@ function defaultPanels(bundle: InvestigationBundle): DashboardPanel[] {
   panels.push({ id: "table", kind: "table", title: "Supporting evidence", wide: true, chart: "bar" });
   return panels;
 }
-export default function DashboardBuilder({ bundle, projectRef, overview, drivers, trend, selectedGroup, onSelectGroup, filterBusy, filterError }: Props) {
+export default function DashboardBuilder({ bundle, projectRef, overview, drivers, trend, filters, onChangeFilters, onSelectGroup, filterBusy, filterError, lastUpdated, refreshVersion }: Props) {
   const { plan } = bundle;
   const storageKey = "querypilot:dashboard-layout:" + projectRef + ":" + plan.table;
   const [title, setTitle] = useState("Dashboard");
@@ -52,9 +64,17 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
   const [customPrompt, setCustomPrompt] = useState("");
   const [customTitle, setCustomTitle] = useState("");
   const [creating, setCreating] = useState(false);
+  const [visualOpen, setVisualOpen] = useState(false);
+  const [editingVisualId, setEditingVisualId] = useState<string | null>(null);
   const [toast, setToast] = useState<{message:string;type:"error"|"success"}|null>(null);
   const [loaded, setLoaded] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [filterField, setFilterField] = useState(plan.dimension || plan.dimensions[0] || "");
+  const [filterChoice, setFilterChoice] = useState("");
+  const [filterSearch, setFilterSearch] = useState("");
+  const [filterChoices, setFilterChoices] = useState<string[]>([]);
+  const [choicesLoading, setChoicesLoading] = useState(false);
+  const [choicesError,setChoicesError] = useState("");
 
   useEffect(() => {
     setLoaded(false);
@@ -71,9 +91,9 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
           if (typeof item.title === "string" && item.title.length < 110) { setTitle(item.title); setDraftTitle(item.title); }
           if (Array.isArray(item.panels)) {
             const good: DashboardPanel[] = item.panels.filter(panel =>
-              panel && typeof panel.id === "string" && typeof panel.title === "string" &&
+              panel && panel.id !== "metrics" && typeof panel.id === "string" && typeof panel.title === "string" &&
               (panelKinds.some(kind => kind.value === panel.kind) ||
-                (panel.kind === "custom" && panel.spec && typeof panel.spec.title === "string" && ["kpi","bar","line","area","pie","table"].includes(panel.spec.chart))) &&
+                (panel.kind === "custom" && panel.spec && typeof panel.spec.title === "string" && ["kpi","gauge","bullet","progress","thermometer","bar","column","grouped_bar","stacked_bar","stacked_100","lollipop","line","area","stacked_area","sparkline","combo","pie","donut","treemap","waffle","radar","histogram","box","density","violin","scatter","bubble","heatmap","correlation","funnel","waterfall","slope","bump","parallel","network","sankey","table","pivot"].includes(panel.spec.chart))) &&
               ["bar", "line", "area", "pie"].includes(panel.chart) &&
               typeof panel.wide === "boolean"
             ).slice(0, 12);
@@ -92,6 +112,36 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
     } catch { /* Dashboard remains usable without browser storage */ }
   }, [loaded, storageKey, title, panels]);
 
+
+  useEffect(()=>{
+    if(!filterField || !plan.dimensions.includes(filterField)) return;
+    const abort=new AbortController();
+    const timer=window.setTimeout(async()=>{
+      setChoicesError("");
+      if(!filterChoices.length) setChoicesLoading(true);
+      try{
+        const response=await fetch("/api/smart-investigation",{
+          method:"POST",cache:"no-store",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({stage:"filter-options",table:plan.table,filterDimension:filterField,filterSearch}),
+          signal:abort.signal
+        });
+        const result=await response.json();
+        if(!response.ok) throw new Error(result.error || "Could not load filter categories.");
+        if(abort.signal.aborted) return;
+        const options=Array.isArray(result.data?.values)
+          ? result.data.values.filter((value:unknown):value is string=>typeof value==="string"):[];
+        setFilterChoices(options);
+        setFilterChoice(current=>options.includes(current)?current:"");
+      }catch(problem){
+        if(!abort.signal.aborted){
+          setChoicesError("Unable to refresh category options. Existing selections are preserved.");
+        }
+      }finally{
+        if(!abort.signal.aborted)setChoicesLoading(false);
+      }
+    },filterSearch?350:0);
+    return ()=>{window.clearTimeout(timer);abort.abort();};
+  },[plan.table,filterField,filterSearch,refreshVersion]);
   function editPanel(id: string, updates: Partial<DashboardPanel>) {
     setPanels(items => items.map(panel => panel.id === id ? { ...panel, ...updates } : panel));
   }
@@ -137,7 +187,7 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
       const response=await fetch("/api/smart-dashboard-panel",{
         method:"POST",cache:"no-store",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({action:"create",table:plan.table,prompt:customPrompt.trim(),
-          title:customTitle.trim()||undefined,filterDimension:plan.dimension,filterValue:selectedGroup})
+          title:customTitle.trim()||undefined,filters})
       });
       const result=await response.json();
       if (!response.ok) throw new Error(result.error || "This dataset cannot create the requested panel.");
@@ -151,6 +201,38 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
       setToast({type:"error",message:problem instanceof Error ? problem.message : "Unable to create panel."});
     } finally { setCreating(false); }
   }
+  function openVisualBuilder(id: string | null = null) {
+    setEditingVisualId(id);
+    setVisualOpen(true);
+  }
+  function saveVisualPanel(spec: CustomPanelSpec, wide: boolean, position: number) {
+    if (!editingVisualId && panels.length >= 12) {
+      setToast({type:"error",message:"Maximum 12 panels. Remove one before adding another visualization."});
+      return;
+    }
+    setPanels(current=>{
+      const next=[...current];
+      let updated:DashboardPanel;
+      if (editingVisualId) {
+        const originalIndex=next.findIndex(item=>item.id===editingVisualId);
+        if (originalIndex<0) return current;
+        const [existing]=next.splice(originalIndex,1);
+        updated={...existing,kind:"custom",spec,title:spec.title,wide,chart:"bar"};
+      } else {
+        if (next.length>=12) return current;
+        updated={id:"visual-"+Date.now()+"-"+Math.random().toString(36).slice(2,7),
+          kind:"custom",spec,title:spec.title,wide,chart:"bar"};
+      }
+      // Positions are one-based and follow dashboard reading/DOM order.
+      const requested=Number.isFinite(position)?Math.trunc(position):next.length+1;
+      const insertionIndex=Math.max(0,Math.min(requested-1,next.length));
+      next.splice(insertionIndex,0,updated);
+      return next;
+    });
+    setVisualOpen(false);
+    setEditingVisualId(null);
+    setToast({type:"success",message:editingVisualId?"Visualization and position updated.":"Visualization added at position "+position+"."});
+  }
   function saveDashboardTitle() {
     const value = draftTitle.trim();
     if (!value) {
@@ -161,18 +243,36 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
     setEditingTitle(false);
     setToast({type:"success",message:"Dashboard name saved."});
   }
-  const globalGroups = bundle.drivers || [];
+  function saveLayout() {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({title,panels}));
+      setToast({type:"success",message:"Dashboard layout saved in this browser."});
+    } catch {
+      setToast({type:"error",message:"Unable to save the layout in this browser."});
+    }
+  }
+  function resetLayout() {
+    const defaults = defaultPanels(bundle);
+    setPanels(defaults);
+    setTitle("Dashboard");
+    setDraftTitle("Dashboard");
+    setEditingTitle(false);
+    setVisualOpen(false);
+    setEditingVisualId(null);
+    onChangeFilters([]);
+    setToast({type:"success",message:"Dashboard layout and filters reset."});
+  }
   const canTrend = (bundle.trend || []).length > 0;
   const label = plan.metric ? plan.metric.replace(/_/g, " ") : "record count";
   const metricValue = (point: GroupPoint | TrendPoint) => point.value;
   function renderPanel(panel: DashboardPanel) {
-    if (panel.kind === "custom" && panel.spec) return <CustomPanelView table={plan.table} spec={panel.spec} filterDimension={plan.dimension} selectedGroup={selectedGroup} onSelectGroup={onSelectGroup}/>;
+    if (panel.kind === "custom" && panel.spec) return <CustomPanelView table={plan.table} spec={panel.spec} filterDimension={plan.dimension} filters={filters} refreshVersion={refreshVersion} onSelectGroup={onSelectGroup}/>;
     if (panel.kind === "kpi") {
       return <div className="qp-kpi-grid">
         <div className="qp-kpi-card">
           <div className="qp-kpi-card-top"><span>Total records</span><span className="qp-kpi-card-icon"><Database size={17}/></span></div>
           <strong>{format(overview.records)}</strong>
-          <small>{selectedGroup ? "Selected segment" : "Current dataset"}</small>
+          <small>{filters.length ? "Filtered selection" : "Current dataset"}</small>
         </div>
         <div className="qp-kpi-card">
           <div className="qp-kpi-card-top"><span>{plan.metric ? "Total " + label : "Analyzed records"}</span><span className="qp-kpi-card-icon"><Sigma size={17}/></span></div>
@@ -258,25 +358,80 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
         </div>
         <p><strong>{plan.table}</strong> <span className="qp-title-separator">·</span> Live metrics</p>
       </div>
+      <div className="qp-dash-actions qp-dashboard-toolbar" role="toolbar" aria-label="Dashboard actions">
+        <button type="button" onClick={saveLayout}><Save size={15}/> Save layout</button>
+        <button type="button" onClick={() => window.print()}><Download size={15}/> Print / PDF</button>
+        <button type="button" onClick={resetLayout}><RotateCcw size={15}/> Reset</button>
+        <button type="button" className="qp-open-visual-builder" onClick={()=>openVisualBuilder()}><LayoutGrid size={16}/> Add visualization <Plus size={15}/></button>
+      </div>
     </div>
-    <div className="qp-filter-line">
-      <strong>Filter</strong>
-      <button type="button" className={!selectedGroup ? "active" : ""} onClick={() => onSelectGroup(null)}>All data</button>
-      {globalGroups.slice(0, 8).map(item => <button key={item.label} type="button" title={item.label} className={selectedGroup === item.label ? "active" : ""} onClick={() => onSelectGroup(item.label)}>{item.label}</button>)}
-      {filterBusy && <small>Recalculating…</small>}
-    </div>
-    {filterError && <div className="qp-alert" role="alert">{filterError}</div>}
+    <section className="qp-snapshot-card" aria-label="Performance snapshot and filters">
+      <header className="qp-snapshot-header">
+        <div className="qp-snapshot-heading"><span className="qp-panel-kind-icon"><Activity size={17}/></span><h3>Performance snapshot</h3></div>
+        <div className="qp-live-indicator" aria-live="polite">
+          <span className="qp-live-dot"/>
+          {filterError ? "Retrying updates" : filterBusy ? "Updating metrics…" : "Auto-updating · 10s"}
+          {lastUpdated && <small>Updated {new Date(lastUpdated).toLocaleTimeString()}</small>}
+        </div>
+      </header>
+      {renderPanel({id:"metrics",kind:"kpi",title:"Performance snapshot",wide:true,chart:"bar"})}
+      <div className="qp-snapshot-divider" role="separator"/>
+      <div className="qp-filter-topline">
+        <strong>Dashboard filters</strong>
+        <span>Choose up to three dataset fields</span>
+      </div>
+      {plan.dimensions.length ? (
+        <>
+          <div className="qp-filter-controls">
+            <label className="qp-filter-control">
+              <span>Field</span>
+              <select value={filterField} aria-label="Filter field" onChange={event=>{setFilterField(event.target.value);setFilterChoice("");setFilterSearch("");setFilterChoices([]);}}>
+                {plan.dimensions.map(field=><option key={field} value={field}>{field.replace(/_/g," ")}</option>)}
+              </select>
+            </label>
+            <label className="qp-filter-control qp-filter-search">
+              <span>Find a category</span>
+              <input value={filterSearch} maxLength={80} placeholder="Search available values" onChange={event=>setFilterSearch(event.target.value)}/>
+            </label>
+            <label className="qp-filter-control">
+              <span>Value</span>
+              <select aria-label="Filter category value" value={filterChoice} disabled={choicesLoading || !filterChoices.length}
+                onChange={event=>setFilterChoice(event.target.value)}>
+                <option value="">{choicesLoading ? "Loading values…" : "Choose a value"}</option>
+                {filterChoices.map(value=><option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+            <button type="button" className="qp-filter-add" disabled={!filterChoice || !filterField || filterBusy ||
+              (filters.length>=3 && !filters.some(filter=>filter.column===filterField))}
+              onClick={()=>{
+                const next=[...filters.filter(filter=>filter.column!==filterField),{column:filterField,value:filterChoice}];
+                onChangeFilters(next);
+              }}><Plus size={15}/> Apply filter</button>
+          </div>
+          {choicesError && <p className="qp-filter-choice-error" role="status">{choicesError}</p>}
+          <div className="qp-active-filters">
+            {filters.length ? filters.map(filter=><span className="qp-active-filter" key={filter.column}>
+              <strong>{filter.column.replace(/_/g," ")}</strong><span title={filter.value}>{filter.value}</span>
+              <button type="button" aria-label={"Remove filter "+filter.column} onClick={()=>onChangeFilters(filters.filter(item=>item.column!==filter.column))}><X size={13}/></button>
+            </span>) : <span className="qp-filter-none">All data · No filters applied</span>}
+            {filters.length>0 && <button type="button" className="qp-filter-clear" onClick={()=>onChangeFilters([])}>Clear all</button>}
+          </div>
+        </>
+      ) : <p className="qp-filter-none">This table has no categorical fields available for filtering.</p>}
+      {filterError && <div className="qp-alert" role="status">{filterError}</div>}
+    </section>
     <div className="qp-dashboard-grid" aria-busy={filterBusy}>
       {panels.map((panel, index) => <article key={panel.id} className={"qp-dashboard-panel" + (panel.wide ? " wide" : "") + (draggingId === panel.id ? " dragging" : "")} draggable onDragStart={() => setDraggingId(panel.id)} onDragOver={event => event.preventDefault()} onDrop={() => dropPanel(panel.id)} onDragEnd={() => setDraggingId(null)}>
         <div className="qp-panel-heading">
           <div className="qp-panel-title">
             <span className="qp-panel-kind-icon" aria-hidden="true">
-              {panel.kind === "kpi" ? <Activity size={16}/> : panel.kind === "trend" ? <LineChartIcon size={16}/> : panel.kind === "mix" ? <PieChartIcon size={16}/> : panel.kind === "table" ? <Table2 size={16}/> : <BarChart3 size={16}/>}
+              <ChartTypeGlyph chart={panelChartType(panel)} size={25}/>
             </span>
             <input value={panel.title} aria-label="Panel heading" maxLength={65} onChange={event => editPanel(panel.id, {title:event.target.value})}/>
           </div>
           <div className="qp-panel-actions">
             <span className="qp-panel-drag-hint" aria-label="Drag to reorder" title="Drag to reorder"><GripVertical size={15}/></span>
+            {panel.kind === "custom" && panel.spec && <button type="button" title="Edit visualization" aria-label="Edit visualization" onClick={()=>openVisualBuilder(panel.id)}><Settings2 size={15}/></button>}
             {(panel.kind === "trend" || panel.kind === "drivers") && <select aria-label="Chart type" value={panel.chart} onChange={event => editPanel(panel.id,{chart:event.target.value as DashboardPanel["chart"]})}>
               {panel.kind === "trend" ? <><option value="line">Line</option><option value="area">Area</option></> : <option value="bar">Bars</option>}
             </select>}
@@ -289,6 +444,14 @@ export default function DashboardBuilder({ bundle, projectRef, overview, drivers
         {renderPanel(panel)}
       </article>)}
     </div>
+    {visualOpen && <VisualPanelBuilder key={plan.table+":"+(editingVisualId||"new")} table={plan.table} filters={filters}
+      initialSpec={editingVisualId ? panels.find(panel=>panel.id===editingVisualId)?.spec||null : null}
+      initialWide={Boolean(editingVisualId && panels.find(panel=>panel.id===editingVisualId)?.wide)}
+      panelCount={panels.length}
+      initialPosition={editingVisualId ? panels.findIndex(panel=>panel.id===editingVisualId)+1 : panels.length+1}
+      atLimit={panels.length>=12}
+      onClose={()=>{setVisualOpen(false);setEditingVisualId(null);}}
+      onSave={saveVisualPanel}/>}
     <form className="qp-custom-create" onSubmit={createCustomPanel}>
       <div className="qp-custom-heading"><Sparkles size={18}/><strong>Create your own panel</strong></div>
       <input aria-label="Custom panel title" placeholder="Panel title (optional)" maxLength={65}

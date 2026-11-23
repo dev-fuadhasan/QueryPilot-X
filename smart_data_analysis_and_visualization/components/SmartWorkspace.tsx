@@ -49,6 +49,7 @@ function ChartPreview({ report, chart }: { report: AnalysisResult; chart: ChartD
 export default function SmartWorkspace({ tables, loading, onRefresh, projectName, projectRef, aiEnabled }: Props) {
   const [tab, setTab] = useState<"studio" | "analysis" | "datasets">("studio");
   const [selectedTable, setSelectedTable] = useState("all");
+  const [scopeReady, setScopeReady] = useState(false);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [report, setReport] = useState<AnalysisResult | null>(null);
@@ -72,10 +73,11 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
   }
 
   useEffect(() => {
-    if (loading) return;
+    if (loading) { setScopeReady(false); return; }
     const saved = window.sessionStorage.getItem("querypilot:selected-table:" + projectRef);
     const next = saved && (saved === "all" || tables.some(table => table.name === saved)) ? saved : tables[0]?.name || "all";
     setSelectedTable(next);
+    setScopeReady(true);
   }, [loading, projectRef, tables]);
 
   useEffect(() => {
@@ -160,34 +162,43 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
   }
 
   return <div className={"smart-workspace intelligence-active qp-unified-shell" + (tab === "analysis" ? " qp-chat-mode" : "")}>
-    <main className="analysis-canvas">
-      <header className="canvas-top">
+    <header className="canvas-top">
         <div className="canvas-heading"><h1>QueryPilot Studio</h1><p>{projectName}</p></div>
         <div className="canvas-controls">
           <div className="canvas-scope"><label htmlFor="analysis-scope">Analyze table</label><select id="analysis-scope" value={selectedTable} disabled={busy} onChange={event => selectAnalysisTable(event.target.value)}><option value="all">All tables</option>{tables.map(table => <option key={table.name} value={table.name}>{table.name}</option>)}</select></div>
           <div className="canvas-tabs"><button type="button" className={tab === "studio" ? "selected" : ""} onClick={() => setTab("studio")}><BarChart3 size={15}/> Dashboard</button><button type="button" className={tab === "analysis" ? "selected" : ""} onClick={() => setTab("analysis")}><MessageSquare size={15}/> Ask AI</button><button type="button" className={tab === "datasets" ? "selected" : ""} onClick={() => setTab("datasets")}><Database size={15}/> Datasets</button></div>
         </div>
-      </header>
+    </header>
+    <div className="qp-studio-content">
+      <main className="analysis-canvas">
       <div className="canvas-results qp-studio-host" style={{display:tab === "studio" ? "block":"none"}}>
-        <IntelligenceStudio key={projectRef + ":" + selectedTable} tables={tables} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} projectRef={projectRef} projectName={projectName}/>
+        <IntelligenceStudio tables={tables} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} projectRef={projectRef} projectName={projectName} ready={scopeReady && !loading}/>
       </div>
       {tab === "datasets" && <div className="canvas-datasets qp-unified-datasets">
         <DatasetsPanel tables={tables} loading={loading} onRefresh={onRefresh} selectedTable={selectedTable} onSelectTable={selectAnalysisTable} onOpenDashboard={() => setTab("studio")}/>
       </div>}
       {tab === "analysis" && <section className="canvas-results qp-chat-results" aria-label="AI analysis results">
-        <div className="qp-chat-results-heading">
-          <div><span>ANALYSIS WORKSPACE</span><h2>Results</h2></div>
-          <span className="qp-chat-source"><Database size={14}/>{selectedTable === "all" ? "All connected tables" : selectedTable}</span>
-        </div>
+        <header className="qp-chat-results-heading">
+          <div className="qp-chat-heading-group">
+            <span className="qp-chat-heading-eyebrow">ANALYSIS WORKSPACE</span>
+            <div className="qp-chat-heading-row">
+              <h2>Results</h2>
+              <span className="qp-chat-source" title={selectedTable === "all" ? "All connected tables" : selectedTable}><Database size={14}/><span>{selectedTable === "all" ? "All connected tables" : selectedTable}</span></span>
+            </div>
+          </div>
+        </header>
         {!busy && !report && !clarification && !error && <div className="qp-chat-empty">
-          <div className="qp-chat-empty-symbol"><BarChart3 size={29}/></div>
-          <h3>Ready to analyze</h3>
-          <p>Your charts, calculations and supporting data will appear here.</p>
+          <div className="qp-chat-empty-content">
+            <div className="qp-chat-empty-symbol"><BarChart3 size={26}/></div>
+            <h3>Ready to analyze</h3>
+            <p>Ask QueryPilot AI a question to explore insights from your selected data.</p>
+            <div className="qp-chat-empty-highlights" aria-hidden="true"><span>Visual insights</span><span>Data tables</span><span>SQL evidence</span></div>
+          </div>
         </div>}
         <div className="qp-chat-analysis-results">
         {error && <div className="analysis-error" role="alert">{error}</div>}
         {busy && <div className="work-status"><LoaderCircle className="spinning" size={25}/><div><strong>Analyzing the selected data</strong><p>Checking available columns and running a read-only query.</p></div></div>}
-        {!busy && clarification && <div className="choice-card"><span className="choice-label">ONE MORE DETAIL</span><h2>{clarification.question}</h2><p>Choose the option that best matches your request.</p><div className="choice-list">{clarification.options.map(option => <button type="button" key={option} onClick={() => selectOption(option)}>{option}<ArrowRight size={16}/></button>)}</div></div>}
+        {!busy && clarification && <div className="choice-card"><span className="choice-label">ONE MORE DETAIL</span><h2>{clarification.question}</h2><p>Choose the option that best matches your request.</p><div className="choice-list">{clarification.options.map(option => <button type="button" key={option} onClick={() => selectOption(option)}><span className="qp-choice-button-label">{option}</span><ArrowRight size={16} aria-hidden="true"/></button>)}</div></div>}
         {!busy && report && <div className="generated-report">
           <section className="answer-card">
             <div className="answer-top"><span className="report-eyebrow"><CheckCircle2 size={14}/> ANALYSIS COMPLETE</span><div className="export-actions"><button onClick={download} type="button" disabled={plotStatus === "loading"}><Download size={15}/> HTML</button><button onClick={print} type="button" disabled={plotStatus === "loading"}><FileDown size={15}/> PDF</button></div></div>
@@ -208,7 +219,15 @@ export default function SmartWorkspace({ tables, loading, onRefresh, projectName
     </main>
     {tab === "analysis" && <aside className="ai-chat qp-chat-sidebar" aria-label="Ask AI chat panel"><header className="ai-chat-top"><div className="ai-avatar"><MessageSquare size={19}/></div><div><h2>QueryPilot AI</h2><p>Ask about your connected data</p></div><span className="qp-chat-presence" title="Chat available"/></header>
       <div className="ai-chat-history"><div className="chat-greeting"><div className="chat-greeting-icon"><BarChart3 size={19}/></div><h3>What would you like to know?</h3><p>Use the chat to explore your selected table. Results appear in the workspace.</p></div>{messages.map((message, i) => <div className={"chat-message " + message.role} key={i}><span>{message.text}</span></div>)}{busy && <div className="chat-loading"><LoaderCircle className="spinning" size={15}/> Checking your data...</div>}<div ref={chatBottom}/></div>
-      <form className="ai-chat-form" onSubmit={event => { event.preventDefault(); void ask(question); }}><textarea value={question} disabled={busy} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void ask(question); } }} placeholder="Ask a question about your data..." rows={3} maxLength={900}/><div className="ai-chat-form-bottom"><small>Enter to send · Shift + Enter for new line</small><button type="submit" disabled={busy || !question.trim()} aria-label="Send message"><Send size={17}/></button></div></form>
+      <form className="ai-chat-form qp-chat-composer" onSubmit={event => { event.preventDefault(); void ask(question); }}>
+        <div className="qp-chat-composer-box">
+          <textarea aria-label="Ask QueryPilot AI a question" value={question} disabled={busy} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void ask(question); } }} placeholder="Ask a question about your data..." rows={3} maxLength={900}/>
+          <span className="qp-chat-composer-status"><ShieldCheck size={13}/> Read-only analysis</span>
+          <button className="qp-chat-send-button" type="submit" disabled={busy || !question.trim()} aria-label="Send message"><Send size={17}/></button>
+        </div>
+        <p className="qp-chat-composer-hint">Enter to send · Shift + Enter for a new line</p>
+      </form>
     </aside>}
+    </div>
   </div>;
 }
