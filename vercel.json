@@ -24,11 +24,5 @@
         "service": "web"
       }
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/daily-analysis/scheduler/run",
-      "schedule": "0 * * * *"
-    }
   ]
 }
