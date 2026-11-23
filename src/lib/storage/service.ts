@@ -128,30 +128,37 @@ export async function listUserFiles(options: ListFilesOptions): Promise<StoredFi
   // Query Supabase Storage
   if (supabaseClient) {
     try {
-      const folderPrefix = category ? `${userId}/${category}` : `${userId}`;
-      const { data, error } = await supabaseClient.storage.from(STORAGE_BUCKET_NAME).list(folderPrefix, {
-        limit: options.limit || 100,
-        offset: options.offset || 0,
-        sortBy: { column: "created_at", order: "desc" }
-      });
+      const categoriesToScan = category
+        ? [category]
+        : (["datasets", "reports", "exports", "uploads", "general"] as const);
 
-      if (!error && Array.isArray(data)) {
-        for (const item of data) {
-          if (!item.name) continue;
-          const storageKey = `${folderPrefix}/${item.name}`;
-          if (!verifyKeyOwnership(userId, storageKey)) continue;
+      for (const cat of categoriesToScan) {
+        const folderPrefix = `${userId}/${cat}`;
+        const { data, error } = await supabaseClient.storage.from(STORAGE_BUCKET_NAME).list(folderPrefix, {
+          limit: options.limit || 100,
+          offset: options.offset || 0,
+          sortBy: { column: "created_at", order: "desc" }
+        });
 
-          results.push({
-            fileId: item.id || item.name.slice(0, 8),
-            userId,
-            category: category || "general",
-            filename: item.name.includes("-") ? item.name.split("-").slice(1).join("-") : item.name,
-            storageKey,
-            sizeBytes: item.metadata?.size || 0,
-            mimeType: item.metadata?.mimetype || "application/octet-stream",
-            createdAt: item.created_at || new Date().toISOString(),
-            backend: "supabase_storage"
-          });
+        if (!error && Array.isArray(data)) {
+          for (const item of data) {
+            // In Supabase Storage, folder placeholders have item.id === null
+            if (!item.name || item.id === null) continue;
+            const storageKey = `${folderPrefix}/${item.name}`;
+            if (!verifyKeyOwnership(userId, storageKey)) continue;
+
+            results.push({
+              fileId: item.id || item.name.slice(0, 8),
+              userId,
+              category: cat,
+              filename: item.name.includes("-") ? item.name.split("-").slice(1).join("-") : item.name,
+              storageKey,
+              sizeBytes: item.metadata?.size || 0,
+              mimeType: item.metadata?.mimetype || "application/octet-stream",
+              createdAt: item.created_at || new Date().toISOString(),
+              backend: "supabase_storage"
+            });
+          }
         }
       }
     } catch {
