@@ -538,6 +538,18 @@ export function buildDatabaseAggregateFallbackSql(
   const qDate = quoteIdentifier(dateColumn, allowedCols);
 
   const selectParts: string[] = [`CAST(${qDate} AS DATE) AS ${qDate}`, `COUNT(*) AS _agg_row_count`];
+
+  // Include distinct count of the domain's primary entity identifier when mapped
+  const entityRoleCandidates = ["orderId", "skuId", "campaignId", "transactionId", "customerId", "shipmentId", "userId"];
+  for (const role of entityRoleCandidates) {
+    const colName = understanding.roleAssignments[role]?.columnName;
+    if (colName && allowedCols.has(colName)) {
+      const qEntity = quoteIdentifier(colName, allowedCols);
+      selectParts.push(`COUNT(DISTINCT ${qEntity}) AS _agg_distinct_entities`);
+      break;
+    }
+  }
+
   for (const assignment of Object.values(understanding.roleAssignments)) {
     if (assignment.columnName === dateColumn) continue;
     if (!allowedCols.has(assignment.columnName)) continue;
@@ -547,7 +559,16 @@ export function buildDatabaseAggregateFallbackSql(
     selectParts.push(`COALESCE(SUM(${qCol}::double precision), 0) AS ${qCol}`);
   }
 
-  return `SELECT ${selectParts.join(", ")} FROM ${qualified} WHERE ${qDate} >= '${windowStart}' AND ${qDate} <= '${windowEnd} 23:59:59' GROUP BY CAST(${qDate} AS DATE) ORDER BY CAST(${qDate} AS DATE) ASC LIMIT 1000`;
+  const whereParts = [`${qDate} >= '${windowStart}'`, `${qDate} <= '${windowEnd} 23:59:59'`];
+  if (understanding.domainId === "sales_ecommerce") {
+    const statusCol = understanding.roleAssignments.status?.columnName;
+    if (statusCol && allowedCols.has(statusCol)) {
+      const qStatus = quoteIdentifier(statusCol, allowedCols);
+      whereParts.push(`LOWER(COALESCE(TRIM(CAST(${qStatus} AS TEXT)), '')) NOT IN ('cancelled','canceled','void','voided','failed','rejected','returned','refunded','chargeback')`);
+    }
+  }
+
+  return `SELECT ${selectParts.join(", ")} FROM ${qualified} WHERE ${whereParts.join(" AND ")} GROUP BY CAST(${qDate} AS DATE) ORDER BY CAST(${qDate} AS DATE) ASC LIMIT 1000`;
 }
 
 /**

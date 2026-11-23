@@ -234,7 +234,22 @@ function summarizeSalesSlice(
   const discounts: number[] = [];
   const quantities: number[] = [];
 
+  let aggregatedOrdersCount = 0;
+
   for (const row of rows) {
+    // Support high-volume database-side daily rollup rows (_agg_row_count present without per-order IDs)
+    if (row._agg_row_count !== undefined && !accessor.str(row, "orderId")) {
+      const entityCount = toNullableNumber(row._agg_distinct_entities) ?? toNullableNumber(row._agg_row_count) ?? 0;
+      aggregatedOrdersCount += Math.max(0, Math.trunc(entityCount));
+      completedRows.push(row);
+      const fin = computeSalesRowFinancials(row, accessor);
+      if (fin.revenue !== null) revenues.push(fin.revenue);
+      if (fin.profit !== null) profits.push(fin.profit);
+      if (accessor.has("discount")) discounts.push(fin.discountAmount);
+      if (accessor.has("quantity")) quantities.push(fin.quantity);
+      continue;
+    }
+
     const orderId = accessor.str(row, "orderId");
     if (!orderId) continue;
     allOrderIds.add(orderId);
@@ -261,7 +276,7 @@ function summarizeSalesSlice(
     if (accessor.has("quantity")) quantities.push(fin.quantity);
   }
 
-  const totalOrders = completedOrderIds.size;
+  const totalOrders = completedOrderIds.size + aggregatedOrdersCount;
   const totalRevenue = accessor.has("revenue") ? safeSum(revenues) : null;
   const unitsSold = accessor.has("quantity") ? safeSum(quantities) : null;
   const hasProfitSource = accessor.has("profit") || (accessor.has("revenue") && accessor.has("cost"));

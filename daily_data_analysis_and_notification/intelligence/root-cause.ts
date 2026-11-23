@@ -1,5 +1,7 @@
-import type { BusinessDomainId, DomainTableUnderstanding } from "../profiler/types";
+import type { BusinessDomainId, DomainTableUnderstanding, ReadOnlyQueryExecutor, TableProfile } from "../profiler/types";
+import { quoteIdentifier, quoteQualifiedTable } from "../profiler/sql-safety";
 import { createRoleAccessor, type RoleAccessor } from "../metrics/domain-calculators";
+import { PRIMARY_DATE_ROLE_BY_DOMAIN } from "../metrics/engine";
 import { safePercent, safeRound, safeSum } from "../metrics/math-and-periods";
 import type { ComparisonWindow, DynamicAnalysisResult, MetricResult, PeriodWindow } from "../metrics/types";
 import type {
@@ -11,13 +13,13 @@ import type {
 const CAUSALITY_DISCLAIMER =
   "Dimension contribution reflects statistical decomposition and association within available columns; it does not prove underlying causation.";
 
-type DomainDimensionSpec = {
+export type DomainDimensionSpec = {
   dimensionId: string;
   label: string;
   role: string;
 };
 
-const DOMAIN_DIMENSIONS: Record<BusinessDomainId, DomainDimensionSpec[]> = {
+export const DOMAIN_DIMENSIONS: Record<BusinessDomainId, DomainDimensionSpec[]> = {
   sales_ecommerce: [
     { dimensionId: "product", label: "Product", role: "product" },
     { dimensionId: "category", label: "Category", role: "category" },
@@ -57,10 +59,307 @@ const DOMAIN_DIMENSIONS: Record<BusinessDomainId, DomainDimensionSpec[]> = {
   ]
 };
 
+export type PrecomputedDimensionGroupValue = {
+  groupLabel: string;
+  value: number;
+  rowCount: number;
+};
+
+export type PrecomputedDimensionRollup = {
+  metricId: string;
+  dimensionId: string;
+  dimensionLabel: string;
+  sourceColumn: string;
+  currentGroups: PrecomputedDimensionGroupValue[];
+  comparisonGroups: PrecomputedDimensionGroupValue[];
+};
+
 const SALES_CANCELLED_OR_RETURNED = new Set(["cancelled", "canceled", "void", "voided", "failed", "rejected", "returned", "refunded", "chargeback"]);
 const OPS_DELAYED_STATUS = new Set(["delayed", "late", "overdue", "sla breached", "breached"]);
 const FINANCE_EXPENSE_TYPES = new Set(["expense", "debit", "outflow", "payable", "cost", "disbursement", "bill", "payout"]);
 const FINANCE_INCOME_TYPES = new Set(["income", "credit", "inflow", "revenue", "receivable", "receipt", "deposit"]);
+
+const DECOMPOSABLE_METRICS_BY_DOMAIN: Record<BusinessDomainId, string[]> = {
+  sales_ecommerce: ["totalRevenue", "totalOrders", "unitsSold"],
+  inventory_supply_chain: ["availableStock", "stockMovement"],
+  marketing_campaigns: ["attributedRevenue", "conversions", "campaignSpend", "clicks"],
+  finance_expenses: ["totalExpenses", "totalIncome"],
+  customers_crm: ["activeCustomers"],
+  operations_fulfillment: ["delayedDeliveries"],
+  product_usage_saas: ["dau", "mrr"]
+};
+
+function resolveAvailableDimensions(domainId: BusinessDomainId, accessor: RoleAccessor): DomainDimensionSpec[] {
+  return DOMAIN_DIMENSIONS[domainId]
+    .map(dim => {
+      if (domainId === "marketing_campaigns" && dim.role === "campaignName" && !accessor.has("campaignName") && accessor.has("campaignId")) {
+        return { ...dim, role: "campaignId" };
+      }
+      if (domainId === "product_usage_saas" && dim.role === "featureName" && !accessor.has("featureName") && accessor.has("eventName")) {
+        return { ...dim, role: "eventName" };
+      }
+      if (domainId === "inventory_supply_chain" && dim.role === "product" && !accessor.has("product") && accessor.has("skuId")) {
+        return { ...dim, role: "skuId" };
+      }
+      return dim;
+    })
+    .filter(dim => accessor.has(dim.role));
+}
+
+function pickTargetMetrics(analysis: DynamicAnalysisResult): MetricResult[] {
+  const allowedIds = new Set(DECOMPOSABLE_METRICS_BY_DOMAIN[analysis.domainId]);
+  const candidates = analysis.availableMetrics.filter(
+    m => allowedIds.has(m.metricId) && m.comparisonValue !== null
+  );
+  const changed = candidates
+    .filter(m => m.changePercent !== null && Math.abs(m.changePercent) >= 3)
+    .sort((a, b) => Math.abs(b.changePercent!) - Math.abs(a.changePercent!));
+  if (changed.length > 0) return changed.slice(0, 2);
+  return candidates.slice(0, 1);
+}
+
+/**
+ * Builds a safe, read-only database-side GROUP BY query for ONE categorical dimension
+ * and ONE decomposable metric over a date window (or explicit list of matching dates).
+ * Never loads raw rows into memory and validates every table/column identifier strictly.
+ */
+export function buildDimensionGroupBySql(input: {
+  tableProfile: TableProfile;
+  understanding: DomainTableUnderstanding;
+  domainId: BusinessDomainId;
+  metricId: string;
+  dimensionColumn: string;
+  dateColumn: string;
+  startDate: string;
+  endDate: string;
+  matchingDates?: string[];
+  limit?: number;
+}): string | null {
+  const { tableProfile, understanding, domainId, metricId, dimensionColumn, dateColumn, startDate, endDate, matchingDates } = input;
+  const allowedTables = new Set([tableProfile.name]);
+  const allowedCols = new Set(tableProfile.columns.filter(c => !c.isSensitive && c.supported).map(c => c.name));
+
+  if (!allowedCols.has(dimensionColumn) || !allowedCols.has(dateColumn)) return null;
+
+  const qualified = quoteQualifiedTable(tableProfile.schema, tableProfile.name, allowedTables);
+  const qDim = quoteIdentifier(dimensionColumn, allowedCols);
+  const qDate = quoteIdentifier(dateColumn, allowedCols);
+  const roleCol = (role: string): string | null => {
+    const col = understanding.roleAssignments[role]?.columnName;
+    return col && allowedCols.has(col) ? quoteIdentifier(col, allowedCols) : null;
+  };
+
+  let aggExpr: string | null = null;
+  const extraPredicates: string[] = [];
+
+  switch (domainId) {
+    case "sales_ecommerce": {
+      const statusCol = roleCol("status");
+      if (statusCol) {
+        extraPredicates.push(`LOWER(COALESCE(TRIM(CAST(${statusCol} AS TEXT)), '')) NOT IN ('cancelled','canceled','void','voided','failed','rejected','returned','refunded','chargeback')`);
+      }
+      if (metricId === "totalRevenue") {
+        const revCol = roleCol("revenue");
+        if (revCol) aggExpr = `COALESCE(SUM(${revCol}::double precision), 0)`;
+      } else if (metricId === "totalOrders") {
+        const orderCol = roleCol("orderId");
+        if (orderCol) aggExpr = `COUNT(DISTINCT ${orderCol})`;
+      } else if (metricId === "unitsSold") {
+        const qtyCol = roleCol("quantity");
+        if (qtyCol) aggExpr = `COALESCE(SUM(${qtyCol}::double precision), 0)`;
+      }
+      break;
+    }
+
+    case "inventory_supply_chain": {
+      if (metricId === "stockMovement") {
+        const recCol = roleCol("quantityReceived");
+        const shipCol = roleCol("quantityShipped");
+        if (recCol && shipCol) aggExpr = `COALESCE(SUM(COALESCE(${recCol}::double precision, 0) - COALESCE(${shipCol}::double precision, 0)), 0)`;
+        else if (recCol) aggExpr = `COALESCE(SUM(${recCol}::double precision), 0)`;
+        else if (shipCol) aggExpr = `COALESCE(SUM(-${shipCol}::double precision), 0)`;
+      } else if (metricId === "availableStock") {
+        const stockCol = roleCol("stockOnHand");
+        if (stockCol) aggExpr = `COALESCE(AVG(${stockCol}::double precision), 0)`;
+      }
+      break;
+    }
+
+    case "marketing_campaigns": {
+      const map: Record<string, string> = {
+        campaignSpend: "spend",
+        attributedRevenue: "attributedRevenue",
+        conversions: "conversions",
+        clicks: "clicks"
+      };
+      const targetCol = map[metricId] ? roleCol(map[metricId]) : null;
+      if (targetCol) aggExpr = `COALESCE(SUM(${targetCol}::double precision), 0)`;
+      break;
+    }
+
+    case "finance_expenses": {
+      const typeCol = roleCol("transactionType");
+      if (metricId === "totalExpenses") {
+        const expCol = roleCol("expenseAmount");
+        const amtCol = roleCol("amount");
+        if (expCol) {
+          aggExpr = `COALESCE(SUM(CASE WHEN ${expCol}::double precision > 0 THEN ${expCol}::double precision ELSE 0 END), 0)`;
+        } else if (amtCol) {
+          if (typeCol) {
+            extraPredicates.push(`LOWER(COALESCE(TRIM(CAST(${typeCol} AS TEXT)), '')) IN ('expense','debit','outflow','payable','cost','disbursement','bill','payout')`);
+          }
+          aggExpr = `COALESCE(SUM(ABS(${amtCol}::double precision)), 0)`;
+        }
+      } else if (metricId === "totalIncome") {
+        const incCol = roleCol("incomeAmount");
+        const amtCol = roleCol("amount");
+        if (incCol) {
+          aggExpr = `COALESCE(SUM(CASE WHEN ${incCol}::double precision > 0 THEN ${incCol}::double precision ELSE 0 END), 0)`;
+        } else if (amtCol && typeCol) {
+          extraPredicates.push(`LOWER(COALESCE(TRIM(CAST(${typeCol} AS TEXT)), '')) IN ('income','credit','inflow','revenue','receivable','receipt','deposit')`);
+          aggExpr = `COALESCE(SUM(ABS(${amtCol}::double precision)), 0)`;
+        }
+      }
+      break;
+    }
+
+    case "customers_crm": {
+      if (metricId === "activeCustomers" || metricId === "newCustomers") {
+        const custCol = roleCol("customerId");
+        if (custCol) aggExpr = `COUNT(DISTINCT ${custCol})`;
+      }
+      break;
+    }
+
+    case "operations_fulfillment": {
+      if (metricId === "delayedDeliveries") {
+        const slaCol = roleCol("slaMet");
+        const statusCol = roleCol("fulfillmentStatus");
+        const delivCol = roleCol("deliveredAt");
+        const promCol = roleCol("promisedDate");
+        const delayChecks: string[] = [];
+        if (slaCol) delayChecks.push(`${slaCol} IS FALSE`);
+        if (delivCol && promCol) delayChecks.push(`${delivCol} > ${promCol}`);
+        if (statusCol) delayChecks.push(`LOWER(COALESCE(TRIM(CAST(${statusCol} AS TEXT)), '')) IN ('delayed','late','overdue','sla breached','breached')`);
+        if (delayChecks.length > 0) {
+          extraPredicates.push(`(${delayChecks.join(" OR ")})`);
+          aggExpr = `COUNT(*)`;
+        }
+      }
+      break;
+    }
+
+    case "product_usage_saas": {
+      if (metricId === "dau") {
+        const userCol = roleCol("userId");
+        if (userCol) aggExpr = `COUNT(DISTINCT ${userCol})`;
+      } else if (metricId === "mrr") {
+        const mrrCol = roleCol("mrr");
+        if (mrrCol) aggExpr = `COALESCE(SUM(${mrrCol}::double precision), 0)`;
+      }
+      break;
+    }
+  }
+
+  if (!aggExpr) return null;
+
+  const datePredicate = matchingDates && matchingDates.length > 0
+    ? `CAST(${qDate} AS DATE) IN (${matchingDates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).map(d => `'${d}'`).join(", ")})`
+    : `${qDate} >= '${startDate}' AND ${qDate} <= '${endDate} 23:59:59'`;
+
+  const whereParts = [datePredicate, ...extraPredicates];
+  const groupExpr = `COALESCE(NULLIF(TRIM(CAST(${qDim} AS TEXT)), ''), 'Unspecified')`;
+  const safeLimit = Math.max(1, Math.min(Math.trunc(input.limit || 100), 200));
+
+  return `SELECT ${groupExpr} AS group_label, ${aggExpr} AS metric_value, COUNT(*) AS row_count FROM ${qualified} WHERE ${whereParts.join(" AND ")} GROUP BY ${groupExpr} ORDER BY ABS(${aggExpr}) DESC LIMIT ${safeLimit}`;
+}
+
+/**
+ * Executes independent per-dimension database-side GROUP BY queries for high-volume datasets
+ * (>25,000 rows) so Root Cause Analysis works accurately without loading entire tables into memory.
+ */
+export async function fetchHighVolumeDimensionRollups(input: {
+  executor: ReadOnlyQueryExecutor;
+  tableProfile: TableProfile;
+  understanding: DomainTableUnderstanding;
+  analysis: DynamicAnalysisResult;
+  allowMediumConfidence?: boolean;
+}): Promise<PrecomputedDimensionRollup[]> {
+  const { executor, tableProfile, understanding, analysis } = input;
+  const comparison = analysis.comparisonPeriod;
+  if (!comparison) return [];
+
+  const primaryDateRole = PRIMARY_DATE_ROLE_BY_DOMAIN[analysis.domainId];
+  const dateColumn = understanding.roleAssignments[primaryDateRole]?.columnName;
+  if (!dateColumn) return [];
+
+  const accessor = createRoleAccessor(understanding, analysis.timezone, input.allowMediumConfidence ?? true);
+  const dimensions = resolveAvailableDimensions(analysis.domainId, accessor);
+  const targetMetrics = pickTargetMetrics(analysis);
+  if (!dimensions.length || !targetMetrics.length) return [];
+
+  const rollups: PrecomputedDimensionRollup[] = [];
+
+  for (const metric of targetMetrics) {
+    for (const dim of dimensions) {
+      const sourceColumn = accessor.column(dim.role);
+      if (!sourceColumn) continue;
+
+      const currentSql = buildDimensionGroupBySql({
+        tableProfile,
+        understanding,
+        domainId: analysis.domainId,
+        metricId: metric.metricId,
+        dimensionColumn: sourceColumn,
+        dateColumn,
+        startDate: analysis.reportingPeriod.start,
+        endDate: analysis.reportingPeriod.end
+      });
+      const comparisonSql = buildDimensionGroupBySql({
+        tableProfile,
+        understanding,
+        domainId: analysis.domainId,
+        metricId: metric.metricId,
+        dimensionColumn: sourceColumn,
+        dateColumn,
+        startDate: comparison.start,
+        endDate: comparison.end,
+        matchingDates: comparison.matchingDates
+      });
+
+      if (!currentSql || !comparisonSql) continue;
+
+      try {
+        const [currRows, compRows] = await Promise.all([
+          executor(currentSql),
+          executor(comparisonSql)
+        ]);
+
+        const toGroups = (rows: Array<Record<string, unknown>>): PrecomputedDimensionGroupValue[] =>
+          rows
+            .map(row => ({
+              groupLabel: String(row.group_label || "Unspecified").trim() || "Unspecified",
+              value: Number(row.metric_value ?? 0),
+              rowCount: Math.max(0, Math.trunc(Number(row.row_count ?? 0)))
+            }))
+            .filter(g => Number.isFinite(g.value));
+
+        rollups.push({
+          metricId: metric.metricId,
+          dimensionId: dim.dimensionId,
+          dimensionLabel: dim.label,
+          sourceColumn,
+          currentGroups: toGroups(currRows),
+          comparisonGroups: toGroups(compRows)
+        });
+      } catch {
+        // Non-fatal: skip this dimension cleanly if database query fails; other dimensions still succeed
+      }
+    }
+  }
+
+  return rollups;
+}
 
 /**
  * Evaluates an additive metric value for a single group of rows so that
@@ -100,7 +399,6 @@ function evaluateGroupMetricValue(
         return safeRound(net, 2);
       }
       if (metricId === "availableStock" && accessor.has("stockOnHand")) {
-        // Deduplicate by latest SKU+warehouse within the group
         const latest = new Map<string, { date: string; qty: number }>();
         for (const r of rows) {
           const sku = accessor.str(r, "skuId");
@@ -205,27 +503,72 @@ function evaluateGroupMetricValue(
   }
 }
 
-const DECOMPOSABLE_METRICS_BY_DOMAIN: Record<BusinessDomainId, string[]> = {
-  sales_ecommerce: ["totalRevenue", "totalOrders", "unitsSold"],
-  inventory_supply_chain: ["availableStock", "stockMovement"],
-  marketing_campaigns: ["attributedRevenue", "conversions", "campaignSpend", "clicks"],
-  finance_expenses: ["totalExpenses", "totalIncome"],
-  customers_crm: ["activeCustomers"],
-  operations_fulfillment: ["delayedDeliveries"],
-  product_usage_saas: ["dau", "mrr"]
-};
+function buildContributorsFromGroupMaps(input: {
+  dimensionId: string;
+  dimensionLabel: string;
+  sourceColumn: string;
+  currentMap: Map<string, { value: number; present: boolean }>;
+  comparisonMap: Map<string, { value: number; present: boolean }>;
+  totalDelta: number;
+  scale: number;
+}): { positive: RootCauseContributor[]; negative: RootCauseContributor[] } {
+  const { dimensionId, dimensionLabel, sourceColumn, currentMap, comparisonMap, totalDelta, scale } = input;
+  const allLabels = new Set([...currentMap.keys(), ...comparisonMap.keys()]);
+  const dimContributors: RootCauseContributor[] = [];
 
-function pickTargetMetrics(analysis: DynamicAnalysisResult): MetricResult[] {
-  const allowedIds = new Set(DECOMPOSABLE_METRICS_BY_DOMAIN[analysis.domainId]);
-  const candidates = analysis.availableMetrics.filter(
-    m => allowedIds.has(m.metricId) && m.comparisonValue !== null
-  );
-  // Prioritize metrics with largest meaningful movement; keep top 2
-  const changed = candidates
-    .filter(m => m.changePercent !== null && Math.abs(m.changePercent) >= 3)
-    .sort((a, b) => Math.abs(b.changePercent!) - Math.abs(a.changePercent!));
-  if (changed.length > 0) return changed.slice(0, 2);
-  return candidates.slice(0, 1);
+  for (const groupLabel of allLabels) {
+    const currEntry = currentMap.get(groupLabel);
+    const compEntry = comparisonMap.get(groupLabel);
+    const currVal = currEntry ? currEntry.value : 0;
+    const rawCompVal = compEntry ? compEntry.value : 0;
+    const compVal = safeRound(rawCompVal * scale, 2);
+    const absoluteDelta = safeRound(currVal - compVal, 2);
+    if (Math.abs(absoluteDelta) < 0.01) continue;
+
+    const appearance: RootCauseContributor["appearance"] = currEntry?.present && compEntry?.present
+      ? "both_periods"
+      : currEntry?.present
+        ? "current_only"
+        : "comparison_only";
+
+    const contributionPercent = totalDelta !== 0
+      ? safePercent(absoluteDelta, Math.abs(totalDelta), 1)
+      : null;
+
+    const direction: RootCauseContributor["direction"] = absoluteDelta > 0 ? "positive" : "negative";
+    const appearanceNote = appearance === "current_only"
+      ? " (present only in current period)"
+      : appearance === "comparison_only"
+        ? " (present only in comparison period)"
+        : "";
+
+    const evidence = `${dimensionLabel} "${groupLabel}" moved from ${compVal.toLocaleString("en-US", { maximumFractionDigits: 2 })} to ${currVal.toLocaleString("en-US", { maximumFractionDigits: 2 })} (${absoluteDelta >= 0 ? "+" : ""}${absoluteDelta.toLocaleString("en-US", { maximumFractionDigits: 2 })}${contributionPercent !== null ? `, ${contributionPercent >= 0 ? "+" : ""}${contributionPercent}% relative to total net shift` : ""})${appearanceNote}.`;
+
+    dimContributors.push({
+      dimensionId,
+      dimensionLabel,
+      sourceColumn,
+      groupLabel,
+      currentValue: safeRound(currVal, 2),
+      comparisonValue: compVal,
+      absoluteDelta,
+      contributionPercent,
+      direction,
+      appearance,
+      evidence
+    });
+  }
+
+  return {
+    positive: dimContributors
+      .filter(c => c.direction === "positive")
+      .sort((a, b) => b.absoluteDelta - a.absoluteDelta)
+      .slice(0, 3),
+    negative: dimContributors
+      .filter(c => c.direction === "negative")
+      .sort((a, b) => a.absoluteDelta - b.absoluteDelta)
+      .slice(0, 3)
+  };
 }
 
 export function buildRootCauseAnalysis(input: {
@@ -236,10 +579,13 @@ export function buildRootCauseAnalysis(input: {
   period: PeriodWindow;
   comparison: ComparisonWindow | null;
   allowMediumConfidence?: boolean;
+  /** Database-side per-dimension GROUP BY rollups used for high-volume (>25,000 row) tables. */
+  precomputedRollups?: PrecomputedDimensionRollup[];
 }): RootCauseAnalysisResult {
-  const { analysis, understanding, periodRows, comparisonRows, period, comparison } = input;
+  const { analysis, understanding, periodRows, comparisonRows, period, comparison, precomputedRollups } = input;
+  const hasPrecomputed = Boolean(precomputedRollups && precomputedRollups.length > 0);
 
-  if (!comparison || comparisonRows.length === 0) {
+  if (!comparison || (!hasPrecomputed && comparisonRows.length === 0)) {
     return {
       domainId: analysis.domainId,
       domainName: analysis.domainName,
@@ -254,23 +600,25 @@ export function buildRootCauseAnalysis(input: {
     };
   }
 
-  const accessor = createRoleAccessor(understanding, period.timezone, input.allowMediumConfidence ?? true);
-  const rawDimensions = DOMAIN_DIMENSIONS[analysis.domainId].map(dim => {
-    // Fallbacks when primary label role isn't mapped
-    if (analysis.domainId === "marketing_campaigns" && dim.role === "campaignName" && !accessor.has("campaignName") && accessor.has("campaignId")) {
-      return { ...dim, role: "campaignId" };
-    }
-    if (analysis.domainId === "product_usage_saas" && dim.role === "featureName" && !accessor.has("featureName") && accessor.has("eventName")) {
-      return { ...dim, role: "eventName" };
-    }
-    if (analysis.domainId === "inventory_supply_chain" && dim.role === "product" && !accessor.has("product") && accessor.has("skuId")) {
-      return { ...dim, role: "skuId" };
-    }
-    return dim;
-  });
+  if (analysis.source.executionMode === "database_aggregate" && !hasPrecomputed) {
+    return {
+      domainId: analysis.domainId,
+      domainName: analysis.domainName,
+      tableName: analysis.tableName,
+      reportingPeriod: period,
+      comparisonPeriod: comparison,
+      available: false,
+      unavailableReason: "High-volume dataset required database-side dimension GROUP BY rollups, which were unavailable for the mapped columns.",
+      analyses: [],
+      causalityDisclaimer: CAUSALITY_DISCLAIMER,
+      generatedAt: analysis.generatedAt
+    };
+  }
 
-  const availableDimensions = rawDimensions.filter(dim => accessor.has(dim.role));
-  if (availableDimensions.length === 0) {
+  const accessor = createRoleAccessor(understanding, period.timezone, input.allowMediumConfidence ?? true);
+  const availableDimensions = resolveAvailableDimensions(analysis.domainId, accessor);
+
+  if (availableDimensions.length === 0 && !hasPrecomputed) {
     return {
       domainId: analysis.domainId,
       domainName: analysis.domainName,
@@ -319,84 +667,91 @@ export function buildRootCauseAnalysis(input: {
     const negativeContributors: RootCauseContributor[] = [];
     const investigatedDimensions: string[] = [];
 
-    for (const dim of availableDimensions) {
-      const sourceColumn = accessor.column(dim.role)!;
-      const currGroups = new Map<string, Array<Record<string, unknown>>>();
-      const compGroups = new Map<string, Array<Record<string, unknown>>>();
+    const metricRollups = hasPrecomputed
+      ? precomputedRollups!.filter(r => r.metricId === metric.metricId)
+      : [];
 
-      for (const row of periodRows) {
-        const label = accessor.str(row, dim.role) || "Unspecified";
-        const list = currGroups.get(label) || [];
-        list.push(row);
-        currGroups.set(label, list);
+    if (metricRollups.length > 0) {
+      // High-volume database-side GROUP BY mode: each dimension was queried independently
+      for (const rollup of metricRollups) {
+        const currentMap = new Map<string, { value: number; present: boolean }>();
+        const comparisonMap = new Map<string, { value: number; present: boolean }>();
+
+        for (const g of rollup.currentGroups) {
+          currentMap.set(g.groupLabel, { value: g.value, present: g.rowCount > 0 || g.value !== 0 });
+        }
+        for (const g of rollup.comparisonGroups) {
+          comparisonMap.set(g.groupLabel, { value: g.value, present: g.rowCount > 0 || g.value !== 0 });
+        }
+
+        if (currentMap.size === 0 && comparisonMap.size === 0) continue;
+        investigatedDimensions.push(rollup.dimensionLabel);
+
+        const { positive, negative } = buildContributorsFromGroupMaps({
+          dimensionId: rollup.dimensionId,
+          dimensionLabel: rollup.dimensionLabel,
+          sourceColumn: rollup.sourceColumn,
+          currentMap,
+          comparisonMap,
+          totalDelta,
+          scale
+        });
+
+        positiveContributors.push(...positive);
+        negativeContributors.push(...negative);
       }
-      for (const row of comparisonRows) {
-        const label = accessor.str(row, dim.role) || "Unspecified";
-        const list = compGroups.get(label) || [];
-        list.push(row);
-        compGroups.set(label, list);
-      }
+    } else {
+      // Standard scoped-records mode
+      for (const dim of availableDimensions) {
+        const sourceColumn = accessor.column(dim.role)!;
+        const currGroups = new Map<string, Array<Record<string, unknown>>>();
+        const compGroups = new Map<string, Array<Record<string, unknown>>>();
 
-      const allLabels = new Set([...currGroups.keys(), ...compGroups.keys()]);
-      if (allLabels.size === 0) continue;
-      investigatedDimensions.push(dim.label);
+        for (const row of periodRows) {
+          const label = accessor.str(row, dim.role) || "Unspecified";
+          const list = currGroups.get(label) || [];
+          list.push(row);
+          currGroups.set(label, list);
+        }
+        for (const row of comparisonRows) {
+          const label = accessor.str(row, dim.role) || "Unspecified";
+          const list = compGroups.get(label) || [];
+          list.push(row);
+          compGroups.set(label, list);
+        }
 
-      const dimContributors: RootCauseContributor[] = [];
-      for (const groupLabel of allLabels) {
-        const currRows = currGroups.get(groupLabel) || [];
-        const compRows = compGroups.get(groupLabel) || [];
-        const currVal = currRows.length ? (evaluateGroupMetricValue(analysis.domainId, metric.metricId, currRows, accessor) ?? 0) : 0;
-        const rawCompVal = compRows.length ? (evaluateGroupMetricValue(analysis.domainId, metric.metricId, compRows, accessor) ?? 0) : 0;
-        const compVal = safeRound(rawCompVal * scale, 2);
-        const absoluteDelta = safeRound(currVal - compVal, 2);
-        if (Math.abs(absoluteDelta) < 0.01) continue;
+        const currentMap = new Map<string, { value: number; present: boolean }>();
+        const comparisonMap = new Map<string, { value: number; present: boolean }>();
 
-        const appearance: RootCauseContributor["appearance"] = currRows.length > 0 && compRows.length > 0
-          ? "both_periods"
-          : currRows.length > 0
-            ? "current_only"
-            : "comparison_only";
+        for (const [label, rows] of currGroups.entries()) {
+          currentMap.set(label, {
+            value: evaluateGroupMetricValue(analysis.domainId, metric.metricId, rows, accessor) ?? 0,
+            present: rows.length > 0
+          });
+        }
+        for (const [label, rows] of compGroups.entries()) {
+          comparisonMap.set(label, {
+            value: evaluateGroupMetricValue(analysis.domainId, metric.metricId, rows, accessor) ?? 0,
+            present: rows.length > 0
+          });
+        }
 
-        const contributionPercent = totalDelta !== 0
-          ? safePercent(absoluteDelta, Math.abs(totalDelta), 1)
-          : null;
+        if (currentMap.size === 0 && comparisonMap.size === 0) continue;
+        investigatedDimensions.push(dim.label);
 
-        const direction: RootCauseContributor["direction"] = absoluteDelta > 0 ? "positive" : "negative";
-        const appearanceNote = appearance === "current_only"
-          ? " (present only in current period)"
-          : appearance === "comparison_only"
-            ? " (present only in comparison period)"
-            : "";
-
-        const evidence = `${dim.label} "${groupLabel}" moved from ${compVal.toLocaleString("en-US", { maximumFractionDigits: 2 })} to ${currVal.toLocaleString("en-US", { maximumFractionDigits: 2 })} (${absoluteDelta >= 0 ? "+" : ""}${absoluteDelta.toLocaleString("en-US", { maximumFractionDigits: 2 })}${contributionPercent !== null ? `, ${contributionPercent >= 0 ? "+" : ""}${contributionPercent}% relative to total net shift` : ""})${appearanceNote}.`;
-
-        dimContributors.push({
+        const { positive, negative } = buildContributorsFromGroupMaps({
           dimensionId: dim.dimensionId,
           dimensionLabel: dim.label,
           sourceColumn,
-          groupLabel,
-          currentValue: safeRound(currVal, 2),
-          comparisonValue: compVal,
-          absoluteDelta,
-          contributionPercent,
-          direction,
-          appearance,
-          evidence
+          currentMap,
+          comparisonMap,
+          totalDelta,
+          scale
         });
+
+        positiveContributors.push(...positive);
+        negativeContributors.push(...negative);
       }
-
-      // Pick strongest contributors per dimension (keeps dimensions cleanly separated without cross-dimension double counting)
-      const topPos = dimContributors
-        .filter(c => c.direction === "positive")
-        .sort((a, b) => b.absoluteDelta - a.absoluteDelta)
-        .slice(0, 3);
-      const topNeg = dimContributors
-        .filter(c => c.direction === "negative")
-        .sort((a, b) => a.absoluteDelta - b.absoluteDelta)
-        .slice(0, 3);
-
-      positiveContributors.push(...topPos);
-      negativeContributors.push(...topNeg);
     }
 
     positiveContributors.sort((a, b) => b.absoluteDelta - a.absoluteDelta);

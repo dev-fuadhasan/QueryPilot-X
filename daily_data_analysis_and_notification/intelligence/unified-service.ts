@@ -13,7 +13,7 @@ import { buildDataHealthReport } from "./data-health";
 import { buildDailyIntelligenceBrief } from "./intelligence-brief";
 import { buildActionableRecommendations } from "./recommendations";
 import { compareArchivedReports, toArchivedReportFromDynamic } from "./report-archive";
-import { buildRootCauseAnalysis } from "./root-cause";
+import { buildRootCauseAnalysis, fetchHighVolumeDimensionRollups, type PrecomputedDimensionRollup } from "./root-cause";
 import { buildSmartDayComparison } from "./smart-comparison";
 import type {
   ActionableRecommendation,
@@ -94,7 +94,8 @@ function assembleUnifiedResult(
   understanding: DomainTableUnderstanding,
   analysis: DynamicAnalysisResult,
   rows: Array<Record<string, unknown>>,
-  options: UnifiedDailyAnalysisOptions
+  options: UnifiedDailyAnalysisOptions,
+  precomputedRollups?: PrecomputedDimensionRollup[]
 ): UnifiedDailyAnalysisResult {
   const allTools: DailyAnalysisToolName[] = [
     "intelligenceBrief",
@@ -157,7 +158,8 @@ function assembleUnifiedResult(
       comparisonRows,
       period: analysis.reportingPeriod,
       comparison: analysis.comparisonPeriod,
-      allowMediumConfidence: options.allowMediumConfidence
+      allowMediumConfidence: options.allowMediumConfidence,
+      precomputedRollups
     }),
     overrides.rootCause
   );
@@ -256,7 +258,20 @@ export async function runUnifiedDailyAnalysisWithExecutor(
     options,
     precomputedTableProfile
   );
-  return assembleUnifiedResult(tableProfile, understanding, analysis, scopedRows, options);
+
+  let precomputedRollups: PrecomputedDimensionRollup[] | undefined;
+  const rootCauseEnabled = !options.enabledTools || options.enabledTools.includes("rootCause");
+  if (rootCauseEnabled && analysis.source.executionMode === "database_aggregate") {
+    precomputedRollups = await fetchHighVolumeDimensionRollups({
+      executor,
+      tableProfile,
+      understanding,
+      analysis,
+      allowMediumConfidence: options.allowMediumConfidence
+    });
+  }
+
+  return assembleUnifiedResult(tableProfile, understanding, analysis, scopedRows, options, precomputedRollups);
 }
 
 /**
