@@ -34,3 +34,14 @@ test("Risk Engine: identifies sensitive credentials column", () => {
   assert.ok(result.score >= 50);
   assert.ok(result.factors.some(f => f.factor.includes("Sensitive Field")));
 });
+
+test("Risk Engine: applies fintech business profile strict fiscal rule", () => {
+  const result = evaluateChangeRisk("accounts", "balance", 1000, 950, new Date(), "fintech");
+  assert.ok(result.factors.some(f => f.factor.includes("Fintech Strict Fiscal Rule")));
+});
+
+test("Risk Engine: adjusts severity threshold with aggressive high sensitivity", () => {
+  const normalResult = evaluateChangeRisk("orders", "discount", 10, 20, new Date(), "universal", "medium");
+  const aggressiveResult = evaluateChangeRisk("orders", "discount", 10, 20, new Date(), "universal", "high");
+  assert.ok(aggressiveResult.severity === "HIGH" || aggressiveResult.severity === "CRITICAL");
+});

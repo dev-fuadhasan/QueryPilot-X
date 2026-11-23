@@ -23,9 +23,10 @@ import {
   Play,
   Pause
 } from "lucide-react";
-import type { ChangeNotification } from "../types";
+import type { ChangeNotification, BusinessProfileType } from "../types";
 import { exportChangeNotificationsToCSV } from "../notification-service";
 import { evaluateChangeRisk, type RiskSeverity } from "../risk-engine";
+import { BUSINESS_PROFILES, detectBestProfile } from "../business-profiles";
 import IncidentForensicModal from "./IncidentForensicModal";
 import CloudArchivesModal from "./CloudArchivesModal";
 
@@ -88,6 +89,8 @@ export default function FraudDetectionDashboard() {
   const [monitoredTables, setMonitoredTables] = useState<string[]>([]);
   const [selectedTable, setSelectedTable] = useState<string>("ALL");
   const [selectedSeverity, setSelectedSeverity] = useState<string>("ALL");
+  const [selectedProfile, setSelectedProfile] = useState<BusinessProfileType>("universal");
+  const [detectionSensitivity, setDetectionSensitivity] = useState<"low" | "medium" | "high">("medium");
   const [searchQuery, setSearchQuery] = useState("");
   const [primaryKeyMap, setPrimaryKeyMap] = useState<Record<string, string>>({});
   const [activeForensicIncident, setActiveForensicIncident] = useState<ChangeNotification | null>(null);
@@ -204,6 +207,12 @@ export default function FraudDetectionDashboard() {
 
         const newTables: string[] = data.tables || [];
         setMonitoredTables(newTables);
+        if (newTables.length > 0 && selectedProfile === "universal") {
+          const auto = detectBestProfile(newTables);
+          if (auto !== "universal") {
+            setSelectedProfile(auto);
+          }
+        }
 
         const pks: Record<string, string> = data.primaryKeys || {};
         setPrimaryKeyMap(pks);
@@ -230,7 +239,9 @@ export default function FraudDetectionDashboard() {
               ac.columnName,
               ac.oldValue,
               ac.newValue,
-              ac.changedAt || nowIso
+              ac.changedAt || nowIso,
+              selectedProfile,
+              detectionSensitivity
             );
             detectedChanges.push({
               id: stableAuditId,
@@ -305,7 +316,9 @@ export default function FraudDetectionDashboard() {
                       colName,
                       oldVal,
                       curVal,
-                      nowIso
+                      nowIso,
+                      selectedProfile,
+                      detectionSensitivity
                     );
                     detectedChanges.push({
                       id: changeId,
@@ -338,7 +351,9 @@ export default function FraudDetectionDashboard() {
                   "Record Insert",
                   null,
                   cur,
-                  nowIso
+                  nowIso,
+                  selectedProfile,
+                  detectionSensitivity
                 );
                 detectedChanges.push({
                   id: insertId,
@@ -760,6 +775,53 @@ export default function FraudDetectionDashboard() {
                   {t}
                 </option>
               ))}
+            </select>
+          </div>
+
+          {/* BUSINESS PROFILE SELECTOR */}
+          <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+            <Sparkles size={14} style={{ color: "#2563eb" }} />
+            <select
+              value={selectedProfile}
+              onChange={(e) => setSelectedProfile(e.target.value as BusinessProfileType)}
+              style={{
+                border: "1px solid #bfdbfe",
+                borderRadius: "8px",
+                padding: "7px 10px",
+                fontSize: "12px",
+                background: "#eff6ff",
+                color: "#1d4ed8",
+                fontWeight: 600,
+              }}
+              title="Select industry profile to adjust domain-specific detection heuristics"
+            >
+              <option value="universal">🌐 Universal Model</option>
+              <option value="ecommerce">🛒 E-Commerce & Retail</option>
+              <option value="fintech">💳 Fintech & Banking</option>
+              <option value="saas">⚡ SaaS & Subscriptions</option>
+              <option value="social_platform">👥 Social / Community</option>
+            </select>
+          </div>
+
+          {/* SENSITIVITY SELECTOR */}
+          <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+            <span style={{ fontSize: "11px", color: "#64748b", fontWeight: 600 }}>Tuning:</span>
+            <select
+              value={detectionSensitivity}
+              onChange={(e) => setDetectionSensitivity(e.target.value as "low" | "medium" | "high")}
+              style={{
+                border: "1px solid #e1e5e9",
+                borderRadius: "8px",
+                padding: "7px 10px",
+                fontSize: "12px",
+                background: "#fff",
+                color: "#25282d",
+              }}
+              title="Adjust anomaly detection threshold"
+            >
+              <option value="medium">⚖️ Balanced</option>
+              <option value="high">⚡ Aggressive</option>
+              <option value="low">🛡️ Strict</option>
             </select>
           </div>
 

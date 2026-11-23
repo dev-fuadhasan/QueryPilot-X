@@ -6,6 +6,8 @@
  * risk score (0-100) and severity classification.
  */
 
+import type { BusinessProfileType } from "./types";
+
 export type RiskSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 
 export interface RiskFactor {
@@ -65,7 +67,9 @@ export function evaluateChangeRisk(
   columnName: string,
   oldVal: unknown,
   newVal: unknown,
-  changedAt?: string | Date
+  changedAt?: string | Date,
+  profile: BusinessProfileType = "universal",
+  sensitivity: "low" | "medium" | "high" = "medium"
 ): RiskAssessment {
   const factors: RiskFactor[] = [];
   let rawScore = 10; // Baseline score for any mutation
@@ -99,6 +103,36 @@ export function evaluateChangeRisk(
       });
       rawScore += 15;
       break;
+    }
+  }
+
+  // 2b. Adaptive Business Profile Context Rules
+  if (profile === "fintech") {
+    if (colLower.includes("balance") || colLower.includes("amount") || colLower.includes("transfer") || colLower.includes("fee")) {
+      factors.push({
+        factor: "Fintech Strict Fiscal Rule",
+        weight: 20,
+        description: "Fintech profile enforces zero-tolerance on unverified ledger and balance manipulations.",
+      });
+      rawScore += 20;
+    }
+  } else if (profile === "ecommerce") {
+    if (colLower.includes("discount") || colLower.includes("refund") || colLower.includes("coupon") || colLower.includes("shipping")) {
+      factors.push({
+        factor: "E-Commerce Discount & Refund Rule",
+        weight: 20,
+        description: "E-Commerce profile flags potential checkout abuse, coupon stacking, or unauthorized refund shifts.",
+      });
+      rawScore += 20;
+    }
+  } else if (profile === "saas" || profile === "social_platform") {
+    if (colLower.includes("role") || colLower.includes("plan") || colLower.includes("tier") || colLower.includes("permission")) {
+      factors.push({
+        factor: "SaaS / Platform Role Escalation Rule",
+        weight: 25,
+        description: "Platform profile flags potential account takeover, privilege escalation, or plan bypass.",
+      });
+      rawScore += 25;
     }
   }
 
@@ -182,17 +216,21 @@ export function evaluateChangeRisk(
   // Clamp final score between 0 and 100
   const finalScore = Math.min(100, Math.max(5, rawScore));
 
-  // Determine Severity
+  // Determine Dynamic Severity Thresholds based on Sensitivity
+  const criticalThreshold = sensitivity === "high" ? 60 : sensitivity === "low" ? 85 : 75;
+  const highThreshold = sensitivity === "high" ? 40 : sensitivity === "low" ? 65 : 50;
+  const mediumThreshold = sensitivity === "high" ? 20 : sensitivity === "low" ? 35 : 25;
+
   let severity: RiskSeverity = "LOW";
   let recommendation = "Routine record mutation. Continue standard monitoring.";
 
-  if (finalScore >= 75) {
+  if (finalScore >= criticalThreshold) {
     severity = "CRITICAL";
     recommendation = "Immediate investigation required. Verify actor identity, check authorization logs, and consider immediate rollback if unauthorized.";
-  } else if (finalScore >= 50) {
+  } else if (finalScore >= highThreshold) {
     severity = "HIGH";
     recommendation = "High-impact modification detected. Review change context with system administrators or team lead.";
-  } else if (finalScore >= 25) {
+  } else if (finalScore >= mediumThreshold) {
     severity = "MEDIUM";
     recommendation = "Moderate operational change. Validate against planned system updates or scheduled maintenance.";
   }
