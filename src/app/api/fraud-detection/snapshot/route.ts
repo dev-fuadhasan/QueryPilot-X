@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { readFraudSession } from "@/../fraud_detection_and_notification/fraud-session";
 import { executeFraudQuery } from "@/../fraud_detection_and_notification/fraud-db";
+import { generateStableChangeHash } from "@/../fraud_detection_and_notification/notification-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function quoteIdentifier(val: string) {
+function quoteIdentifier(val: string): string {
   if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(val)) {
     throw new Error(`Invalid identifier: ${val}`);
   }
@@ -31,6 +32,30 @@ export async function GET(request: Request) {
     const tableRows = await executeFraudQuery(session, tableSql);
     const tableNames = tableRows.map((r) => String(r.table_name));
 
+    // 2. Discover primary keys for all public tables to ensure deterministic ordering & row indexing
+    const pkSql = `
+      SELECT 
+        tc.table_name, 
+        kcu.column_name as pk_column
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.key_column_usage kcu
+        ON tc.constraint_name = kcu.constraint_name
+        AND tc.table_schema = kcu.table_schema
+      WHERE tc.constraint_type = 'PRIMARY KEY'
+        AND tc.table_schema = 'public'
+    `;
+    const pkMap: Record<string, string> = {};
+    try {
+      const pkRows = await executeFraudQuery(session, pkSql);
+      for (const r of pkRows) {
+        if (r.table_name && r.pk_column) {
+          pkMap[String(r.table_name)] = String(r.pk_column);
+        }
+      }
+    } catch {
+      // Non-fatal if permission denied on constraints view
+    }
+
     const snapshot: Record<string, Record<string, unknown>[]> = {};
     const auditChanges: Array<{
       id: string;
@@ -42,13 +67,16 @@ export async function GET(request: Request) {
       changedBy: string | null;
       changedAt: string;
       eventType: string;
+      changeHash: string;
     }> = [];
 
-    // 2. Fetch rows for business tables
+    // Track audit changes to prevent snapshot diffing from duplicating the same events
+    const auditCoveredSet = new Set<string>();
+
+    // 3. Process audit tables first if they exist
     for (const name of tableNames) {
       const lower = name.toLowerCase();
 
-      // Check if it's an audit log table
       if (lower === "querypilot_universal_audit_log") {
         try {
           const auditSql = `
@@ -59,16 +87,25 @@ export async function GET(request: Request) {
           `;
           const rows = await executeFraudQuery(session, auditSql);
           for (const r of rows) {
+            const tName = String(r.table_name || "unknown");
+            const rId = String(r.record_id || "unknown");
+            const cName = String(r.column_name || "record");
+            const hash = generateStableChangeHash(tName, rId, cName, r.old_value, r.new_value);
+            const stableId = `audit_univ_${r.id}`;
+
+            auditCoveredSet.add(`${tName}:${rId}:${cName}`);
+
             auditChanges.push({
-              id: `univ-${r.id}`,
-              tableName: String(r.table_name || "unknown"),
-              recordId: String(r.record_id || "unknown"),
-              columnName: String(r.column_name || "record"),
+              id: stableId,
+              tableName: tName,
+              recordId: rId,
+              columnName: cName,
               oldValue: r.old_value,
               newValue: r.new_value,
               changedBy: typeof r.changed_by === "string" ? r.changed_by : null,
               changedAt: String(r.changed_at),
               eventType: typeof r.event_type === "string" ? r.event_type : "UPDATE",
+              changeHash: hash
             });
           }
         } catch {
@@ -87,16 +124,25 @@ export async function GET(request: Request) {
           `;
           const rows = await executeFraudQuery(session, salesSql);
           for (const r of rows) {
+            const tName = "sales";
+            const rId = String(r.sale_id || "unknown");
+            const cName = "amount";
+            const hash = generateStableChangeHash(tName, rId, cName, r.old_amount, r.new_amount);
+            const stableId = `audit_sale_${r.id}`;
+
+            auditCoveredSet.add(`${tName}:${rId}:${cName}`);
+
             auditChanges.push({
-              id: `sale-audit-${r.id}`,
-              tableName: "sales",
-              recordId: String(r.sale_id || "unknown"),
-              columnName: "amount",
+              id: stableId,
+              tableName: tName,
+              recordId: rId,
+              columnName: cName,
               oldValue: r.old_amount,
               newValue: r.new_amount,
               changedBy: typeof r.changed_by === "string" ? r.changed_by : null,
               changedAt: String(r.changed_at),
               eventType: "UPDATE",
+              changeHash: hash
             });
           }
         } catch {
@@ -104,13 +150,43 @@ export async function GET(request: Request) {
         }
         continue;
       }
+    }
 
-      // Fetch snapshot of normal table data
+    // 4. Fetch snapshot of normal business tables with deterministic ORDER BY
+    for (const name of tableNames) {
+      const lower = name.toLowerCase();
+      if (lower === "querypilot_universal_audit_log" || lower === "sales_audit_log") {
+        continue;
+      }
+
       try {
         const qTable = quoteIdentifier(name);
-        const rowsSql = `SELECT * FROM public.${qTable} LIMIT 150`;
+        const pkCol = pkMap[name];
+
+        let rowsSql: string;
+        if (pkCol && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(pkCol)) {
+          // Guaranteed deterministic order by primary key
+          rowsSql = `SELECT * FROM public.${qTable} ORDER BY ${quoteIdentifier(pkCol)} ASC LIMIT 200`;
+        } else {
+          // Fallback: try common ID column or plain limit
+          rowsSql = `SELECT * FROM public.${qTable} LIMIT 200`;
+        }
+
         const rows = await executeFraudQuery(session, rowsSql);
         snapshot[name] = rows;
+
+        // If primary key was not detected via constraints, inspect columns of the rows
+        if (!pkMap[name] && rows.length > 0) {
+          const firstRow = rows[0];
+          const candidateKeys = Object.keys(firstRow);
+          const foundKey = candidateKeys.find(k => {
+            const lk = k.toLowerCase();
+            return lk === "id" || lk === "uuid" || lk.endsWith("_id") || lk === "code" || lk === "key";
+          }) || candidateKeys[0];
+          if (foundKey) {
+            pkMap[name] = foundKey;
+          }
+        }
       } catch (err) {
         console.warn(`Could not snapshot table ${name}:`, err);
       }
@@ -121,9 +197,11 @@ export async function GET(request: Request) {
         {
           success: true,
           timestamp: new Date().toISOString(),
-          tables: tableNames,
+          tables: tableNames.filter(t => !t.toLowerCase().includes("audit_log")),
+          primaryKeys: pkMap,
           snapshot,
           auditChanges,
+          auditCoveredFields: Array.from(auditCoveredSet)
         },
         { headers: { "Cache-Control": "no-store" } }
       )
