@@ -70,6 +70,14 @@ export type ChangeNotification = {
   changeType: "UPDATE" | "INSERT" | "DELETE" | string;
   reason?: string;
   isRead?: boolean;
+  riskScore?: number;
+  riskSeverity?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  riskAssessment?: {
+    score: number;
+    severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+    factors: Array<{ factor: string; weight: number; description: string }>;
+    recommendation: string;
+  };
 };
 
 export type BusinessProfile = {
