@@ -1,5 +1,33 @@
 import type { UniversalAlert, Severity, ScanSummary } from "./types";
 
+/**
+ * Pure JavaScript deterministic hash function (works identically in Node.js and Browser environments).
+ * Eliminates 'node:crypto' dependency for client-side Webpack compatibility.
+ */
+export function generateStableChangeHash(
+  tableName: string,
+  recordId: string,
+  columnName: string,
+  oldVal: unknown,
+  newVal: unknown
+): string {
+  const strOld = oldVal === null || oldVal === undefined ? "NULL" : String(oldVal);
+  const strNew = newVal === null || newVal === undefined ? "NULL" : String(newVal);
+  const sig = `${tableName}:${recordId}:${columnName}:${strOld}->${strNew}`;
+
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c64e6d;
+  for (let i = 0; i < sig.length; i++) {
+    const ch = sig.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  const hashHex = (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+  return hashHex.slice(0, 16);
+}
+
 export function calculateSummary(
   alerts: UniversalAlert[],
   scannedTables: string[],
@@ -58,39 +86,34 @@ export function exportChangeNotificationsToCSV(
 
   const escapeCSV = (val: unknown): string => {
     if (val === null || val === undefined) return '""';
-    const str = typeof val === "object" ? JSON.stringify(val) : String(val);
-    return `"${str.replace(/"/g, '""')}"`;
+    const str = String(val).replace(/"/g, '""');
+    return `"${str}"`;
   };
 
-  const rows = changes.map((c) =>
-    [
-      new Date(c.timestamp).toLocaleString(),
-      c.tableName,
-      c.recordId,
-      c.columnName,
-      c.oldValue ?? "NULL",
-      c.newValue ?? "NULL",
-      c.changeType || "MODIFIED",
-      c.changedBy || "User / Database",
-    ]
-      .map(escapeCSV)
-      .join(",")
-  );
+  const rows = changes.map((c) => [
+    escapeCSV(c.timestamp),
+    escapeCSV(c.tableName),
+    escapeCSV(c.recordId),
+    escapeCSV(c.columnName),
+    escapeCSV(c.oldValue),
+    escapeCSV(c.newValue),
+    escapeCSV(c.changeType || "UPDATE"),
+    escapeCSV(c.changedBy || "Database Editor"),
+  ]);
 
-  return [headers.join(","), ...rows].join("\r\n");
+  return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
 }
 
 export function exportAlertsToCSV(alerts: UniversalAlert[]): string {
   const headers = [
     "Alert ID",
-    "Severity",
     "Rule Category",
-    "Table",
+    "Severity",
+    "Dataset / Table",
     "Record ID",
     "Field",
     "Old Value",
     "New Value",
-    "Actor",
     "Timestamp",
     "Reason",
     "Recommendation",
@@ -98,36 +121,30 @@ export function exportAlertsToCSV(alerts: UniversalAlert[]): string {
 
   const escapeCSV = (val: unknown): string => {
     if (val === null || val === undefined) return '""';
-    const str = typeof val === "object" ? JSON.stringify(val) : String(val);
-    return `"${str.replace(/"/g, '""')}"`;
+    const str = String(val).replace(/"/g, '""');
+    return `"${str}"`;
   };
 
-  const rows = alerts.map((a) =>
-    [
-      a.id,
-      a.severity.toUpperCase(),
-      a.ruleCategory,
-      a.tableName,
-      a.recordId,
-      a.columnName || "",
-      a.oldValue ?? "",
-      a.newValue ?? "",
-      a.actor || "Unknown",
-      a.timestamp,
-      a.reason,
-      a.recommendation,
-    ]
-      .map(escapeCSV)
-      .join(",")
-  );
+  const rows = alerts.map((a) => [
+    escapeCSV(a.id),
+    escapeCSV(a.ruleCategory),
+    escapeCSV(String(a.severity).toUpperCase()),
+    escapeCSV(a.tableName),
+    escapeCSV(a.recordId),
+    escapeCSV(a.columnName ?? ""),
+    escapeCSV(a.oldValue ?? ""),
+    escapeCSV(a.newValue ?? ""),
+    escapeCSV(a.timestamp),
+    escapeCSV(a.reason),
+    escapeCSV(a.recommendation),
+  ]);
 
-  return [headers.join(","), ...rows].join("\r\n");
+  return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
 }
 
 export function exportAlertsToJSON(alerts: UniversalAlert[]): string {
   return JSON.stringify(
     {
-      exportedAt: new Date().toISOString(),
       totalAlerts: alerts.length,
       alerts,
     },
