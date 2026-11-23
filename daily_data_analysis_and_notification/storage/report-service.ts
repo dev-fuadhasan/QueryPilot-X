@@ -1,14 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { getLocalDatabase } from "../database/sqlite-client";
-import { renderAnalysisReport } from "../pdf/report-pdf";
+import {
+  renderAnalysisReport,
+  renderDynamicAnalysisPdf,
+  type DynamicPdfReportInput,
+  type HistoricalContextBundle,
+  type PdfReportMetadata
+} from "../pdf/report-pdf";
 import type { AnalysisReport, DailyPerformance, AnalysisDimension } from "../types";
 import { BUSINESS_DOMAIN_IDS, isValidIdentifier, type BusinessDomainId, type ReadOnlyQueryExecutor } from "../profiler";
-import { assertValidTimezone, type ComparisonPreset, type DynamicAnalysisResult } from "../metrics";
+import { addDaysToDate, assertValidTimezone, runDynamicAnalysisWithExecutor, type ComparisonPreset, type DynamicAnalysisResult } from "../metrics";
 import {
   runUnifiedDailyAnalysisWithExecutor,
   toArchivedReportFromDynamic,
   type ArchivedReportRecord,
   type ExpectedReportingCadence,
+  type ReportArchiveComparisonResult,
   type UnifiedDailyAnalysisResult
 } from "../intelligence";
 import { sanitizeAlertRules } from "../notifications";
@@ -311,22 +318,167 @@ export function adaptDynamicAnalysisForPdf(
   };
 }
 
+export function buildPdfMetadataFromRecord(
+  record: Pick<
+    PersistentReportRecord,
+    | "id"
+    | "organizationId"
+    | "domainId"
+    | "domainName"
+    | "datasetTable"
+    | "generationType"
+    | "frequency"
+    | "periodStart"
+    | "periodEnd"
+    | "comparisonStart"
+    | "comparisonEnd"
+    | "generatedAt"
+  > & { reportPayload?: Record<string, unknown> },
+  organizationLabel?: string,
+  quickRangeLabel?: string | null
+): PdfReportMetadata {
+  const payload = record.reportPayload || {};
+  const analysisTimezone = (payload.analysis as DynamicAnalysisResult | undefined)?.timezone || DEFAULT_SCHEDULE_TIMEZONE;
+  const periodLabel = record.periodStart === record.periodEnd
+    ? record.periodStart
+    : `${record.periodStart} to ${record.periodEnd}`;
+  const comparisonLabel = record.comparisonStart && record.comparisonEnd
+    ? (record.comparisonStart === record.comparisonEnd
+        ? record.comparisonStart
+        : `${record.comparisonStart} to ${record.comparisonEnd}`)
+    : null;
+
+  return {
+    reportId: record.id,
+    organizationLabel: organizationLabel || record.organizationId,
+    domainId: record.domainId,
+    domainName: record.domainName,
+    datasetTable: record.datasetTable,
+    generationType: record.generationType,
+    frequency: record.frequency,
+    quickRangeLabel: quickRangeLabel ?? null,
+    periodStart: record.periodStart,
+    periodEnd: record.periodEnd,
+    periodLabel,
+    comparisonStart: record.comparisonStart,
+    comparisonEnd: record.comparisonEnd,
+    comparisonLabel,
+    timezone: analysisTimezone,
+    generatedAt: record.generatedAt
+  };
+}
+
+/**
+ * Computes a clearly separated Historical Dashboard Context bundle (default previous 30 days
+ * for Daily reports; prior historical reference for Weekly/Monthly reports) using read-only
+ * Stage 2 aggregation without altering the primary reporting period.
+ */
+export async function buildHistoricalContextForReport(input: {
+  executor: ReadOnlyQueryExecutor;
+  tableName: string;
+  domainId: BusinessDomainId;
+  periodStart: string;
+  periodEnd: string;
+  frequency: ReportFrequency;
+  timezone?: string;
+  overrides?: Record<string, string>;
+  now?: Date;
+}): Promise<HistoricalContextBundle | null> {
+  const tz = assertValidTimezone(input.timezone || DEFAULT_SCHEDULE_TIMEZONE);
+  const contextEnd = input.periodEnd;
+  const contextStart = input.frequency === "daily"
+    ? addDaysToDate(contextEnd, -29)
+    : input.frequency === "weekly"
+      ? addDaysToDate(contextEnd, -29)
+      : addDaysToDate(contextEnd, -89);
+
+  const label = input.frequency === "daily"
+    ? "Previous 30-Day Context"
+    : input.frequency === "weekly"
+      ? "30-Day Rolling Context"
+      : "90-Day Rolling Context";
+
+  try {
+    const { analysis } = await runDynamicAnalysisWithExecutor(input.executor, input.tableName, {
+      domainId: input.domainId,
+      periodStart: contextStart,
+      periodEnd: contextEnd,
+      timezone: tz,
+      comparisonPreset: "none",
+      overrides: input.overrides,
+      now: input.now
+    });
+
+    return {
+      label,
+      periodStart: analysis.reportingPeriod.start,
+      periodEnd: analysis.reportingPeriod.end,
+      dayCount: analysis.reportingPeriod.dayCount,
+      rowCount: analysis.source.rowCountInPeriod,
+      metrics: analysis.availableMetrics,
+      timeSeries: analysis.timeSeries,
+      breakdowns: analysis.breakdowns,
+      sourceNote: `Separate historical reference window (${analysis.reportingPeriod.start} to ${analysis.reportingPeriod.end}) preserved alongside the primary ${input.frequency} reporting period (${input.periodStart} to ${input.periodEnd}).`
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function renderValidatedPdfForPayload(
   payload: Record<string, unknown>,
-  reportKind: "automatic" | "historical"
+  reportKind: "automatic" | "historical",
+  options: {
+    metadata?: PdfReportMetadata;
+    historicalContext?: HistoricalContextBundle | null;
+    archivedComparison?: ReportArchiveComparisonResult | null;
+  } = {}
 ): Promise<Buffer> {
-  // Check if payload is a UnifiedDailyAnalysisResult or legacy AnalysisReport
-  let pdfInput: AnalysisReport;
+  // Primary Stage 5 Dynamic Multi-Domain PDF Builder for all UnifiedDailyAnalysisResult payloads
   if (payload.analysis && payload.tools) {
-    pdfInput = adaptDynamicAnalysisForPdf(payload as unknown as UnifiedDailyAnalysisResult, reportKind);
-  } else if (payload.current && Array.isArray(payload.dailyPerformance)) {
-    pdfInput = payload as unknown as AnalysisReport;
-  } else {
-    throw new Error("Unsupported report payload for PDF rendering.");
+    const unified = payload as unknown as UnifiedDailyAnalysisResult;
+    const analysis = unified.analysis;
+    const metadata: PdfReportMetadata = options.metadata || {
+      reportId: String(payload.reportId || `${analysis.domainId}-${analysis.reportingPeriod.end}`),
+      organizationLabel: String(payload.organizationLabel || "QueryPilot-X Organisation"),
+      domainId: analysis.domainId,
+      domainName: analysis.domainName,
+      datasetTable: analysis.tableName,
+      generationType: reportKind === "automatic" ? "automatic" : "manual",
+      frequency: reportKind === "automatic" ? "daily" : "manual",
+      periodStart: analysis.reportingPeriod.start,
+      periodEnd: analysis.reportingPeriod.end,
+      periodLabel: analysis.reportingPeriod.label,
+      comparisonStart: analysis.comparisonPeriod?.start ?? null,
+      comparisonEnd: analysis.comparisonPeriod?.end ?? null,
+      comparisonLabel: analysis.comparisonPeriod?.label ?? null,
+      timezone: analysis.timezone,
+      generatedAt: unified.generatedAt
+    };
+
+    const historicalContext = options.historicalContext !== undefined
+      ? options.historicalContext
+      : ((payload.historicalContext as HistoricalContextBundle | null | undefined) ?? null);
+
+    const pdfInput: DynamicPdfReportInput = {
+      metadata,
+      unified,
+      historicalContext,
+      archivedComparison: options.archivedComparison ?? null
+    };
+    const buffer = await renderDynamicAnalysisPdf(pdfInput);
+    assertValidPdfBuffer(buffer);
+    return buffer;
   }
-  const buffer = await renderAnalysisReport(pdfInput);
-  assertValidPdfBuffer(buffer);
-  return buffer;
+
+  // Legacy Sales AnalysisReport compatibility path
+  if (payload.current && Array.isArray(payload.dailyPerformance)) {
+    const buffer = await renderAnalysisReport(payload as unknown as AnalysisReport);
+    assertValidPdfBuffer(buffer);
+    return buffer;
+  }
+
+  throw new Error("Unsupported report payload for PDF rendering.");
 }
 
 export function buildReportPdfFilename(record: Pick<PersistentReportRecord, "domainId" | "frequency" | "periodStart" | "periodEnd">): string {
@@ -443,13 +595,19 @@ export async function generateAndPersistManualReport(input: {
 
   const filename = buildReportPdfFilename(saved);
   try {
-    const pdfBytes = await renderValidatedPdfForPayload(saved.reportPayload, "historical");
+    const pdfBytes = await renderValidatedPdfForPayload(saved.reportPayload, "historical", {
+      metadata: buildPdfMetadataFromRecord(saved, input.ownerRef || input.organizationId, input.quickRange)
+    });
     const stored = await pdfStorage.savePdf({
       organizationId: input.organizationId,
       reportId: saved.id,
       filename,
       bytes: pdfBytes
     });
+    const verifyBytes = await pdfStorage.readPdf(stored.storageKey);
+    if (!verifyBytes) throw new Error("PDF persistence verification failed: stored file could not be read back.");
+    assertValidPdfBuffer(verifyBytes);
+
     const pdfGeneratedAt = new Date().toISOString();
     await input.repository.updateReportPdfMetadata(input.organizationId, saved.id, {
       pdfStatus: "generated",
@@ -590,6 +748,23 @@ export async function runScheduledReports(input: {
             now
           });
 
+          const historicalContext = await buildHistoricalContextForReport({
+            executor,
+            tableName: settings.selectedDataset,
+            domainId: unified.domainId,
+            periodStart: period.periodStart,
+            periodEnd: period.periodEnd,
+            frequency: settings.frequency,
+            timezone: settings.timezone,
+            overrides: settings.columnOverrides,
+            now
+          });
+
+          const reportPayloadWithContext: Record<string, unknown> = {
+            ...(unified as unknown as Record<string, unknown>),
+            ...(historicalContext ? { historicalContext } : {})
+          };
+
           persistedReport = await input.repository.saveReport({
             id: randomUUID(),
             organizationId: settings.organizationId,
@@ -609,7 +784,7 @@ export async function runScheduledReports(input: {
             status: "generated",
             summaryText: unified.tools.intelligenceBrief?.executiveSummary
               || `${unified.domainName} ${settings.frequency} report (${period.periodStart} to ${period.periodEnd})`,
-            reportPayload: unified as unknown as Record<string, unknown>,
+            reportPayload: reportPayloadWithContext,
             pdfStatus: "not_generated",
             pdfStorageKey: null,
             pdfFilename: null,
@@ -637,7 +812,12 @@ export async function runScheduledReports(input: {
 
         if (!hasValidPdf) {
           const filename = buildReportPdfFilename(persistedReport);
-          const pdfBytes = await renderValidatedPdfForPayload(persistedReport.reportPayload, "automatic");
+          const storedHistoricalContext =
+            (persistedReport.reportPayload?.historicalContext as HistoricalContextBundle | null | undefined) ?? null;
+          const pdfBytes = await renderValidatedPdfForPayload(persistedReport.reportPayload, "automatic", {
+            metadata: buildPdfMetadataFromRecord(persistedReport),
+            historicalContext: storedHistoricalContext
+          });
           const stored = await pdfStorage.savePdf({
             organizationId: settings.organizationId,
             reportId: persistedReport.id,
