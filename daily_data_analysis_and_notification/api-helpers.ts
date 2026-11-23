@@ -1,7 +1,64 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { readSession, sameOrigin, saveSession, type Session } from "@/lib/session";
 import { refreshSession } from "@/lib/supabase";
 import { CUSTOMER_GENDERS, SALE_STATUSES, type SaleInput } from "./types";
+
+/**
+ * Derives a stable, non-sensitive organisation / tenant identifier from the authenticated
+ * session without exposing database passwords, tokens, or raw connection URIs.
+ */
+export function deriveOrganizationId(session: Session): string {
+  if (session.projectRef && /^[a-z0-9-]{6,64}$/i.test(session.projectRef)) {
+    return `org_${session.projectRef.toLowerCase()}`;
+  }
+  if (session.dbUrl) {
+    try {
+      const parsed = new URL(session.dbUrl);
+      const fingerprintSource = `${parsed.hostname.toLowerCase()}:${parsed.port || "5432"}:${decodeURIComponent(parsed.username || "")}`;
+      const digest = createHash("sha256").update(fingerprintSource).digest("hex").slice(0, 16);
+      return `org_${digest}`;
+    } catch {
+      const digest = createHash("sha256").update(session.dbUrl).digest("hex").slice(0, 16);
+      return `org_${digest}`;
+    }
+  }
+  throw new Error("Unable to resolve organisation identity from active session.");
+}
+
+/**
+ * Constant-time authorization guard for the server-side scheduler endpoint.
+ * Never allows unauthenticated invocations and never echoes secret values.
+ */
+export function verifySchedulerSecret(request: Request): { ok: true } | { ok: false; response: NextResponse } {
+  const configured = (process.env.CRON_SECRET || process.env.QUERYPILOT_SCHEDULER_SECRET || "").trim();
+  if (!configured || configured.length < 16) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "Server-side scheduler is not configured (CRON_SECRET missing or shorter than 16 characters)." },
+        { status: 503 }
+      )
+    };
+  }
+  const authHeader = request.headers.get("authorization") || "";
+  const match = /^Bearer\s+(.+)$/i.exec(authHeader.trim());
+  if (!match) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: "Unauthorized scheduler request." }, { status: 401 })
+    };
+  }
+  const expectedBuf = Buffer.from(configured, "utf8");
+  const providedBuf = Buffer.from(match[1].trim(), "utf8");
+  if (expectedBuf.length !== providedBuf.length || !timingSafeEqual(expectedBuf, providedBuf)) {
+    return {
+      ok: false,
+      response: NextResponse.json({ error: "Unauthorized scheduler request." }, { status: 401 })
+    };
+  }
+  return { ok: true };
+}
 
 export async function requireDailyAnalysisAccess(request: Request, protectOrigin = false) {
   if (protectOrigin && !sameOrigin(request)) {
