@@ -12,8 +12,9 @@ export const DOMAIN_METRIC_DEFINITIONS: Record<BusinessDomainId, MetricDefinitio
       unit: "currency",
       polarity: "higher_is_better",
       aggregation: "sum",
-      requiredRoles: ["orderId", "transactionDate", "revenue"],
-      optionalRoles: ["status", "quantity", "discount"],
+      requiredRoles: ["transactionDate"],
+      anyOfRoleGroups: [["revenue"], ["unitPrice", "quantity"]],
+      optionalRoles: ["orderId", "status", "quantity", "discount", "unitPrice"],
       normalizeComparisonByDay: true
     },
     {
@@ -33,13 +34,13 @@ export const DOMAIN_METRIC_DEFINITIONS: Record<BusinessDomainId, MetricDefinitio
       id: "unitsSold",
       domainId: "sales_ecommerce",
       name: "Units Sold",
-      description: "Total units sold across completed orders.",
+      description: "Total units sold across completed sales records.",
       format: "quantity",
       unit: "units",
       polarity: "higher_is_better",
       aggregation: "sum",
-      requiredRoles: ["orderId", "transactionDate", "quantity"],
-      optionalRoles: ["status"],
+      requiredRoles: ["transactionDate", "quantity"],
+      optionalRoles: ["orderId", "status"],
       normalizeComparisonByDay: true
     },
     {
@@ -51,9 +52,9 @@ export const DOMAIN_METRIC_DEFINITIONS: Record<BusinessDomainId, MetricDefinitio
       unit: "currency",
       polarity: "higher_is_better",
       aggregation: "sum",
-      requiredRoles: ["orderId", "transactionDate"],
-      anyOfRoleGroups: [["profit"], ["revenue", "cost"]],
-      optionalRoles: ["quantity", "status"],
+      requiredRoles: ["transactionDate"],
+      anyOfRoleGroups: [["profit"], ["revenue", "cost"], ["unitPrice", "quantity", "cost"]],
+      optionalRoles: ["orderId", "quantity", "status"],
       normalizeComparisonByDay: true
     },
     {
@@ -65,9 +66,9 @@ export const DOMAIN_METRIC_DEFINITIONS: Record<BusinessDomainId, MetricDefinitio
       unit: "percent",
       polarity: "higher_is_better",
       aggregation: "rate",
-      requiredRoles: ["orderId", "transactionDate", "revenue"],
-      anyOfRoleGroups: [["profit"], ["cost"]],
-      optionalRoles: ["quantity", "status"]
+      requiredRoles: ["transactionDate"],
+      anyOfRoleGroups: [["revenue", "profit"], ["revenue", "cost"], ["unitPrice", "quantity", "profit"], ["unitPrice", "quantity", "cost"]],
+      optionalRoles: ["orderId", "quantity", "status"]
     },
     {
       id: "averageOrderValue",
@@ -78,7 +79,8 @@ export const DOMAIN_METRIC_DEFINITIONS: Record<BusinessDomainId, MetricDefinitio
       unit: "currency",
       polarity: "higher_is_better",
       aggregation: "avg",
-      requiredRoles: ["orderId", "transactionDate", "revenue"],
+      requiredRoles: ["orderId", "transactionDate"],
+      anyOfRoleGroups: [["revenue"], ["unitPrice", "quantity"]],
       optionalRoles: ["status"]
     },
     {
@@ -90,20 +92,21 @@ export const DOMAIN_METRIC_DEFINITIONS: Record<BusinessDomainId, MetricDefinitio
       unit: "currency",
       polarity: "neutral",
       aggregation: "avg",
-      requiredRoles: ["orderId", "transactionDate", "revenue", "quantity"],
-      optionalRoles: ["status"]
+      requiredRoles: ["transactionDate", "quantity"],
+      anyOfRoleGroups: [["revenue"], ["unitPrice"]],
+      optionalRoles: ["orderId", "status"]
     },
     {
       id: "totalDiscounts",
       domainId: "sales_ecommerce",
       name: "Discounts",
-      description: "Total discount value applied to completed orders.",
+      description: "Total discount value applied to completed sales records.",
       format: "currency",
       unit: "currency",
       polarity: "lower_is_better",
       aggregation: "sum",
-      requiredRoles: ["orderId", "transactionDate", "discount"],
-      optionalRoles: ["revenue", "status"],
+      requiredRoles: ["transactionDate", "discount"],
+      optionalRoles: ["orderId", "revenue", "unitPrice", "quantity", "status"],
       normalizeComparisonByDay: true
     },
     {
@@ -149,7 +152,8 @@ export const DOMAIN_METRIC_DEFINITIONS: Record<BusinessDomainId, MetricDefinitio
       unit: "currency",
       polarity: "higher_is_better",
       aggregation: "derived",
-      requiredRoles: ["orderId", "transactionDate", "customerId", "revenue"],
+      requiredRoles: ["orderId", "transactionDate", "customerId"],
+      anyOfRoleGroups: [["revenue"], ["unitPrice", "quantity"]],
       optionalRoles: ["status"]
     }
   ],

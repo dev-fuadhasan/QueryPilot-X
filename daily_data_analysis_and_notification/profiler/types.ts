@@ -44,6 +44,10 @@ export type TemporalColumnStats = {
   latest: string | null;
   spanDays: number | null;
   freshnessHours: number | null;
+  invalidDateCount?: number;
+  ambiguousDateCount?: number;
+  inferredFromText?: boolean;
+  detectedFormat?: string | null;
 };
 
 export type ColumnValueHints = {

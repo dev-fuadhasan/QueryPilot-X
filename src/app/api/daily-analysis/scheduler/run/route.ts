@@ -5,6 +5,8 @@ import type { ReadOnlyQueryExecutor } from "@/../daily_data_analysis_and_notific
 import {
   getPersistentReportRepository,
   getStorageCapabilityStatus,
+  inspectSchedulerOrgDbMap,
+  isValidPostgresConnectionUri,
   runScheduledReports
 } from "@/../daily_data_analysis_and_notification/storage";
 
@@ -17,15 +19,17 @@ export const dynamic = "force-dynamic";
  * organizationId -> read-only Postgres URI). Never logs or returns connection strings.
  */
 async function resolveBackgroundSourceExecutor(organizationId: string): Promise<ReadOnlyQueryExecutor | null> {
+  const inspection = inspectSchedulerOrgDbMap(process.env.QUERYPILOT_SCHEDULER_ORG_DB_MAP, organizationId);
+  if (inspection.status !== "valid" || !inspection.organizationMapped) return null;
   const rawMap = process.env.QUERYPILOT_SCHEDULER_ORG_DB_MAP?.trim();
   if (!rawMap) return null;
   try {
     const parsed = JSON.parse(rawMap) as Record<string, unknown>;
     const uri = parsed[organizationId];
-    if (typeof uri !== "string" || !/^postgres(?:ql)?:\/\//i.test(uri.trim())) {
+    if (!isValidPostgresConnectionUri(uri)) {
       return null;
     }
-    const connectionString = uri.trim();
+    const connectionString = String(uri).trim();
     return (sql: string) => queryPostgres(connectionString, sql);
   } catch {
     return null;
@@ -36,7 +40,6 @@ async function handleSchedulerTrigger(request: NextRequest) {
   const auth = verifySchedulerSecret(request);
   if (!auth.ok) return auth.response;
 
-  const storageStatus = getStorageCapabilityStatus();
   let forceDue = false;
   let organizationIdFilter: string | undefined;
 
@@ -50,6 +53,17 @@ async function handleSchedulerTrigger(request: NextRequest) {
     } catch {
       // Empty POST body is valid for cron invocations
     }
+  }
+
+  const storageStatus = getStorageCapabilityStatus(organizationIdFilter);
+  if (storageStatus.schedulerOrgDbMapStatus !== "valid") {
+    return NextResponse.json(
+      {
+        error: storageStatus.schedulerOrgDbMapError || "Scheduler organisation database mapping is missing or invalid.",
+        storageStatus
+      },
+      { status: 503, headers: { "Cache-Control": "no-store" } }
+    );
   }
 
   try {

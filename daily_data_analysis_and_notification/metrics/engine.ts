@@ -494,6 +494,34 @@ function computeHistoryStart(
   return candidates.sort()[0];
 }
 
+function isTextStoredDateColumn(tableProfile: TableProfile, dateColumn: string): boolean {
+  const meta = tableProfile.columns.find(c => c.name === dateColumn);
+  if (!meta) return false;
+  const dt = meta.rawDataType.toLowerCase();
+  return Boolean(meta.temporalStats?.inferredFromText || dt.includes("text") || dt.includes("char"));
+}
+
+function buildSafeDateRangePredicate(
+  tableProfile: TableProfile,
+  dateColumn: string,
+  qDate: string,
+  windowStart: string,
+  windowEnd: string
+): { predicate: string; dateGroupExpr: string } {
+  if (isTextStoredDateColumn(tableProfile, dateColumn)) {
+    const normDateText = `REPLACE(SUBSTRING(TRIM(CAST(${qDate} AS TEXT)) FROM 1 FOR 10), '/', '-')`;
+    const validGuard = `TRIM(CAST(${qDate} AS TEXT)) ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}'`;
+    return {
+      predicate: `${validGuard} AND ${normDateText} >= '${windowStart}' AND ${normDateText} <= '${windowEnd}'`,
+      dateGroupExpr: normDateText
+    };
+  }
+  return {
+    predicate: `${qDate} >= '${windowStart}' AND ${qDate} <= '${windowEnd} 23:59:59'`,
+    dateGroupExpr: `CAST(${qDate} AS DATE)`
+  };
+}
+
 export function buildWindowCountSql(
   tableProfile: TableProfile,
   dateColumn: string,
@@ -504,7 +532,8 @@ export function buildWindowCountSql(
   const allowedCols = new Set(tableProfile.columns.map(c => c.name));
   const qualified = quoteQualifiedTable(tableProfile.schema, tableProfile.name, allowedTables);
   const qDate = quoteIdentifier(dateColumn, allowedCols);
-  return `SELECT COUNT(*) AS row_count FROM ${qualified} WHERE ${qDate} >= '${windowStart}' AND ${qDate} <= '${windowEnd} 23:59:59'`;
+  const { predicate } = buildSafeDateRangePredicate(tableProfile, dateColumn, qDate, windowStart, windowEnd);
+  return `SELECT COUNT(*) AS row_count FROM ${qualified} WHERE ${predicate}`;
 }
 
 export function buildScopedColumnsQuerySql(
@@ -521,7 +550,8 @@ export function buildScopedColumnsQuerySql(
   const quotedCols = columns.map(col => quoteIdentifier(col, allowedCols));
   const qDate = quoteIdentifier(dateColumn, allowedCols);
   const safeLimit = Math.max(1, Math.min(Math.trunc(limit), MAX_SCOPED_ROWS));
-  return `SELECT ${quotedCols.join(", ")} FROM ${qualified} WHERE ${qDate} >= '${windowStart}' AND ${qDate} <= '${windowEnd} 23:59:59' ORDER BY ${qDate} ASC LIMIT ${safeLimit}`;
+  const { predicate } = buildSafeDateRangePredicate(tableProfile, dateColumn, qDate, windowStart, windowEnd);
+  return `SELECT ${quotedCols.join(", ")} FROM ${qualified} WHERE ${predicate} ORDER BY ${qDate} ASC LIMIT ${safeLimit}`;
 }
 
 export function buildDatabaseAggregateFallbackSql(
@@ -536,8 +566,9 @@ export function buildDatabaseAggregateFallbackSql(
   const colMetaByName = new Map(tableProfile.columns.map(c => [c.name, c]));
   const qualified = quoteQualifiedTable(tableProfile.schema, tableProfile.name, allowedTables);
   const qDate = quoteIdentifier(dateColumn, allowedCols);
+  const { predicate, dateGroupExpr } = buildSafeDateRangePredicate(tableProfile, dateColumn, qDate, windowStart, windowEnd);
 
-  const selectParts: string[] = [`CAST(${qDate} AS DATE) AS ${qDate}`, `COUNT(*) AS _agg_row_count`];
+  const selectParts: string[] = [`${dateGroupExpr} AS ${qDate}`, `COUNT(*) AS _agg_row_count`];
 
   // Include distinct count of the domain's primary entity identifier when mapped
   const entityRoleCandidates = ["orderId", "skuId", "campaignId", "transactionId", "customerId", "shipmentId", "userId"];
@@ -559,7 +590,7 @@ export function buildDatabaseAggregateFallbackSql(
     selectParts.push(`COALESCE(SUM(${qCol}::double precision), 0) AS ${qCol}`);
   }
 
-  const whereParts = [`${qDate} >= '${windowStart}'`, `${qDate} <= '${windowEnd} 23:59:59'`];
+  const whereParts = [predicate];
   if (understanding.domainId === "sales_ecommerce") {
     const statusCol = understanding.roleAssignments.status?.columnName;
     if (statusCol && allowedCols.has(statusCol)) {
@@ -568,7 +599,7 @@ export function buildDatabaseAggregateFallbackSql(
     }
   }
 
-  return `SELECT ${selectParts.join(", ")} FROM ${qualified} WHERE ${whereParts.join(" AND ")} GROUP BY CAST(${qDate} AS DATE) ORDER BY CAST(${qDate} AS DATE) ASC LIMIT 1000`;
+  return `SELECT ${selectParts.join(", ")} FROM ${qualified} WHERE ${whereParts.join(" AND ")} GROUP BY ${dateGroupExpr} ORDER BY ${dateGroupExpr} ASC LIMIT 1000`;
 }
 
 /**

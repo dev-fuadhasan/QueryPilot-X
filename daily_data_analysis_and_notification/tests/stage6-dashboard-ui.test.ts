@@ -57,13 +57,18 @@ const mockUnconfiguredStorage: StorageCapabilityStatus = {
   pdfBackend: "unconfigured",
   pdfProductionReady: false,
   schedulerSecretConfigured: false,
+  schedulerOrgDbMapConfigured: false,
+  schedulerOrgDbMapStatus: "missing",
+  schedulerOrgMappedForCurrentOrg: false,
+  schedulerOrgDbMapError: "QUERYPILOT_SCHEDULER_ORG_DB_MAP is not configured.",
   schedulerProductionReady: false,
   missingProductionConfig: [
     "QUERYPILOT_APP_DATABASE_URL",
     "QUERYPILOT_STORAGE_SUPABASE_URL",
     "QUERYPILOT_STORAGE_SUPABASE_SERVICE_ROLE_KEY",
     "QUERYPILOT_STORAGE_BUCKET",
-    "CRON_SECRET"
+    "CRON_SECRET",
+    "QUERYPILOT_SCHEDULER_ORG_DB_MAP"
   ]
 };
 
@@ -73,6 +78,10 @@ const mockProdStorage: StorageCapabilityStatus = {
   pdfBackend: "supabase_private_storage",
   pdfProductionReady: true,
   schedulerSecretConfigured: true,
+  schedulerOrgDbMapConfigured: true,
+  schedulerOrgDbMapStatus: "valid",
+  schedulerOrgMappedForCurrentOrg: true,
+  schedulerOrgDbMapError: null,
   schedulerProductionReady: true,
   missingProductionConfig: []
 };

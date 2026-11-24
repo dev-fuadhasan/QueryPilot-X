@@ -1,7 +1,12 @@
 import { createClient } from "@supabase/supabase-js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { PdfStorageAdapter, StorageCapabilityStatus, StoredPdfDescriptor } from "./types";
+import type {
+  PdfStorageAdapter,
+  SchedulerOrgDbMapStatus,
+  StorageCapabilityStatus,
+  StoredPdfDescriptor
+} from "./types";
 
 function safePathSegment(value: string): string {
   const cleaned = value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^\.+|\.+$/g, "").slice(0, 120);
@@ -173,7 +178,151 @@ export function createDefaultPdfStorage(): PdfStorageAdapter {
   return new LocalPrivatePdfStorage();
 }
 
-export function getStorageCapabilityStatus(): StorageCapabilityStatus {
+export type SchedulerOrgDbMapInspection = {
+  configured: boolean;
+  status: SchedulerOrgDbMapStatus;
+  validOrgCount: number;
+  invalidOrgCount: number;
+  organizationMapped: boolean | null;
+  error: string | null;
+};
+
+export function isValidPostgresConnectionUri(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!/^postgres(?:ql)?:\/\/.+/i.test(trimmed)) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return (parsed.protocol === "postgres:" || parsed.protocol === "postgresql:") && Boolean(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates `QUERYPILOT_SCHEDULER_ORG_DB_MAP` presence, JSON object structure, PostgreSQL URI
+ * syntax, and optional organisation membership without ever exposing URIs or credentials.
+ */
+export function inspectSchedulerOrgDbMap(
+  rawValue: string | undefined | null = process.env.QUERYPILOT_SCHEDULER_ORG_DB_MAP,
+  organizationId?: string
+): SchedulerOrgDbMapInspection {
+  const raw = typeof rawValue === "string" ? rawValue.trim() : "";
+  if (!raw) {
+    return {
+      configured: false,
+      status: "missing",
+      validOrgCount: 0,
+      invalidOrgCount: 0,
+      organizationMapped: organizationId ? false : null,
+      error: "QUERYPILOT_SCHEDULER_ORG_DB_MAP is not configured for unattended background scheduling."
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      configured: false,
+      status: "invalid_json",
+      validOrgCount: 0,
+      invalidOrgCount: 0,
+      organizationMapped: organizationId ? false : null,
+      error: "QUERYPILOT_SCHEDULER_ORG_DB_MAP must be a valid JSON object mapping organisation IDs to read-only PostgreSQL URIs."
+    };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      configured: false,
+      status: "invalid_json",
+      validOrgCount: 0,
+      invalidOrgCount: 0,
+      organizationMapped: organizationId ? false : null,
+      error: "QUERYPILOT_SCHEDULER_ORG_DB_MAP must be a JSON object (not an array or primitive)."
+    };
+  }
+
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  if (entries.length === 0) {
+    return {
+      configured: false,
+      status: "missing",
+      validOrgCount: 0,
+      invalidOrgCount: 0,
+      organizationMapped: organizationId ? false : null,
+      error: "QUERYPILOT_SCHEDULER_ORG_DB_MAP contains no organisation database mappings."
+    };
+  }
+
+  let validOrgCount = 0;
+  let invalidOrgCount = 0;
+  let orgMapped = false;
+  let orgUriInvalid = false;
+
+  for (const [orgKey, uriVal] of entries) {
+    const cleanKey = orgKey.trim();
+    const uriOk = Boolean(cleanKey) && isValidPostgresConnectionUri(uriVal);
+    if (uriOk) {
+      validOrgCount += 1;
+      if (organizationId && cleanKey === organizationId) {
+        orgMapped = true;
+      }
+    } else {
+      invalidOrgCount += 1;
+      if (organizationId && cleanKey === organizationId) {
+        orgUriInvalid = true;
+      }
+    }
+  }
+
+  if (orgUriInvalid || (invalidOrgCount > 0 && validOrgCount === 0)) {
+    return {
+      configured: false,
+      status: "invalid_uri",
+      validOrgCount,
+      invalidOrgCount,
+      organizationMapped: organizationId ? false : null,
+      error: orgUriInvalid
+        ? "Configured background database URI for this organisation is not a valid PostgreSQL connection string."
+        : "QUERYPILOT_SCHEDULER_ORG_DB_MAP contains invalid PostgreSQL connection URI(s)."
+    };
+  }
+
+  if (organizationId && !orgMapped) {
+    return {
+      configured: validOrgCount > 0,
+      status: "org_not_mapped",
+      validOrgCount,
+      invalidOrgCount,
+      organizationMapped: false,
+      error: "Current organisation is not present in QUERYPILOT_SCHEDULER_ORG_DB_MAP; unattended background runs will skip it."
+    };
+  }
+
+  if (invalidOrgCount > 0) {
+    return {
+      configured: false,
+      status: "invalid_uri",
+      validOrgCount,
+      invalidOrgCount,
+      organizationMapped: organizationId ? orgMapped : null,
+      error: `QUERYPILOT_SCHEDULER_ORG_DB_MAP has ${invalidOrgCount} invalid PostgreSQL URI entry(s).`
+    };
+  }
+
+  return {
+    configured: true,
+    status: "valid",
+    validOrgCount,
+    invalidOrgCount: 0,
+    organizationMapped: organizationId ? orgMapped : null,
+    error: null
+  };
+}
+
+export function getStorageCapabilityStatus(organizationId?: string): StorageCapabilityStatus {
   const hasAppDb = Boolean(process.env.QUERYPILOT_APP_DATABASE_URL?.trim());
   const hasPdfBucket = Boolean(
     process.env.QUERYPILOT_STORAGE_SUPABASE_URL?.trim()
@@ -183,6 +332,8 @@ export function getStorageCapabilityStatus(): StorageCapabilityStatus {
   const hasSchedulerSecret = Boolean(
     process.env.CRON_SECRET?.trim() || process.env.QUERYPILOT_SCHEDULER_SECRET?.trim()
   );
+  const orgMap = inspectSchedulerOrgDbMap(process.env.QUERYPILOT_SCHEDULER_ORG_DB_MAP, organizationId);
+  const orgMapReady = orgMap.status === "valid" && (organizationId ? orgMap.organizationMapped === true : orgMap.validOrgCount > 0);
 
   const missing: string[] = [];
   if (!hasAppDb) missing.push("QUERYPILOT_APP_DATABASE_URL");
@@ -194,6 +345,7 @@ export function getStorageCapabilityStatus(): StorageCapabilityStatus {
     );
   }
   if (!hasSchedulerSecret) missing.push("CRON_SECRET");
+  if (!orgMapReady) missing.push("QUERYPILOT_SCHEDULER_ORG_DB_MAP");
 
   return {
     databaseBackend: hasAppDb ? "postgres" : "sqlite",
@@ -201,7 +353,11 @@ export function getStorageCapabilityStatus(): StorageCapabilityStatus {
     pdfBackend: hasPdfBucket ? "supabase_private_storage" : isServerlessProduction() ? "unconfigured" : "local_private_fs",
     pdfProductionReady: hasPdfBucket,
     schedulerSecretConfigured: hasSchedulerSecret,
-    schedulerProductionReady: hasAppDb && hasPdfBucket && hasSchedulerSecret,
+    schedulerOrgDbMapConfigured: orgMap.configured,
+    schedulerOrgDbMapStatus: orgMap.status,
+    schedulerOrgMappedForCurrentOrg: orgMap.organizationMapped,
+    schedulerOrgDbMapError: orgMap.error,
+    schedulerProductionReady: hasAppDb && hasPdfBucket && hasSchedulerSecret && orgMapReady,
     missingProductionConfig: missing
   };
 }

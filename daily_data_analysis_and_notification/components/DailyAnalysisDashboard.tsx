@@ -21,6 +21,7 @@ import type {
   PersistentReportRecord,
   PersistentReportSummary,
   ReportFrequency,
+  ReportHistoryStorageState,
   StorageCapabilityStatus
 } from "../storage/types";
 import type { ScheduleRuntimeSummary } from "../storage/schedule-provider";
@@ -116,6 +117,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   const [archivedReports, setArchivedReports] = useState<PersistentReportSummary[]>([]);
   const [historyPagination, setHistoryPagination] = useState<ReportHistoryPagination>(DEFAULT_PAGINATION);
   const [loadingArchive, setLoadingArchive] = useState<boolean>(false);
+  const [historyStorageState, setHistoryStorageState] = useState<ReportHistoryStorageState>("ready");
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyWarning, setHistoryWarning] = useState<string | null>(null);
   const [archiveComparison, setArchiveComparison] = useState<ReportArchiveComparisonResult | null>(null);
@@ -166,16 +168,34 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       const response = await fetch(`/api/daily-analysis/reports?${qs}`, { cache: "no-store" });
       const data = await response.json();
       if (seq !== archiveSeqRef.current) return;
-      if (!response.ok) {
-        throw new Error(data.error || "Could not load persisted report history.");
+      if (data.storageStatus) {
+        setStorageStatus(data.storageStatus as StorageCapabilityStatus);
       }
-      setArchivedReports(Array.isArray(data.reports) ? (data.reports as PersistentReportSummary[]) : []);
+      if (!response.ok) {
+        const nextState: ReportHistoryStorageState =
+          data.storageState === "storage_unavailable" || response.status === 503
+            ? "storage_unavailable"
+            : "error";
+        setArchivedReports([]);
+        setHistoryPagination(DEFAULT_PAGINATION);
+        setHistoryStorageState(nextState);
+        setHistoryError(data.error || "Could not load persisted report history.");
+        setHistoryWarning(null);
+        return;
+      }
+      const items = Array.isArray(data.reports) ? (data.reports as PersistentReportSummary[]) : [];
+      setArchivedReports(items);
       if (data.pagination) {
         setHistoryPagination(data.pagination as ReportHistoryPagination);
       }
+      setHistoryStorageState(
+        (data.storageState as ReportHistoryStorageState | undefined)
+        || (items.length > 0 ? "ready" : "empty_no_reports")
+      );
       setHistoryWarning(typeof data.warning === "string" ? data.warning : null);
     } catch (error) {
       if (seq !== archiveSeqRef.current) return;
+      setHistoryStorageState("error");
       setHistoryError(error instanceof Error ? error.message : "Could not load persisted report history.");
     } finally {
       if (seq === archiveSeqRef.current) {
@@ -1059,6 +1079,8 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
           pagination={historyPagination}
           filters={historyFilters}
           loading={loadingArchive}
+          storageState={historyStorageState}
+          storageStatus={storageStatus}
           error={historyError}
           warning={historyWarning}
           timezone={timezone}

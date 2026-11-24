@@ -59,7 +59,7 @@ export async function GET(request: NextRequest) {
   if ("response" in access) return access.response;
 
   const organizationId = deriveOrganizationId(access.session);
-  const storageStatus = getStorageCapabilityStatus();
+  const storageStatus = getStorageCapabilityStatus(organizationId);
 
   try {
     const repository = getPersistentReportRepository();
@@ -118,7 +118,7 @@ export async function PUT(request: NextRequest) {
   }
 
   const organizationId = deriveOrganizationId(access.session);
-  const storageStatus = getStorageCapabilityStatus();
+  const storageStatus = getStorageCapabilityStatus(organizationId);
 
   try {
     const repository = getPersistentReportRepository();

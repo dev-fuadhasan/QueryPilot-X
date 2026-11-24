@@ -1,3 +1,4 @@
+import { parseReliableDateString } from "../profiler/sql-safety";
 import type {
   ComparisonPreset,
   ComparisonWindow,
@@ -72,29 +73,23 @@ export function toDateKeyInTimezone(value: unknown, timezone = DEFAULT_TIMEZONE)
   if (value instanceof Date) {
     return Number.isNaN(value.getTime()) ? null : todayInTimezone(timezone, value);
   }
-  const text = String(value).trim();
-  if (!text) return null;
-  const plain = text.slice(0, 10);
-  if (isValidIsoDate(plain) && (text.length === 10 || /^[T ]00:00:00(?:\.0+)?Z?$/.test(text.slice(10)))) {
-    return plain;
+  const parsed = parseReliableDateString(value);
+  if (parsed.status !== "valid") return null;
+  if (parsed.format === "iso_date" || parsed.format === "ymd_slash" || parsed.format === "month_name") {
+    return parsed.dateOnly;
   }
-  const parsed = new Date(text);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return todayInTimezone(timezone, parsed);
+  const text = String(value).trim();
+  if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ]00:00:00(?:\.0+)?Z?$/.test(text)) {
+    return parsed.dateOnly;
+  }
+  const dt = new Date(parsed.iso);
+  return Number.isNaN(dt.getTime()) ? null : todayInTimezone(timezone, dt);
 }
 
 export function parseTimestampMs(value: unknown): number | null {
-  if (value === null || value === undefined || value === "") return null;
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value.getTime();
-  }
-  const text = String(value).trim();
-  if (!text) return null;
-  if (isValidIsoDate(text)) {
-    const ms = Date.parse(`${text}T00:00:00.000Z`);
-    return Number.isFinite(ms) ? ms : null;
-  }
-  const ms = Date.parse(text);
+  const parsed = parseReliableDateString(value);
+  if (parsed.status !== "valid") return null;
+  const ms = Date.parse(parsed.iso);
   return Number.isFinite(ms) ? ms : null;
 }
 

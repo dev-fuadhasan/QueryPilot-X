@@ -176,26 +176,35 @@ function computeSalesRowFinancials(row: Record<string, unknown>, accessor: RoleA
   const discountCol = normalizeName(accessor.column("discount") || "");
   const costCol = normalizeName(accessor.column("cost") || "");
 
-  const isUnitPrice = Boolean(accessor.has("revenue") && accessor.has("quantity") && ["unitprice", "itemprice", "price"].includes(revenueCol));
+  const isRevenueUnitPriceCol = Boolean(accessor.has("revenue") && accessor.has("quantity") && ["unitprice", "itemprice", "price"].includes(revenueCol));
   const isDiscountPercent = discountCol.includes("percent") || discountCol.includes("pct") || discountCol.includes("rate");
   const isTotalCost = costCol.includes("totalcost") || costCol.includes("linecost") || costCol === "cogs";
 
   const quantity = accessor.has("quantity") ? (accessor.num(row, "quantity") ?? 0) : 0;
   const rawRev = accessor.has("revenue") ? accessor.num(row, "revenue") : null;
+  const rawUnitPrice = accessor.has("unitPrice") ? accessor.num(row, "unitPrice") : null;
   const rawDisc = accessor.has("discount") ? (accessor.num(row, "discount") ?? 0) : 0;
 
   let revenue: number | null = null;
   let discountAmount = 0;
+  let derivedRevenueFromUnitPrice = false;
 
   if (rawRev !== null) {
-    if (isUnitPrice) {
+    if (isRevenueUnitPriceCol) {
       const gross = rawRev * quantity;
       discountAmount = accessor.has("discount") ? (isDiscountPercent ? (gross * rawDisc) / 100 : rawDisc) : 0;
       revenue = gross - discountAmount;
+      derivedRevenueFromUnitPrice = true;
     } else {
       revenue = rawRev;
       discountAmount = accessor.has("discount") ? (isDiscountPercent ? (rawRev * rawDisc) / 100 : rawDisc) : 0;
     }
+  } else if (rawUnitPrice !== null && accessor.has("quantity")) {
+    // Only derive line revenue from UnitPrice when Quantity is also present (never assume UnitPrice alone = total revenue)
+    const gross = rawUnitPrice * quantity;
+    discountAmount = accessor.has("discount") ? (isDiscountPercent ? (gross * rawDisc) / 100 : rawDisc) : 0;
+    revenue = gross - discountAmount;
+    derivedRevenueFromUnitPrice = true;
   } else if (accessor.has("discount") && !isDiscountPercent) {
     discountAmount = rawDisc;
   }
@@ -214,7 +223,8 @@ function computeSalesRowFinancials(row: Record<string, unknown>, accessor: RoleA
     quantity,
     revenue,
     discountAmount,
-    profit
+    profit,
+    derivedRevenueFromUnitPrice
   };
 }
 
@@ -234,15 +244,26 @@ function summarizeSalesSlice(
   const discounts: number[] = [];
   const quantities: number[] = [];
 
+  const hasOrderId = accessor.has("orderId");
+  const hasRevenueSource = accessor.has("revenue") || (accessor.has("unitPrice") && accessor.has("quantity"));
+  const revenueCol = normalizeName(accessor.column("revenue") || "");
+  const isOrderHeaderTotalCol = hasOrderId && ["ordertotal", "grandtotal", "invoicetotal"].includes(revenueCol);
+  const seenOrderHeaderRevenue = new Set<string>();
+
   let aggregatedOrdersCount = 0;
+  let usedDerivedUnitPriceRevenue = false;
+  let deduplicatedOrderHeaderLines = 0;
 
   for (const row of rows) {
     // Support high-volume database-side daily rollup rows (_agg_row_count present without per-order IDs)
     if (row._agg_row_count !== undefined && !accessor.str(row, "orderId")) {
-      const entityCount = toNullableNumber(row._agg_distinct_entities) ?? toNullableNumber(row._agg_row_count) ?? 0;
-      aggregatedOrdersCount += Math.max(0, Math.trunc(entityCount));
+      if (hasOrderId) {
+        const entityCount = toNullableNumber(row._agg_distinct_entities) ?? toNullableNumber(row._agg_row_count) ?? 0;
+        aggregatedOrdersCount += Math.max(0, Math.trunc(entityCount));
+      }
       completedRows.push(row);
       const fin = computeSalesRowFinancials(row, accessor);
+      if (fin.derivedRevenueFromUnitPrice) usedDerivedUnitPriceRevenue = true;
       if (fin.revenue !== null) revenues.push(fin.revenue);
       if (fin.profit !== null) profits.push(fin.profit);
       if (accessor.has("discount")) discounts.push(fin.discountAmount);
@@ -250,37 +271,51 @@ function summarizeSalesSlice(
       continue;
     }
 
-    const orderId = accessor.str(row, "orderId");
-    if (!orderId) continue;
-    allOrderIds.add(orderId);
+    const orderId = hasOrderId ? accessor.str(row, "orderId") : null;
+    if (hasOrderId && !orderId) continue;
+
+    if (orderId) allOrderIds.add(orderId);
     const statusClass = accessor.has("status") ? classifySalesStatus(accessor.str(row, "status")) : "completed";
     if (statusClass === "cancelled") {
-      cancelledOrderIds.add(orderId);
+      if (orderId) cancelledOrderIds.add(orderId);
       continue;
     }
     if (statusClass === "returned") {
-      returnedOrderIds.add(orderId);
+      if (orderId) returnedOrderIds.add(orderId);
       continue;
     }
     if (statusClass !== "completed") continue;
 
     completedRows.push(row);
-    completedOrderIds.add(orderId);
+    if (orderId) completedOrderIds.add(orderId);
     const custId = accessor.str(row, "customerId");
     if (custId) activeCustomerIds.add(custId);
 
     const fin = computeSalesRowFinancials(row, accessor);
-    if (fin.revenue !== null) revenues.push(fin.revenue);
+    if (fin.derivedRevenueFromUnitPrice) usedDerivedUnitPriceRevenue = true;
+
+    // Prevent double-counting order-level header totals repeated across multi-line orders
+    if (isOrderHeaderTotalCol && orderId) {
+      if (!seenOrderHeaderRevenue.has(orderId)) {
+        seenOrderHeaderRevenue.add(orderId);
+        if (fin.revenue !== null) revenues.push(fin.revenue);
+      } else {
+        deduplicatedOrderHeaderLines += 1;
+      }
+    } else if (fin.revenue !== null) {
+      revenues.push(fin.revenue);
+    }
+
     if (fin.profit !== null) profits.push(fin.profit);
     if (accessor.has("discount")) discounts.push(fin.discountAmount);
     if (accessor.has("quantity")) quantities.push(fin.quantity);
   }
 
-  const totalOrders = completedOrderIds.size + aggregatedOrdersCount;
-  const totalRevenue = accessor.has("revenue") ? safeSum(revenues) : null;
+  const totalOrders = hasOrderId ? completedOrderIds.size + aggregatedOrdersCount : null;
+  const totalRevenue = hasRevenueSource ? safeSum(revenues) : null;
   const unitsSold = accessor.has("quantity") ? safeSum(quantities) : null;
-  const hasProfitSource = accessor.has("profit") || (accessor.has("revenue") && accessor.has("cost"));
-  const grossProfit = hasProfitSource ? safeSum(profits) : null;
+  const hasProfitSource = accessor.has("profit") || (hasRevenueSource && accessor.has("cost"));
+  const grossProfit = hasProfitSource && profits.length > 0 ? safeSum(profits) : (hasProfitSource && completedRows.length === 0 ? 0 : null);
   const totalDiscounts = accessor.has("discount") ? safeSum(discounts) : null;
 
   return {
@@ -291,12 +326,14 @@ function summarizeSalesSlice(
     unitsSold,
     grossProfit,
     grossProfitMargin: totalRevenue !== null && grossProfit !== null ? safePercent(grossProfit, totalRevenue) : null,
-    averageOrderValue: totalRevenue !== null ? safeDivide(totalRevenue, totalOrders) : null,
+    averageOrderValue: hasOrderId && totalRevenue !== null && totalOrders !== null ? safeDivide(totalRevenue, totalOrders) : null,
     averageSellingPrice: totalRevenue !== null && unitsSold !== null ? safeDivide(totalRevenue, unitsSold) : null,
     totalDiscounts,
-    cancellationRate: accessor.has("status") ? safePercent(cancelledOrderIds.size, allOrderIds.size) : null,
-    returnRate: accessor.has("status") ? safePercent(returnedOrderIds.size, allOrderIds.size) : null,
-    activeCustomerIds
+    cancellationRate: hasOrderId && accessor.has("status") ? safePercent(cancelledOrderIds.size, allOrderIds.size) : null,
+    returnRate: hasOrderId && accessor.has("status") ? safePercent(returnedOrderIds.size, allOrderIds.size) : null,
+    activeCustomerIds,
+    usedDerivedUnitPriceRevenue,
+    deduplicatedOrderHeaderLines
   };
 }
 
@@ -309,12 +346,26 @@ function calculateSalesDomain(input: DomainCalculationInput): DomainCalculationO
   const curr = summarizeSalesSlice(periodRows, accessor);
   const comp = comparisonRows.length ? summarizeSalesSlice(comparisonRows, accessor) : null;
 
-  // Repeat Customer Rate & CLV Estimate require historical completed orders by customerId
+  if (curr.usedDerivedUnitPriceRevenue) {
+    addMetricWarning(
+      metricWarnings,
+      "totalRevenue",
+      "Derived from Unit Price × Quantity because no explicit total revenue column was mapped."
+    );
+  }
+  if (curr.deduplicatedOrderHeaderLines > 0) {
+    domainWarnings.push(`Deduplicated order-level total across ${curr.deduplicatedOrderHeaderLines} multi-line order row(s) to prevent double-counting.`);
+  }
+  if (!accessor.has("orderId")) {
+    domainWarnings.push("No reliable Order ID column was mapped: independent sales totals are computed, while order-level metrics (Total Orders, AOV, Cancellation/Return Rates, Repeat Rate, CLV) remain unavailable.");
+  }
+
+  // Repeat Customer Rate & CLV Estimate require historical completed orders by customerId AND orderId
   let repeatCustomerRate: number | null = null;
   let clvEstimate: number | null = null;
   let compRepeatRate: number | null = null;
 
-  if (accessor.has("customerId")) {
+  if (accessor.has("customerId") && accessor.has("orderId")) {
     const customerOrdersUpToEnd = new Map<string, Set<string>>();
     const customerRevenueUpToEnd = new Map<string, number[]>();
     const historyDates = new Set<string>();
@@ -416,6 +467,7 @@ function calculateSalesDomain(input: DomainCalculationInput): DomainCalculationO
     ["channel", "Sales Channel Performance", "channel"]
   ];
 
+  const hasRevenueSource = accessor.has("revenue") || (accessor.has("unitPrice") && accessor.has("quantity"));
   for (const [role, label, dimId] of salesDimensions) {
     if (!accessor.has(role)) continue;
     const grouped = new Map<string, Array<Record<string, unknown>>>();
@@ -426,12 +478,21 @@ function calculateSalesDomain(input: DomainCalculationInput): DomainCalculationO
       list.push(row);
       grouped.set(key, list);
     }
-    const primaryMetricId = accessor.has("revenue") ? "totalRevenue" : "totalOrders";
+    const primaryMetricId = hasRevenueSource
+      ? "totalRevenue"
+      : accessor.has("quantity")
+        ? "unitsSold"
+        : "totalOrders";
     const items = [...grouped.entries()].map(([groupLabel, rows]) => {
       const s = summarizeSalesSlice(rows, accessor);
+      const primaryValue = primaryMetricId === "totalRevenue"
+        ? (s.totalRevenue ?? 0)
+        : primaryMetricId === "unitsSold"
+          ? (s.unitsSold ?? 0)
+          : (s.totalOrders ?? rows.length);
       return {
         label: groupLabel,
-        primaryValue: primaryMetricId === "totalRevenue" ? (s.totalRevenue ?? 0) : s.totalOrders,
+        primaryValue,
         recordCount: rows.length,
         metrics: {
           totalRevenue: s.totalRevenue,

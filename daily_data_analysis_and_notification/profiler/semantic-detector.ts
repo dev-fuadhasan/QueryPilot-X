@@ -1,6 +1,6 @@
 import type { DatasetMapping } from "../database/dataset-mapping";
 import { BUSINESS_DOMAIN_PROFILES, listDomainProfiles } from "./domain-profiles";
-import { normalizeName, tokenizeName } from "./sql-safety";
+import { isCompositeColumnName, normalizeName, tokenizeName } from "./sql-safety";
 import type {
   BusinessDomainId,
   BusinessDomainProfile,
@@ -84,6 +84,47 @@ function countSupportingDomainColumns(table: TableProfile, domain: BusinessDomai
   return hits;
 }
 
+const IDENTIFIER_EVIDENCE_TOKENS = new Set([
+  "id",
+  "no",
+  "num",
+  "number",
+  "code",
+  "ref",
+  "key",
+  "uuid",
+  "guid",
+  "sku",
+  "tx",
+  "txn",
+  "invoice",
+  "receipt",
+  "bill",
+  "ticket",
+  "tracking"
+]);
+
+function isIdentifierRole(role: SemanticRoleDefinition): boolean {
+  return role.expectedCategories.includes("identifier") && /id$/i.test(role.role);
+}
+
+function hasReliableIdentifierEvidence(column: ColumnProfile, colTokens: string[]): boolean {
+  if (column.isPrimaryKey || column.isForeignKey || column.category === "identifier") return true;
+  const lastToken = colTokens[colTokens.length - 1] || "";
+  if (IDENTIFIER_EVIDENCE_TOKENS.has(lastToken)) return true;
+  if (colTokens.some(t => t === "id" || t === "uuid" || t === "guid" || t === "sku" || t === "tx" || t === "txn")) return true;
+  return false;
+}
+
+function matchesTokenOrPhrase(colTokens: string[], colTokenSet: Set<string>, normCol: string, hint: string): boolean {
+  const hintTokens = tokenizeName(hint);
+  if (hintTokens.length === 0) return false;
+  if (hintTokens.length === 1) {
+    return colTokenSet.has(hintTokens[0]);
+  }
+  return normCol.includes(normalizeName(hint)) || hintTokens.every(t => colTokenSet.has(t));
+}
+
 function scoreColumnForRole(
   column: ColumnProfile,
   role: SemanticRoleDefinition,
@@ -107,6 +148,7 @@ function scoreColumnForRole(
   const normCol = normalizeName(column.name);
   const colTokens = tokenizeName(column.name);
   const colTokenSet = new Set(colTokens);
+  const isComposite = isCompositeColumnName(column.name);
 
   let score = 0;
   let matchedName = false;
@@ -128,32 +170,48 @@ function scoreColumnForRole(
     }
   }
 
-  // 2. Token / partial name matching when not an exact alias
+  // 1b. Identifier roles MUST have genuine identifier evidence unless exact alias matched
+  if (isIdentifierRole(role) && !exactAlias && !usedGenericAlias) {
+    if (!hasReliableIdentifierEvidence(column, colTokens)) {
+      return {
+        role: role.role,
+        score: 0,
+        confidence: "low",
+        reasons: [`Column "${column.name}" lacks identifier evidence (not a PK/FK and has no ID/code/number suffix) for ${role.label}.`]
+      };
+    }
+  }
+
+  // 2. Token matching (strict token/phrase matching — avoids misleading arbitrary substrings)
   if (!exactAlias && role.tokenHints && role.tokenHints.length > 0) {
-    const matchedHints = role.tokenHints.filter(hint => {
-      const normHint = normalizeName(hint);
-      return colTokenSet.has(hint.toLowerCase()) || normCol.includes(normHint);
-    });
+    const matchedHints = role.tokenHints.filter(hint =>
+      matchesTokenOrPhrase(colTokens, colTokenSet, normCol, hint)
+    );
     if (matchedHints.length > 0) {
       const tokenBonus = Math.min(0.42, 0.24 + (matchedHints.length - 1) * 0.12);
       if (!usedGenericAlias || tokenBonus > 0.34) {
         score = Math.max(score, tokenBonus);
         matchedName = true;
-        reasons.push(`Column name contains semantic hint(s): ${matchedHints.join(", ")}.`);
+        reasons.push(`Column name contains semantic token(s): ${matchedHints.join(", ")}.`);
       }
     }
   }
 
-  // 3. Negative token penalties (prevents e.g. unit_cost matching revenue or updated_at beating order_date)
+  // 3. Negative token penalties (prevents e.g. Sales_Rep -> orderId, Customer_Type -> customerId, Unit_Price -> revenue)
   if (role.negativeTokens && role.negativeTokens.length > 0) {
-    const hitNegatives = role.negativeTokens.filter(neg => {
-      const normNeg = normalizeName(neg);
-      return colTokenSet.has(neg.toLowerCase()) || normCol.includes(normNeg);
-    });
+    const hitNegatives = role.negativeTokens.filter(neg =>
+      matchesTokenOrPhrase(colTokens, colTokenSet, normCol, neg)
+    );
     if (hitNegatives.length > 0) {
-      score -= 0.45;
+      score -= 0.50;
       reasons.push(`Penalized due to conflicting token(s): ${hitNegatives.join(", ")}.`);
     }
+  }
+
+  // 3b. Composite columns (e.g. Region_and_Sales_Rep) are penalized and cannot auto-assign cleanly
+  if (isComposite && !exactAlias) {
+    score -= 0.22;
+    reasons.push(`Composite column name "${column.name}" combines multiple concepts and requires manual confirmation.`);
   }
 
   // If neither name nor strong value/key signal matches, keep score low
@@ -164,6 +222,18 @@ function scoreColumnForRole(
       confidence: "low",
       reasons: ["No semantic name or pattern match."]
     };
+  }
+
+  // Prevent low-cardinality non-PK/FK text columns from matching identifier roles via partial tokens
+  if (
+    isIdentifierRole(role)
+    && !exactAlias
+    && !column.isPrimaryKey
+    && !column.isForeignKey
+    && column.category === "categorical"
+  ) {
+    score -= 0.35;
+    reasons.push("Low-cardinality categorical text is unlikely to be a unique identifier.");
   }
 
   // 4. Data type compatibility bonus
@@ -423,7 +493,8 @@ export function understandTableForDomain(
       };
     }
 
-    const ambiguous = Boolean(second && second.score >= MEDIUM_CONFIDENCE_THRESHOLD && (top.score - second.score) < AMBIGUITY_MARGIN);
+    const isComposite = isCompositeColumnName(column.name);
+    const ambiguous = isComposite || Boolean(second && second.score >= MEDIUM_CONFIDENCE_THRESHOLD && (top.score - second.score) < AMBIGUITY_MARGIN);
     const confidence = confidenceFromScore(top.score, ambiguous);
     const needsConfirmation = confidence === "medium" || ambiguous;
     const assignedRole = confidence === "high" && !ambiguous ? top.role : null;
@@ -439,9 +510,11 @@ export function understandTableForDomain(
       ambiguous,
       needsConfirmation,
       candidates: candidates.slice(0, 3),
-      reasons: ambiguous
-        ? [...top.reasons, `Ambiguous between "${top.role}" (${top.score}) and "${second.role}" (${second.score}).`]
-        : top.reasons
+      reasons: isComposite
+        ? [...top.reasons, `Composite column "${column.name}" is marked ambiguous and will not be auto-assigned without confirmation.`]
+        : ambiguous && second
+          ? [...top.reasons, `Ambiguous between "${top.role}" (${top.score}) and "${second.role}" (${second.score}).`]
+          : top.reasons
     };
   });
 
@@ -450,6 +523,10 @@ export function understandTableForDomain(
   const candidatesByRole = new Map<string, Array<{ match: ColumnSemanticMatch; candidate: ColumnRoleCandidate }>>();
 
   for (const match of rawMatches) {
+    // Composite unconfirmed columns must never silently claim a semantic role
+    if (isCompositeColumnName(match.columnName) && !overrideRoleByColumn.has(match.columnName)) {
+      continue;
+    }
     const chosenRole = match.assignedRole || match.suggestedRole;
     if (!chosenRole) continue;
     const candidate = match.candidates.find(c => c.role === chosenRole) || {

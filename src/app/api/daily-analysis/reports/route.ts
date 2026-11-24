@@ -18,7 +18,8 @@ import {
   type PersistentReportPdfStatus,
   type PersistentReportStatusFilter,
   type ReportFrequencyOrManual,
-  type ReportGenerationType
+  type ReportGenerationType,
+  type ReportHistoryStorageState
 } from "@/../daily_data_analysis_and_notification/storage";
 
 export const runtime = "nodejs";
@@ -94,7 +95,7 @@ export async function GET(request: NextRequest) {
 
   const includeAllDates = params.get("all") === "true";
   const organizationId = deriveOrganizationId(access.session);
-  const storageStatus = getStorageCapabilityStatus();
+  const storageStatus = getStorageCapabilityStatus(organizationId);
 
   try {
     const repository = getPersistentReportRepository();
@@ -114,6 +115,17 @@ export async function GET(request: NextRequest) {
       pageSize
     });
 
+    let storageState: ReportHistoryStorageState = "ready";
+    if (result.total === 0) {
+      const unfiltered = await repository.listReports({
+        organizationId,
+        defaultDays: 0,
+        page: 1,
+        pageSize: 1
+      });
+      storageState = unfiltered.total > 0 ? "empty_filtered" : "empty_no_reports";
+    }
+
     return access.applyCookie(NextResponse.json(
       {
         reports: result.items,
@@ -125,19 +137,24 @@ export async function GET(request: NextRequest) {
           appliedStartDate: result.appliedStartDate,
           appliedEndDate: result.appliedEndDate
         },
-        storageStatus
+        storageStatus,
+        storageState
       },
       { headers: { "Cache-Control": "no-store" } }
     ));
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Persistent report history storage is unavailable.";
+    const isUnavailable = /development mode|not configured|QUERYPILOT_APP_DATABASE_URL/i.test(message);
+    const storageState: ReportHistoryStorageState = isUnavailable ? "storage_unavailable" : "error";
     return access.applyCookie(NextResponse.json(
       {
         reports: [],
         pagination: { total: 0, page, pageSize, totalPages: 1, appliedStartDate: startDate || null, appliedEndDate: endDate || null },
         storageStatus,
-        warning: error instanceof Error ? error.message : "Persistent report history storage is not configured."
+        storageState,
+        error: message
       },
-      { headers: { "Cache-Control": "no-store" } }
+      { status: isUnavailable ? 503 : 500, headers: { "Cache-Control": "no-store" } }
     ));
   }
 }
@@ -239,9 +256,18 @@ export async function POST(request: NextRequest) {
         { status: 201, headers: { "Cache-Control": "no-store" } }
       ));
     } catch (error) {
+      const organizationId = deriveOrganizationId(access.session);
+      const storageStatus = getStorageCapabilityStatus(organizationId);
       const message = error instanceof Error ? error.message : "Could not generate manual report.";
-      const status = /development mode|not configured/i.test(message) ? 503 : 400;
-      return NextResponse.json({ error: message }, { status });
+      const isUnavailable = /development mode|not configured|QUERYPILOT_APP_DATABASE_URL/i.test(message);
+      return NextResponse.json(
+        {
+          error: message,
+          storageState: isUnavailable ? "storage_unavailable" : "error",
+          storageStatus
+        },
+        { status: isUnavailable ? 503 : 400 }
+      );
     }
   }
 
