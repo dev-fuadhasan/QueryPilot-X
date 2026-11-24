@@ -26,6 +26,7 @@ import {
   formatFileSize,
   formatShortTimestamp,
   getFrequencyOption,
+  isReportPdfDownloadable,
   resolveAutoReportDisplayState,
   validateScheduleFormInput
 } from "./dashboard-helpers";
@@ -392,19 +393,26 @@ export default function DailyReportPanel({
                 </div>
               )}
 
-              <button
-                type="button"
-                className={styles.primaryBtn}
-                disabled={downloadingReportId === latestAuto.id || latestAuto.status === "failed"}
-                onClick={() => void onDownloadPdf(latestAuto)}
-              >
-                <Download size={14} />
-                {downloadingReportId === latestAuto.id
-                  ? "Preparing PDF..."
-                  : latestAuto.pdfStatus === "generated"
-                    ? "Download Latest Automatic PDF"
-                    : "Generate & Download PDF"}
-              </button>
+              {isReportPdfDownloadable(latestAuto) ? (
+                <button
+                  type="button"
+                  className={styles.primaryBtn}
+                  disabled={downloadingReportId === latestAuto.id}
+                  onClick={() => void onDownloadPdf(latestAuto)}
+                >
+                  <Download size={14} />
+                  {downloadingReportId === latestAuto.id
+                    ? "Preparing PDF..."
+                    : "Download Latest Automatic PDF"}
+                </button>
+              ) : (
+                <div className={styles.warnBanner} role="status">
+                  <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span>
+                    PDF download is unavailable until a verified PDF artifact is stored for this report.
+                  </span>
+                </div>
+              )}
             </div>
           ) : (
             <div className={styles.emptyBox}>

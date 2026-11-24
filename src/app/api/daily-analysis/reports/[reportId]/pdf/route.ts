@@ -51,12 +51,21 @@ export async function GET(request: NextRequest, context: RouteContext) {
     if (!record) {
       return NextResponse.json({ error: "Report not found." }, { status: 404 });
     }
+    if (record.status === "failed") {
+      return NextResponse.json(
+        { error: record.errorMessage || "PDF cannot be downloaded because this report failed to generate." },
+        { status: 409 }
+      );
+    }
 
     let archivedComparison: ReportArchiveComparisonResult | null = null;
     if (compareWithId) {
       const otherRecord = await repository.getReportById(organizationId, compareWithId);
       if (!otherRecord) {
         return NextResponse.json({ error: "Comparison report not found for this organisation." }, { status: 404 });
+      }
+      if (otherRecord.status === "failed") {
+        return NextResponse.json({ error: "Cannot compare against a failed report." }, { status: 409 });
       }
       archivedComparison = compareArchivedReports(
         toArchivedReportFromPersistent(otherRecord),
@@ -133,7 +142,8 @@ export async function GET(request: NextRequest, context: RouteContext) {
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="${filename}"`,
         "Content-Length": String(pdfBytes.byteLength),
-        "Cache-Control": "private, no-store"
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff"
       }
     }));
   } catch (error) {

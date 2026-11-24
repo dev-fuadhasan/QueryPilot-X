@@ -1,15 +1,18 @@
 import type { BusinessDomainId, ColumnSemanticMatch, DomainTableUnderstanding } from "../profiler/types";
-import type { ComparisonPreset } from "../metrics/types";
+import type { ComparisonPreset, DynamicAnalysisResult, MetricResult } from "../metrics/types";
 import type { DailyReportAlert } from "../notifications";
 import type {
   ManualQuickRange,
+  PersistentReportPdfStatus,
+  PersistentReportStatusFilter,
   PersistentReportSummary,
   ReportFrequency,
+  ReportFrequencyOrManual,
   StorageCapabilityStatus
 } from "../storage/types";
 import type { ScheduleRuntimeSummary } from "../storage/schedule-provider";
 
-export type DashboardSectionTab = "daily_report" | "manual_report" | "tools";
+export type DashboardSectionTab = "daily_report" | "manual_report" | "tools" | "historical" | "history";
 
 export type ToolPanelId =
   | "brief"
@@ -417,8 +420,145 @@ export function formatFileSize(bytes: number | null | undefined): string {
 export function createStaleResetSnapshot() {
   return {
     intelligence: null,
+    historicalAnalysis: null,
     manualResult: null,
     archiveComparison: null,
     error: ""
   };
 }
+
+export type ReportHistoryFilterState = {
+  search: string;
+  startDate: string;
+  endDate: string;
+  includeAllDates: boolean;
+  frequency: "" | ReportFrequencyOrManual;
+  domainId: "" | BusinessDomainId;
+  status: "" | PersistentReportStatusFilter;
+  pdfStatus: "" | PersistentReportPdfStatus;
+  page: number;
+  pageSize: number;
+};
+
+export const DEFAULT_REPORT_HISTORY_FILTERS: ReportHistoryFilterState = {
+  search: "",
+  startDate: "",
+  endDate: "",
+  includeAllDates: false,
+  frequency: "",
+  domainId: "",
+  status: "",
+  pdfStatus: "",
+  page: 1,
+  pageSize: 10
+};
+
+export function buildReportHistoryQueryString(filters: ReportHistoryFilterState): string {
+  const params = new URLSearchParams();
+  params.set("page", String(Math.max(1, Math.trunc(filters.page || 1))));
+  params.set("pageSize", String(Math.max(1, Math.min(100, Math.trunc(filters.pageSize || 10)))));
+  if (filters.includeAllDates) params.set("all", "true");
+  if (filters.startDate && isValidIsoDateString(filters.startDate)) params.set("start", filters.startDate);
+  if (filters.endDate && isValidIsoDateString(filters.endDate)) params.set("end", filters.endDate);
+  if (filters.frequency) params.set("frequency", filters.frequency);
+  if (filters.domainId) params.set("domain", filters.domainId);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.pdfStatus) params.set("pdfStatus", filters.pdfStatus);
+  if (filters.search.trim()) params.set("search", filters.search.trim().slice(0, 120));
+  return params.toString();
+}
+
+/**
+ * A persisted report is directly downloadable ONLY when generation succeeded AND its PDF
+ * artifact is genuinely stored and verified (`pdfStatus === "generated"`).
+ */
+export function isReportPdfDownloadable(
+  report: Pick<PersistentReportSummary, "status" | "pdfStatus"> | null | undefined
+): boolean {
+  return Boolean(report && report.status === "generated" && report.pdfStatus === "generated");
+}
+
+export function canCompareArchivedReports(
+  left: Pick<PersistentReportSummary, "id" | "status" | "domainId"> | null | undefined,
+  right: Pick<PersistentReportSummary, "id" | "status" | "domainId"> | null | undefined
+): { allowed: boolean; reason: string | null } {
+  if (!left || !right) {
+    return { allowed: false, reason: "Select two persisted reports to compare." };
+  }
+  if (left.id === right.id) {
+    return { allowed: false, reason: "Choose two different reports to run a comparison." };
+  }
+  if (left.status === "failed" || right.status === "failed") {
+    return { allowed: false, reason: "Failed reports cannot be compared." };
+  }
+  return { allowed: true, reason: null };
+}
+
+export type HistoricalSeriesOption = {
+  metricKey: string;
+  label: string;
+};
+
+export function extractHistoricalSeriesOptions(analysis: DynamicAnalysisResult | null): HistoricalSeriesOption[] {
+  if (!analysis || !analysis.timeSeries.length || analysis.source.rowCountInPeriod === 0) return [];
+  const labelMap = new Map<string, string>();
+  for (const metric of analysis.availableMetrics) {
+    labelMap.set(metric.metricId, metric.name);
+  }
+  const discoveredKeys = new Set<string>();
+  for (const point of analysis.timeSeries) {
+    for (const [key, val] of Object.entries(point.metrics)) {
+      if (val !== null && Number.isFinite(val)) {
+        discoveredKeys.add(key);
+      }
+    }
+  }
+  return Array.from(discoveredKeys).map(key => ({
+    metricKey: key,
+    label: labelMap.get(key) || key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())
+  }));
+}
+
+export function extractSignificantHistoricalChanges(
+  analysis: DynamicAnalysisResult | null,
+  limit = 4
+): MetricResult[] {
+  if (!analysis) return [];
+  return [...analysis.availableMetrics]
+    .filter(metric => metric.changePercent !== null && Number.isFinite(metric.changePercent) && Math.abs(metric.changePercent) >= 1)
+    .sort((a, b) => Math.abs(b.changePercent ?? 0) - Math.abs(a.changePercent ?? 0))
+    .slice(0, Math.max(1, limit));
+}
+
+export function computeHistoricalCoverageSummary(analysis: DynamicAnalysisResult | null): {
+  periodDays: number;
+  observedDays: number;
+  missingDays: number;
+  coveragePercent: number;
+  rowCountInPeriod: number;
+  isEmpty: boolean;
+} {
+  if (!analysis) {
+    return {
+      periodDays: 0,
+      observedDays: 0,
+      missingDays: 0,
+      coveragePercent: 0,
+      rowCountInPeriod: 0,
+      isEmpty: true
+    };
+  }
+  const periodDays = Math.max(1, analysis.reportingPeriod.dayCount || 1);
+  const observedDays = analysis.timeSeries.filter(point => point.recordCount > 0).length;
+  const missingDays = Math.max(0, periodDays - observedDays);
+  const coveragePercent = Math.min(100, Math.round((observedDays / periodDays) * 100));
+  return {
+    periodDays,
+    observedDays,
+    missingDays,
+    coveragePercent,
+    rowCountInPeriod: analysis.source.rowCountInPeriod,
+    isEmpty: analysis.source.rowCountInPeriod === 0
+  };
+}
+

@@ -265,6 +265,22 @@ export class SqliteReportRepository implements PersistentReportRepository {
       where.push("frequency = ?");
       params.push(query.frequency);
     }
+    if (query.status === "pending") {
+      where.push("status = 'generated' AND pdf_status = 'not_generated'");
+    } else if (query.status === "generated" || query.status === "failed") {
+      where.push("status = ?");
+      params.push(query.status);
+    }
+    if (query.pdfStatus) {
+      where.push("pdf_status = ?");
+      params.push(query.pdfStatus);
+    }
+    if (query.search && query.search.trim()) {
+      const escaped = query.search.trim().toLowerCase().replace(/[\\%_]/g, "\\$&");
+      const pattern = `%${escaped}%`;
+      where.push("(LOWER(summary_text) LIKE ? ESCAPE '\\' OR LOWER(dataset_table) LIKE ? ESCAPE '\\' OR LOWER(domain_name) LIKE ? ESCAPE '\\' OR LOWER(period_start) LIKE ? ESCAPE '\\' OR LOWER(period_end) LIKE ? ESCAPE '\\' OR LOWER(id) LIKE ? ESCAPE '\\')");
+      params.push(pattern, pattern, pattern, pattern, pattern, pattern);
+    }
 
     const whereSql = where.join(" AND ");
     const totalRow = this.db.prepare(

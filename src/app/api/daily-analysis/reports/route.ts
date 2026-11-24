@@ -15,6 +15,8 @@ import {
   getPersistentReportRepository,
   getStorageCapabilityStatus,
   type ManualQuickRange,
+  type PersistentReportPdfStatus,
+  type PersistentReportStatusFilter,
   type ReportFrequencyOrManual,
   type ReportGenerationType
 } from "@/../daily_data_analysis_and_notification/storage";
@@ -77,6 +79,19 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid frequency filter." }, { status: 400 });
   }
 
+  const statusParam = params.get("status") || undefined;
+  if (statusParam && !["generated", "failed", "pending"].includes(statusParam)) {
+    return NextResponse.json({ error: "status must be 'generated', 'failed', or 'pending'." }, { status: 400 });
+  }
+
+  const pdfStatusParam = params.get("pdfStatus") || undefined;
+  if (pdfStatusParam && !["generated", "not_generated", "failed"].includes(pdfStatusParam)) {
+    return NextResponse.json({ error: "pdfStatus must be 'generated', 'not_generated', or 'failed'." }, { status: 400 });
+  }
+
+  const rawSearch = params.get("search")?.trim() || undefined;
+  const search = rawSearch ? rawSearch.slice(0, 120) : undefined;
+
   const includeAllDates = params.get("all") === "true";
   const organizationId = deriveOrganizationId(access.session);
   const storageStatus = getStorageCapabilityStatus();
@@ -92,6 +107,9 @@ export async function GET(request: NextRequest) {
       datasetTable: tableParam,
       generationType: generationTypeParam as ReportGenerationType | undefined,
       frequency: frequencyParam as ReportFrequencyOrManual | undefined,
+      status: statusParam as PersistentReportStatusFilter | undefined,
+      pdfStatus: pdfStatusParam as PersistentReportPdfStatus | undefined,
+      search,
       page,
       pageSize
     });
