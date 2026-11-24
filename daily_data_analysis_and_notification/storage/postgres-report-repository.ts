@@ -364,6 +364,19 @@ export class PostgresReportRepository implements PersistentReportRepository {
     if (query.datasetTable) pushCond("dataset_table = ?", query.datasetTable);
     if (query.generationType) pushCond("generation_type = ?", query.generationType);
     if (query.frequency) pushCond("frequency = ?", query.frequency);
+    if (query.status === "pending") {
+      where.push("status = 'generated' AND pdf_status = 'not_generated'");
+    } else if (query.status === "generated" || query.status === "failed") {
+      pushCond("status = ?", query.status);
+    }
+    if (query.pdfStatus) pushCond("pdf_status = ?", query.pdfStatus);
+    if (query.search && query.search.trim()) {
+      const escaped = query.search.trim().replace(/[\\%_]/g, "\\$&");
+      const pattern = `%${escaped}%`;
+      params.push(pattern);
+      const idx = `$${params.length}`;
+      where.push(`(summary_text ILIKE ${idx} ESCAPE '\\' OR dataset_table ILIKE ${idx} ESCAPE '\\' OR domain_name ILIKE ${idx} ESCAPE '\\' OR period_start ILIKE ${idx} ESCAPE '\\' OR period_end ILIKE ${idx} ESCAPE '\\' OR id ILIKE ${idx} ESCAPE '\\')`);
+    }
 
     const whereSql = where.join(" AND ");
     const countRes = await this.pool.query(`SELECT COUNT(*)::int AS count FROM app_persistent_reports WHERE ${whereSql}`, params);

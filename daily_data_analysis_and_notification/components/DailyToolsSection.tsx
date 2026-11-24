@@ -46,6 +46,7 @@ import {
   formatShortTimestamp,
   formatSignedPercent,
   getDomainUiMeta,
+  isReportPdfDownloadable,
   type AlertFilterMode,
   type ToolPanelId
 } from "./dashboard-helpers";
@@ -72,6 +73,8 @@ type DailyToolsSectionProps = {
   timezone: string;
   onCompareArchivedReports: (leftId: string, rightId: string) => Promise<void>;
   onDownloadReportPdf: (report: PersistentReportSummary, compareWithId?: string) => Promise<void>;
+  onOpenReportHistory?: () => void;
+  onOpenHistoricalDashboard?: () => void;
 };
 
 function findingBorderClass(category: BriefFinding["category"]): string {
@@ -123,7 +126,9 @@ export default function DailyToolsSection({
   downloadingReportId,
   timezone,
   onCompareArchivedReports,
-  onDownloadReportPdf
+  onDownloadReportPdf,
+  onOpenReportHistory,
+  onOpenHistoricalDashboard
 }: DailyToolsSectionProps) {
   const [activeTool, setActiveTool] = useState<ToolPanelId>("brief");
   const [alertFilter, setAlertFilter] = useState<AlertFilterMode>("all");
@@ -834,10 +839,24 @@ export default function DailyToolsSection({
           {/* 7. REPORT ARCHIVE & COMPARISON ENTRY POINT */}
           {activeTool === "archive" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div className={styles.infoBanner}>
-                <Archive size={16} style={{ flexShrink: 0, marginTop: 1 }} />
-                <div>
-                  <strong>Report Archive &amp; Comparison Entry Point:</strong> Select any two persisted reports from the same domain to compare metrics or export a comparison PDF. The full 30-day Historical Dashboard and expanded archive explorer will be delivered in Stage 7.
+              <div className={styles.infoBanner} style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-start", flex: 1, minWidth: 220 }}>
+                  <Archive size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <div>
+                    <strong>Report Archive &amp; Comparison:</strong> Compare persisted reports below or open the full Report History browser and 30-Day Historical Dashboard.
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {onOpenHistoricalDashboard && (
+                    <button type="button" className={styles.secondaryBtn} onClick={onOpenHistoricalDashboard}>
+                      Open 30-Day Historical Dashboard
+                    </button>
+                  )}
+                  {onOpenReportHistory && (
+                    <button type="button" className={styles.primaryBtn} onClick={onOpenReportHistory}>
+                      Open Full Report History
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1007,15 +1026,19 @@ export default function DailyToolsSection({
                               </span>
                             </td>
                             <td className={styles.numCell}>
-                              <button
-                                type="button"
-                                className={styles.secondaryBtn}
-                                disabled={downloadingReportId === rep.id}
-                                onClick={() => void onDownloadReportPdf(rep)}
-                              >
-                                <Download size={13} />
-                                {downloadingReportId === rep.id ? "Loading..." : "PDF"}
-                              </button>
+                              {isReportPdfDownloadable(rep) ? (
+                                <button
+                                  type="button"
+                                  className={styles.secondaryBtn}
+                                  disabled={downloadingReportId === rep.id}
+                                  onClick={() => void onDownloadReportPdf(rep)}
+                                >
+                                  <Download size={13} />
+                                  {downloadingReportId === rep.id ? "Loading..." : "PDF"}
+                                </button>
+                              ) : (
+                                <span style={{ fontSize: 10.5, color: "var(--muted, #657c8a)" }}>Unavailable</span>
+                              )}
                             </td>
                           </tr>
                         ))}

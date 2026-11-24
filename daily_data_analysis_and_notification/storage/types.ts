@@ -67,6 +67,8 @@ export type PersistentReportRecord = {
 
 export type PersistentReportSummary = Omit<PersistentReportRecord, "reportPayload">;
 
+export type PersistentReportStatusFilter = "generated" | "failed" | "pending";
+
 export type PersistentReportListQuery = {
   organizationId: string;
   startDate?: string;
@@ -78,6 +80,9 @@ export type PersistentReportListQuery = {
   datasetTable?: string;
   generationType?: ReportGenerationType;
   frequency?: ReportFrequencyOrManual;
+  status?: PersistentReportStatusFilter;
+  pdfStatus?: PersistentReportPdfStatus;
+  search?: string;
   page?: number;
   pageSize?: number;
 };

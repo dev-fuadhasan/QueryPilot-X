@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readDailyAnalysisSession } from "@/../daily_data_analysis_and_notification/api-helpers";
-import { BUSINESS_DOMAIN_IDS, isValidIdentifier, type BusinessDomainId } from "@/../daily_data_analysis_and_notification/profiler";
+import {
+  BUSINESS_DOMAIN_IDS,
+  isValidIdentifier,
+  profileConnectedDatabase,
+  type BusinessDomainId
+} from "@/../daily_data_analysis_and_notification/profiler";
 import {
   addDaysToDate,
   isValidIsoDate,
@@ -8,6 +13,7 @@ import {
   todayInTimezone,
   type ComparisonPreset
 } from "@/../daily_data_analysis_and_notification/metrics";
+import { resolveManualReportPeriod, type ManualQuickRange } from "@/../daily_data_analysis_and_notification/storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +30,30 @@ const ALLOWED_PRESETS = new Set<ComparisonPreset>([
   "custom",
   "none"
 ]);
+
+const ALLOWED_QUICK_RANGES = new Set<ManualQuickRange>([
+  "last_7_days",
+  "last_30_days",
+  "last_90_days",
+  "last_365_days",
+  "all_history",
+  "custom"
+]);
+
+function defaultComparisonForQuickRange(quickRange: ManualQuickRange): ComparisonPreset {
+  if (quickRange === "last_7_days") return "previous_7_days";
+  if (quickRange === "last_30_days") return "previous_30_days";
+  if (quickRange === "last_90_days") return "previous_90_days";
+  if (quickRange === "last_365_days") return "previous_365_days";
+  if (quickRange === "all_history") return "none";
+  return "custom";
+}
+
+function dayDiffInclusive(start: string, end: string): number {
+  const s = new Date(`${start}T00:00:00.000Z`).getTime();
+  const e = new Date(`${end}T00:00:00.000Z`).getTime();
+  return Math.max(1, Math.round((e - s) / 86_400_000) + 1);
+}
 
 export async function POST(request: NextRequest) {
   const access = await readDailyAnalysisSession(request, true);
@@ -50,17 +80,78 @@ export async function POST(request: NextRequest) {
   }
 
   const timezone = typeof body.timezone === "string" && body.timezone.trim() ? body.timezone.trim() : "Asia/Dhaka";
-  const defaultEnd = addDaysToDate(todayInTimezone(timezone), -1);
-  const periodStart = typeof body.periodStart === "string" && body.periodStart.trim() ? body.periodStart.trim() : defaultEnd;
-  const periodEnd = typeof body.periodEnd === "string" && body.periodEnd.trim() ? body.periodEnd.trim() : periodStart;
+  const quickRange: ManualQuickRange | null = typeof body.quickRange === "string" && ALLOWED_QUICK_RANGES.has(body.quickRange as ManualQuickRange)
+    ? body.quickRange as ManualQuickRange
+    : null;
 
-  if (!isValidIsoDate(periodStart) || !isValidIsoDate(periodEnd) || periodStart > periodEnd) {
-    return NextResponse.json({ error: "periodStart and periodEnd must be valid YYYY-MM-DD dates with periodStart <= periodEnd." }, { status: 400 });
+  let periodStart: string;
+  let periodEnd: string;
+  let comparisonPreset: ComparisonPreset;
+  let comparisonStart = typeof body.comparisonStart === "string" ? body.comparisonStart.trim() : undefined;
+  let comparisonEnd = typeof body.comparisonEnd === "string" ? body.comparisonEnd.trim() : undefined;
+
+  if (quickRange) {
+    let earliestAvailableDate = typeof body.earliestAvailableDate === "string" && isValidIsoDate(body.earliestAvailableDate.trim())
+      ? body.earliestAvailableDate.trim()
+      : null;
+    let latestAvailableDate = typeof body.latestAvailableDate === "string" && isValidIsoDate(body.latestAvailableDate.trim())
+      ? body.latestAvailableDate.trim()
+      : null;
+
+    if (quickRange === "all_history" && (!earliestAvailableDate || !latestAvailableDate)) {
+      try {
+        const dbProfile = await profileConnectedDatabase(access.session, {
+          selectedDomain: domainId || null,
+          tableNames: [table]
+        });
+        const profiled = dbProfile.tables.find(t => t.name === table);
+        if (profiled?.freshness.earliestDate) earliestAvailableDate = earliestAvailableDate || profiled.freshness.earliestDate.slice(0, 10);
+        if (profiled?.freshness.latestDate) latestAvailableDate = latestAvailableDate || profiled.freshness.latestDate.slice(0, 10);
+      } catch {
+        // Proceed cleanly with safe fallback dates
+      }
+    }
+
+    try {
+      const resolved = resolveManualReportPeriod({
+        quickRange,
+        startDate: typeof body.periodStart === "string" ? body.periodStart : typeof body.startDate === "string" ? body.startDate : undefined,
+        endDate: typeof body.periodEnd === "string" ? body.periodEnd : typeof body.endDate === "string" ? body.endDate : undefined,
+        timezone,
+        earliestAvailableDate,
+        latestAvailableDate
+      });
+      periodStart = resolved.periodStart;
+      periodEnd = resolved.periodEnd;
+    } catch (error) {
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : "Invalid historical date range." },
+        { status: 400 }
+      );
+    }
+
+    comparisonPreset = typeof body.comparisonPreset === "string" && ALLOWED_PRESETS.has(body.comparisonPreset as ComparisonPreset)
+      ? body.comparisonPreset as ComparisonPreset
+      : defaultComparisonForQuickRange(quickRange);
+
+    if (comparisonPreset === "custom" && (!comparisonStart || !comparisonEnd)) {
+      const span = dayDiffInclusive(periodStart, periodEnd);
+      comparisonEnd = addDaysToDate(periodStart, -1);
+      comparisonStart = addDaysToDate(comparisonEnd, -(span - 1));
+    }
+  } else {
+    const defaultEnd = addDaysToDate(todayInTimezone(timezone), -1);
+    periodStart = typeof body.periodStart === "string" && body.periodStart.trim() ? body.periodStart.trim() : defaultEnd;
+    periodEnd = typeof body.periodEnd === "string" && body.periodEnd.trim() ? body.periodEnd.trim() : periodStart;
+
+    if (!isValidIsoDate(periodStart) || !isValidIsoDate(periodEnd) || periodStart > periodEnd) {
+      return NextResponse.json({ error: "periodStart and periodEnd must be valid YYYY-MM-DD dates with periodStart <= periodEnd." }, { status: 400 });
+    }
+
+    comparisonPreset = typeof body.comparisonPreset === "string" && ALLOWED_PRESETS.has(body.comparisonPreset as ComparisonPreset)
+      ? body.comparisonPreset as ComparisonPreset
+      : "previous_30_days";
   }
-
-  const comparisonPreset: ComparisonPreset = typeof body.comparisonPreset === "string" && ALLOWED_PRESETS.has(body.comparisonPreset as ComparisonPreset)
-    ? body.comparisonPreset as ComparisonPreset
-    : "previous_30_days";
 
   const overrides: Record<string, string> = {};
   if (body.overrides && typeof body.overrides === "object" && !Array.isArray(body.overrides)) {
@@ -78,8 +169,8 @@ export async function POST(request: NextRequest) {
       periodEnd,
       timezone,
       comparisonPreset,
-      comparisonStart: typeof body.comparisonStart === "string" ? body.comparisonStart.trim() : undefined,
-      comparisonEnd: typeof body.comparisonEnd === "string" ? body.comparisonEnd.trim() : undefined,
+      comparisonStart,
+      comparisonEnd,
       overrides: Object.keys(overrides).length ? overrides : undefined,
       allowMediumConfidence: typeof body.allowMediumConfidence === "boolean" ? body.allowMediumConfidence : true,
       activationEventName: typeof body.activationEventName === "string" ? body.activationEventName.trim() : undefined
@@ -88,6 +179,7 @@ export async function POST(request: NextRequest) {
     return access.applyCookie(NextResponse.json(
       {
         analysis,
+        quickRange: quickRange || "custom",
         profileSummary: {
           tableName: tableProfile.name,
           tableType: tableProfile.tableType,
