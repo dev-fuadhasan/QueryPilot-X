@@ -13,12 +13,73 @@ import {
   Calendar,
   Layers,
   Sparkles,
+  ShieldCheck,
+  Clock,
+  Filter,
+  AlertTriangle,
+  ShieldAlert,
+  Cloud,
+  UploadCloud,
+  Flame,
+  Play,
+  Pause
 } from "lucide-react";
-import type { ChangeNotification } from "../types";
+import type { ChangeNotification, BusinessProfileType } from "../types";
 import { exportChangeNotificationsToCSV } from "../notification-service";
+import { evaluateChangeRisk, type RiskSeverity } from "../risk-engine";
+import { BUSINESS_PROFILES, detectBestProfile } from "../business-profiles";
+import IncidentForensicModal from "./IncidentForensicModal";
+import CloudArchivesModal from "./CloudArchivesModal";
+import SimulationStudioModal from "./SimulationStudioModal";
 
-const SNAPSHOT_KEY = "qp_table_snapshot_v1";
-const HISTORY_KEY = "qp_change_notifications_v1";
+const SNAPSHOT_KEY = "qp_table_snapshot_v2";
+const HISTORY_KEY = "qp_change_notifications_v2";
+const SEEN_HASHES_KEY = "qp_seen_hashes_v2";
+
+/**
+ * Generates a stable, deterministic change hash for any value transition.
+ * Guaranteed to produce the exact same ID for the same change, preventing duplicates across polling ticks.
+ */
+function computeStableChangeHash(
+  tableName: string,
+  recordId: string,
+  columnName: string,
+  oldVal: unknown,
+  newVal: unknown
+): string {
+  const strOld = oldVal === null || oldVal === undefined ? "NULL" : String(oldVal);
+  const strNew = newVal === null || newVal === undefined ? "NULL" : String(newVal);
+  const sig = `${tableName}:${recordId}:${columnName}:${strOld}->${strNew}`;
+
+  let hash = 0;
+  for (let i = 0; i < sig.length; i++) {
+    hash = ((hash << 5) - hash) + sig.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+/**
+ * Resolves the primary key for a row deterministically using backend schema discovery or standard fallbacks.
+ */
+function resolveRowId(row: Record<string, unknown>, pkColumn?: string): string {
+  if (pkColumn && row[pkColumn] !== undefined && row[pkColumn] !== null) {
+    return String(row[pkColumn]);
+  }
+  if (row.id !== undefined && row.id !== null) return String(row.id);
+  if (row.uuid !== undefined && row.uuid !== null) return String(row.uuid);
+
+  const candidateKey = Object.keys(row).find((k) => {
+    const lk = k.toLowerCase();
+    return lk.endsWith("_id") || lk === "code" || lk === "key" || lk === "slug";
+  });
+  if (candidateKey && row[candidateKey] !== undefined && row[candidateKey] !== null) {
+    return String(row[candidateKey]);
+  }
+
+  // Fallback to first non-empty property
+  return String(Object.values(row)[0] ?? "unknown");
+}
 
 export default function FraudDetectionDashboard() {
   const [loading, setLoading] = useState(false);
@@ -26,17 +87,31 @@ export default function FraudDetectionDashboard() {
   const [error, setError] = useState("");
   const [newAlertNotice, setNewAlertNotice] = useState<string | null>(null);
 
-  // Monitored tables
+  // Monitored tables and primary keys discovered
   const [monitoredTables, setMonitoredTables] = useState<string[]>([]);
   const [selectedTable, setSelectedTable] = useState<string>("ALL");
+  const [selectedSeverity, setSelectedSeverity] = useState<string>("ALL");
+  const [selectedProfile, setSelectedProfile] = useState<BusinessProfileType>("universal");
+  const [detectionSensitivity, setDetectionSensitivity] = useState<"low" | "medium" | "high">("medium");
   const [searchQuery, setSearchQuery] = useState("");
+  const [primaryKeyMap, setPrimaryKeyMap] = useState<Record<string, string>>({});
+  const [activeForensicIncident, setActiveForensicIncident] = useState<ChangeNotification | null>(null);
+
+  // Supabase Cloud Storage States
+  const [showCloudArchives, setShowCloudArchives] = useState(false);
+  const [archivingToCloud, setArchivingToCloud] = useState(false);
+  const [cloudArchiveNotice, setCloudArchiveNotice] = useState<string | null>(null);
+
+  // Live Incident Simulation Studio State
+  const [showSimulationStudio, setShowSimulationStudio] = useState(false);
 
   // Change Notifications List
   const [notifications, setNotifications] = useState<ChangeNotification[]>([]);
   const [isLiveActive, setIsLiveActive] = useState(true);
 
-  // Snapshot ref to compare between polling ticks
+  // Ref caches to eliminate closure race conditions
   const snapshotRef = useRef<Record<string, Record<string, unknown>[]>>({});
+  const seenHashesRef = useRef<Set<string>>(new Set());
 
   // Helper to format Date & Time clearly
   const formatDateTime = useCallback((isoString: string) => {
@@ -56,16 +131,46 @@ export default function FraudDetectionDashboard() {
     }
   }, []);
 
-  // Load existing notifications from localStorage on mount
+  // Load existing notifications and seen hashes from localStorage on mount
   useEffect(() => {
     try {
       const stored = localStorage.getItem(HISTORY_KEY);
       if (stored) {
         const parsed = JSON.parse(stored) as ChangeNotification[];
         if (Array.isArray(parsed)) {
-          setNotifications(parsed);
+          const enriched = parsed.map((item) => {
+            if (!item.riskAssessment) {
+              const assessment = evaluateChangeRisk(
+                item.tableName,
+                item.columnName,
+                item.oldValue,
+                item.newValue,
+                item.timestamp
+              );
+              return {
+                ...item,
+                riskScore: assessment.score,
+                riskSeverity: assessment.severity,
+                riskAssessment: assessment,
+              };
+            }
+            return item;
+          });
+          setNotifications(enriched);
+          enriched.forEach((item) => {
+            if (item.id) seenHashesRef.current.add(item.id);
+          });
         }
       }
+
+      const storedHashes = localStorage.getItem(SEEN_HASHES_KEY);
+      if (storedHashes) {
+        const parsedHashes = JSON.parse(storedHashes);
+        if (Array.isArray(parsedHashes)) {
+          parsedHashes.forEach((h) => seenHashesRef.current.add(h));
+        }
+      }
+
       const storedSnapshot = localStorage.getItem(SNAPSHOT_KEY);
       if (storedSnapshot) {
         snapshotRef.current = JSON.parse(storedSnapshot);
@@ -75,17 +180,21 @@ export default function FraudDetectionDashboard() {
     }
   }, []);
 
-  // Save notifications to localStorage when updated
-  const saveNotifications = useCallback((items: ChangeNotification[]) => {
+  // Save notifications & seen hashes safely
+  const persistNotifications = useCallback((items: ChangeNotification[]) => {
     setNotifications(items);
     try {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, 500)));
+      localStorage.setItem(
+        SEEN_HASHES_KEY,
+        JSON.stringify(Array.from(seenHashesRef.current).slice(-1000))
+      );
     } catch {
       // Ignored
     }
   }, []);
 
-  // Core Snapshot & Diffing Engine
+  // Core Snapshot & Idempotent Diffing Engine
   const checkForChanges = useCallback(
     async (isManual = false) => {
       if (isManual) setChecking(true);
@@ -103,6 +212,18 @@ export default function FraudDetectionDashboard() {
 
         const newTables: string[] = data.tables || [];
         setMonitoredTables(newTables);
+        if (newTables.length > 0 && selectedProfile === "universal") {
+          const auto = detectBestProfile(newTables);
+          if (auto !== "universal") {
+            setSelectedProfile(auto);
+          }
+        }
+
+        const pks: Record<string, string> = data.primaryKeys || {};
+        setPrimaryKeyMap(pks);
+
+        const auditCoveredList: string[] = data.auditCoveredFields || [];
+        const auditCoveredSet = new Set<string>(auditCoveredList);
 
         const currentSnapshot: Record<string, Record<string, unknown>[]> =
           data.snapshot || {};
@@ -111,32 +232,76 @@ export default function FraudDetectionDashboard() {
         const detectedChanges: ChangeNotification[] = [];
         const nowIso = new Date().toISOString();
 
-        // 1. Compare current rows against previous snapshot
+        // 1. Process Audit Log Entries First (from triggers) with stable IDs
+        const auditChanges = data.auditChanges || [];
+        for (const ac of auditChanges) {
+          const stableAuditId = ac.id || `audit_${ac.tableName}_${ac.recordId}_${ac.columnName}_${ac.changeHash}`;
+          
+          if (!seenHashesRef.current.has(stableAuditId)) {
+            seenHashesRef.current.add(stableAuditId);
+            const risk = evaluateChangeRisk(
+              ac.tableName,
+              ac.columnName,
+              ac.oldValue,
+              ac.newValue,
+              ac.changedAt || nowIso,
+              selectedProfile,
+              detectionSensitivity
+            );
+            detectedChanges.push({
+              id: stableAuditId,
+              tableName: ac.tableName,
+              recordId: ac.recordId,
+              columnName: ac.columnName,
+              oldValue: ac.oldValue ?? "NULL",
+              newValue: ac.newValue ?? "NULL",
+              changedBy: ac.changedBy || "Database Editor",
+              timestamp: ac.changedAt || nowIso,
+              changeType: ac.eventType || "UPDATE",
+              reason: `Audited update on "${ac.columnName}": "${String(ac.oldValue)}" → "${String(ac.newValue)}".`,
+              isRead: false,
+              riskScore: risk.score,
+              riskSeverity: risk.severity,
+              riskAssessment: risk,
+            });
+          }
+        }
+
+        // 2. Snapshot Diffing with Primary Key Resolution & Deduplication
+        const hasPreviousBaseline = Object.keys(prevSnapshot).length > 0;
+
         for (const [tableName, currentRows] of Object.entries(currentSnapshot)) {
           const prevRows = prevSnapshot[tableName] || [];
+          const pkCol = pks[tableName];
 
-          // Index previous rows by 'id' or first column
+          // Index previous rows by actual Primary Key
           const prevRowMap = new Map<string, Record<string, unknown>>();
           for (const r of prevRows) {
-            const key = String(r.id ?? r.uuid ?? Object.values(r)[0] ?? "");
+            const key = resolveRowId(r, pkCol);
             if (key) prevRowMap.set(key, r);
           }
 
-          // Check each current row
+          // Compare current rows against previous snapshot
           for (const cur of currentRows) {
-            const rowId = String(
-              cur.id ?? cur.uuid ?? Object.values(cur)[0] ?? "unknown"
-            );
+            const rowId = resolveRowId(cur, pkCol);
             const prev = prevRowMap.get(rowId);
 
             if (prev) {
-              // Row existed before: Check if ANY column value changed!
+              // Existing row: check for genuine cell modifications
               for (const [colName, curVal] of Object.entries(cur)) {
-                // Ignore automatic update timestamp columns from causing diff loops
+                // Ignore transient timestamp columns that update on every save
+                const colLower = colName.toLowerCase();
                 if (
-                  colName.toLowerCase() === "updated_at" ||
-                  colName.toLowerCase() === "updatedat"
+                  colLower === "updated_at" ||
+                  colLower === "updatedat" ||
+                  colLower === "modified_at" ||
+                  colLower === "last_seen"
                 ) {
+                  continue;
+                }
+
+                // If audit log trigger already captured this table:row:column, skip duplicate
+                if (auditCoveredSet.has(`${tableName}:${rowId}:${colName}`)) {
                   continue;
                 }
 
@@ -145,61 +310,78 @@ export default function FraudDetectionDashboard() {
                 const strCur = curVal === null || curVal === undefined ? "" : String(curVal);
 
                 if (strOld !== strCur) {
-                  // A cell was changed in the database!
-                  const changeId = `${tableName}-${rowId}-${colName}-${Date.now()}`;
-                  detectedChanges.push({
-                    id: changeId,
-                    tableName,
-                    recordId: rowId,
-                    columnName: colName,
-                    oldValue: oldVal ?? "NULL",
-                    newValue: curVal ?? "NULL",
-                    changedBy: "Database Editor / User",
-                    timestamp: nowIso,
-                    changeType: "VALUE_CHANGED",
-                    reason: `Field "${colName}" changed from "${strOld}" to "${strCur}".`,
-                    isRead: false,
-                  });
+                  // Genuinely modified cell! Compute stable hash without Date.now()
+                  const changeHash = computeStableChangeHash(tableName, rowId, colName, strOld, strCur);
+                  const changeId = `diff_${tableName}_${rowId}_${colName}_${changeHash}`;
+
+                  if (!seenHashesRef.current.has(changeId)) {
+                    seenHashesRef.current.add(changeId);
+                    const risk = evaluateChangeRisk(
+                      tableName,
+                      colName,
+                      oldVal,
+                      curVal,
+                      nowIso,
+                      selectedProfile,
+                      detectionSensitivity
+                    );
+                    detectedChanges.push({
+                      id: changeId,
+                      tableName,
+                      recordId: rowId,
+                      columnName: colName,
+                      oldValue: oldVal ?? "NULL",
+                      newValue: curVal ?? "NULL",
+                      changedBy: "Database Editor",
+                      timestamp: nowIso,
+                      changeType: "UPDATE",
+                      reason: `Field "${colName}" changed from "${strOld}" to "${strCur}".`,
+                      isRead: false,
+                      riskScore: risk.score,
+                      riskSeverity: risk.severity,
+                      riskAssessment: risk,
+                    });
+                  }
                 }
               }
-            } else if (prevRows.length > 0) {
-              // New row added after initial snapshot
-              detectedChanges.push({
-                id: `${tableName}-${rowId}-new-${Date.now()}`,
-                tableName,
-                recordId: rowId,
-                columnName: "Entire Record",
-                oldValue: "None (New)",
-                newValue: JSON.stringify(cur),
-                changedBy: "Database Insert",
-                timestamp: nowIso,
-                changeType: "RECORD_INSERTED",
-                reason: `New record #${rowId} added to table "${tableName}".`,
-                isRead: false,
-              });
+            } else if (hasPreviousBaseline && prevRows.length > 0) {
+              // New row added after initial baseline was established
+              const insertHash = computeStableChangeHash(tableName, rowId, "insert", "", JSON.stringify(cur));
+              const insertId = `insert_${tableName}_${rowId}_${insertHash}`;
+
+              if (!seenHashesRef.current.has(insertId)) {
+                seenHashesRef.current.add(insertId);
+                const risk = evaluateChangeRisk(
+                  tableName,
+                  "Record Insert",
+                  null,
+                  cur,
+                  nowIso,
+                  selectedProfile,
+                  detectionSensitivity
+                );
+                detectedChanges.push({
+                  id: insertId,
+                  tableName,
+                  recordId: rowId,
+                  columnName: "New Record",
+                  oldValue: "None (New)",
+                  newValue: JSON.stringify(cur),
+                  changedBy: "Database Insert",
+                  timestamp: nowIso,
+                  changeType: "INSERT",
+                  reason: `New record #${rowId} was inserted into "${tableName}".`,
+                  isRead: false,
+                  riskScore: risk.score,
+                  riskSeverity: risk.severity,
+                  riskAssessment: risk,
+                });
+              }
             }
           }
         }
 
-        // 2. Also incorporate database audit log records (e.g. sales_audit_log or universal)
-        const auditChanges = data.auditChanges || [];
-        for (const ac of auditChanges) {
-          detectedChanges.push({
-            id: `audit-${ac.id}`,
-            tableName: ac.tableName,
-            recordId: ac.recordId,
-            columnName: ac.columnName,
-            oldValue: ac.oldValue,
-            newValue: ac.newValue,
-            changedBy: ac.changedBy || "Database User",
-            timestamp: ac.changedAt || nowIso,
-            changeType: ac.eventType || "UPDATE",
-            reason: `${ac.columnName} updated from ${String(ac.oldValue)} to ${String(ac.newValue)}.`,
-            isRead: false,
-          });
-        }
-
-        // Update snapshot ref & localStorage
+        // Update baseline snapshot ref and localStorage
         snapshotRef.current = currentSnapshot;
         try {
           localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(currentSnapshot));
@@ -207,7 +389,7 @@ export default function FraudDetectionDashboard() {
           // Ignored
         }
 
-        // Prepend new changes if any were found
+        // Prepend new changes if any fresh ones were found
         if (detectedChanges.length > 0) {
           setNotifications((prev) => {
             const existingIds = new Set(prev.map((p) => p.id));
@@ -215,14 +397,16 @@ export default function FraudDetectionDashboard() {
 
             if (fresh.length > 0) {
               setNewAlertNotice(
-                `🔔 ${fresh.length} new change${fresh.length > 1 ? "s" : ""} detected in your data!`
+                `🔔 ${fresh.length} new verified change${fresh.length > 1 ? "s" : ""} recorded in your database.`
               );
               setTimeout(() => setNewAlertNotice(null), 5000);
+
               const combined = [...fresh, ...prev];
               try {
+                localStorage.setItem(HISTORY_KEY, JSON.stringify(combined.slice(0, 500)));
                 localStorage.setItem(
-                  HISTORY_KEY,
-                  JSON.stringify(combined.slice(0, 500))
+                  SEEN_HASHES_KEY,
+                  JSON.stringify(Array.from(seenHashesRef.current).slice(-1000))
                 );
               } catch {
                 // Ignored
@@ -270,19 +454,26 @@ export default function FraudDetectionDashboard() {
     const updated = notifications.map((n) =>
       n.id === id ? { ...n, isRead: true } : n
     );
-    saveNotifications(updated);
+    persistNotifications(updated);
   };
 
   // Mark all as read
   const markAllAsRead = () => {
     const updated = notifications.map((n) => ({ ...n, isRead: true }));
-    saveNotifications(updated);
+    persistNotifications(updated);
   };
 
   // Clear all history
   const clearHistory = () => {
     if (confirm("Are you sure you want to clear change notifications history?")) {
-      saveNotifications([]);
+      seenHashesRef.current.clear();
+      persistNotifications([]);
+      try {
+        localStorage.removeItem(HISTORY_KEY);
+        localStorage.removeItem(SEEN_HASHES_KEY);
+      } catch {
+        // Ignored
+      }
     }
   };
 
@@ -291,6 +482,12 @@ export default function FraudDetectionDashboard() {
     return notifications.filter((item) => {
       if (selectedTable !== "ALL" && item.tableName !== selectedTable) {
         return false;
+      }
+      if (selectedSeverity !== "ALL") {
+        const itemSev = item.riskSeverity || item.riskAssessment?.severity || "LOW";
+        if (itemSev !== selectedSeverity) {
+          return false;
+        }
       }
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
@@ -305,7 +502,7 @@ export default function FraudDetectionDashboard() {
       }
       return true;
     });
-  }, [notifications, selectedTable, searchQuery]);
+  }, [notifications, selectedTable, selectedSeverity, searchQuery]);
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
 
@@ -322,53 +519,163 @@ export default function FraudDetectionDashboard() {
     URL.revokeObjectURL(url);
   };
 
+  // Archive to Supabase Cloud Storage
+  const handleArchiveToCloud = async () => {
+    if (notifications.length === 0) {
+      alert("No notifications available to archive.");
+      return;
+    }
+    setArchivingToCloud(true);
+    try {
+      const now = new Date();
+      const reportPayload = {
+        reportId: `fraud_audit_${Date.now()}`,
+        generatedAt: now.toISOString(),
+        totalRecordedEvents: notifications.length,
+        monitoredDatasets: monitoredTables,
+        severityBreakdown: {
+          critical: notifications.filter(
+            (n) => (n.riskSeverity || n.riskAssessment?.severity) === "CRITICAL"
+          ).length,
+          high: notifications.filter(
+            (n) => (n.riskSeverity || n.riskAssessment?.severity) === "HIGH"
+          ).length,
+          medium: notifications.filter(
+            (n) => (n.riskSeverity || n.riskAssessment?.severity) === "MEDIUM"
+          ).length,
+          low: notifications.filter(
+            (n) => (n.riskSeverity || n.riskAssessment?.severity) === "LOW"
+          ).length,
+        },
+        incidents: notifications,
+      };
+
+      const fileContent = JSON.stringify(reportPayload, null, 2);
+      const filename = `fraud_audit_report_${now.toISOString().replace(/[:.]/g, "-")}.json`;
+      const blob = new Blob([fileContent], { type: "application/json" });
+
+      const formData = new FormData();
+      formData.append("file", blob, filename);
+      formData.append("category", "reports");
+
+      const res = await fetch("/api/storage/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setCloudArchiveNotice(
+          `☁️ Report archived to Supabase Storage: ${data.file?.filename || filename}`
+        );
+        setTimeout(() => setCloudArchiveNotice(null), 6000);
+      } else {
+        alert(data.error || "Failed to archive report to Supabase Storage.");
+      }
+    } catch {
+      alert("Error uploading report to cloud storage.");
+    } finally {
+      setArchivingToCloud(false);
+    }
+  };
+
+  // Inject Simulated Incident from Simulation Studio
+  const handleInjectSimulatedIncident = (incident: ChangeNotification) => {
+    seenHashesRef.current.add(incident.id);
+    setNotifications((prev) => {
+      const combined = [incident, ...prev];
+      persistNotifications(combined);
+      return combined;
+    });
+    setNewAlertNotice(
+      `🚨 Incident Injected: ${incident.columnName} (${incident.riskSeverity})`
+    );
+    setTimeout(() => setNewAlertNotice(null), 5000);
+  };
+
   return (
-    <div className="qp-simple-root">
-      {/* TOP HEADER */}
-      <div className="qp-simple-header">
+    <div className="datasets-panel">
+      {/* SECTION HEADER (MATCHING MAIN) */}
+      <div className="section-eyebrow">
+        SECURITY & REAL-TIME AUDIT MONITORING
+      </div>
+
+      <div className="section-heading">
         <div>
-          <div className="qp-live-tag">
-            <span
-              className={`qp-pulse-dot ${isLiveActive ? "online" : "offline"}`}
-            />
-            <span className="qp-live-text">
-              {isLiveActive ? "LIVE AUTO-MONITORING ACTIVE" : "MONITORING PAUSED"}
-            </span>
-            <button
-              type="button"
-              className="qp-pause-btn"
-              onClick={() => setIsLiveActive(!isLiveActive)}
-            >
-              {isLiveActive ? "Pause" : "Resume"}
-            </button>
-          </div>
-          <h1>Data Change & Fraud Notifications</h1>
+          <h1>Fraud Detection & Live Change Log</h1>
           <p>
-            Whenever any small change or update happens in your database, it is
-            immediately recorded below with exact date, time, and value changes.
+            Real-time change monitoring, automated anomaly detection, and tamper-resistant audit logs for all connected datasets.
           </p>
         </div>
 
-        <div className="qp-simple-actions">
+        <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+          {/* LIVE STATUS PILL */}
+          <div
+            className="connection-status"
+            style={{
+              cursor: "pointer",
+              background: isLiveActive ? "#f0fdf4" : "#fef2f2",
+              borderColor: isLiveActive ? "#bbf7d0" : "#fecaca",
+            }}
+            onClick={() => setIsLiveActive(!isLiveActive)}
+            title="Click to toggle auto-monitoring"
+          >
+            <i style={{ background: isLiveActive ? "#22c55e" : "#ef4444" }} />
+            <span style={{ fontWeight: 600, color: isLiveActive ? "#15803d" : "#991b1b" }}>
+              {isLiveActive ? "Live (5s)" : "Paused"}
+            </span>
+          </div>
+
           <button
             type="button"
-            className="qp-action-btn secondary"
+            className="secondary-button"
             onClick={handleExportCSV}
             disabled={notifications.length === 0}
-            title="Download full history as CSV"
+            title="Download full change log as CSV"
           >
-            <Download size={15} /> Export CSV
+            <Download size={14} /> Export CSV
           </button>
 
           <button
             type="button"
-            className="qp-action-btn primary"
+            className="secondary-button"
+            onClick={handleArchiveToCloud}
+            disabled={archivingToCloud || notifications.length === 0}
+            title="Archive tamper-evident audit report to private Supabase Storage"
+          >
+            <UploadCloud size={14} className={archivingToCloud ? "spinning" : undefined} />
+            {archivingToCloud ? "Archiving..." : "Archive to Cloud"}
+          </button>
+
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setShowCloudArchives(true)}
+            title="Browse reports archived in Supabase Storage"
+          >
+            <Cloud size={14} style={{ color: "#2563eb" }} /> Cloud Archives
+          </button>
+
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setShowSimulationStudio(true)}
+            style={{ color: "#e11d48", borderColor: "#fecdd3", background: "#fff1f2" }}
+            title="Launch Live Incident & Attack Simulation Studio for demonstration"
+          >
+            <Flame size={14} style={{ color: "#e11d48" }} /> Simulate Incident
+          </button>
+
+          <button
+            type="button"
+            className="primary"
+            style={{ minHeight: "38px", padding: "8px 16px" }}
             onClick={() => void checkForChanges(true)}
             disabled={checking}
           >
             <RefreshCw
-              size={15}
-              className={checking ? "qp-spinning" : undefined}
+              size={14}
+              className={checking ? "spinning" : undefined}
             />
             {checking ? "Checking..." : "Check Now"}
           </button>
@@ -377,191 +684,509 @@ export default function FraudDetectionDashboard() {
 
       {/* NEW ALERT TOAST NOTICE */}
       {newAlertNotice && (
-        <div className="qp-toast-notice">
-          <Bell size={18} />
-          <strong>{newAlertNotice}</strong>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            background: "#eff6ff",
+            border: "1px solid #bfdbfe",
+            color: "#1e40af",
+            padding: "12px 18px",
+            borderRadius: "10px",
+            marginBottom: "20px",
+            fontSize: "12px",
+            fontWeight: 600,
+          }}
+        >
+          <Bell size={16} />
+          <span>{newAlertNotice}</span>
+        </div>
+      )}
+
+      {/* CLOUD ARCHIVE SUCCESS NOTICE */}
+      {cloudArchiveNotice && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            background: "#f0fdf4",
+            border: "1px solid #bbf7d0",
+            color: "#166534",
+            padding: "12px 18px",
+            borderRadius: "10px",
+            marginBottom: "20px",
+            fontSize: "12px",
+            fontWeight: 600,
+          }}
+        >
+          <Cloud size={16} />
+          <span>{cloudArchiveNotice}</span>
         </div>
       )}
 
       {error && (
-        <div className="qp-simple-error" role="alert">
-          <span>{error}</span>
+        <div className="error" style={{ position: "relative", transform: "none", left: 0, margin: "0 0 20px", width: "100%" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <AlertTriangle size={16} />
+            <span>{error}</span>
+          </div>
           <button onClick={() => setError("")}>×</button>
         </div>
       )}
 
-      {/* METRICS SUMMARY */}
-      <div className="qp-simple-summary">
-        <div className="qp-summary-box">
-          <span>Total Changes Detected</span>
+      {/* METRIC STAT CARDS (MATCHING MAIN .stat-grid) */}
+      <div className="stat-grid" style={{ gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+        <div className="stat-card">
+          <Layers size={20} />
+          <span>Total Changes Recorded</span>
           <strong>{notifications.length}</strong>
-          <small>Recorded in your database</small>
+          <small style={{ color: "#9aa1ac", fontSize: "10px" }}>
+            Deduplicated real-time events
+          </small>
         </div>
 
-        <div className="qp-summary-box highlight">
+        <div className="stat-card" style={{ borderColor: unreadCount > 0 ? "#f59e0b" : "#eaedf0" }}>
+          <Bell size={20} style={{ color: unreadCount > 0 ? "#d97706" : "#79828d" }} />
           <span>Unread Notifications</span>
-          <strong>{unreadCount}</strong>
-          <small>Requiring review</small>
+          <strong style={{ color: unreadCount > 0 ? "#b45309" : "#25282d" }}>
+            {unreadCount}
+          </strong>
+          <div className="stat-connected" style={{ color: unreadCount > 0 ? "#b45309" : "#20895c" }}>
+            {unreadCount > 0 ? "Requires review" : "All reviewed"}
+          </div>
         </div>
 
-        <div className="qp-summary-box">
-          <span>Monitored Datasets (Tables)</span>
+        <div className="stat-card">
+          <Database size={20} />
+          <span>Monitored Datasets</span>
           <strong>{monitoredTables.length}</strong>
-          <small>{monitoredTables.join(", ") || "Active tables"}</small>
+          <div className="stat-connected">
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#22c55e", display: "inline-block" }} />
+            {monitoredTables.slice(0, 3).join(", ") || "Active tables"}
+            {monitoredTables.length > 3 ? ` +${monitoredTables.length - 3}` : ""}
+          </div>
         </div>
       </div>
 
-      {/* CONTROLS & FILTER BAR */}
-      <div className="qp-simple-toolbar">
-        {/* DATASET FILTER */}
-        <div className="qp-tool-item">
-          <label>Filter by Dataset:</label>
-          <select
-            value={selectedTable}
-            onChange={(e) => setSelectedTable(e.target.value)}
-          >
-            <option value="ALL">All Datasets ({monitoredTables.length} tables)</option>
-            {monitoredTables.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
-        </div>
+      {/* FILTER & TOOLBAR (MATCHING MAIN) */}
+      <div
+        className="table-header"
+        style={{
+          background: "#fff",
+          border: "1px solid #eaedf0",
+          borderRadius: "12px",
+          padding: "12px 18px",
+          marginBottom: "20px",
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap", flex: 1 }}>
+          {/* DATASET SELECTOR */}
+          <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+            <Filter size={14} style={{ color: "#79828d" }} />
+            <select
+              value={selectedTable}
+              onChange={(e) => setSelectedTable(e.target.value)}
+              style={{
+                border: "1px solid #e1e5e9",
+                borderRadius: "8px",
+                padding: "7px 10px",
+                fontSize: "12px",
+                background: "#fff",
+                color: "#25282d",
+              }}
+            >
+              <option value="ALL">All Datasets ({monitoredTables.length})</option>
+              {monitoredTables.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </div>
 
-        {/* SEARCH BAR */}
-        <div className="qp-tool-item search-item">
-          <Search size={15} />
-          <input
-            type="text"
-            placeholder="Search by dataset, field, value, record ID..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
+          {/* BUSINESS PROFILE SELECTOR */}
+          <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+            <Sparkles size={14} style={{ color: "#2563eb" }} />
+            <select
+              value={selectedProfile}
+              onChange={(e) => setSelectedProfile(e.target.value as BusinessProfileType)}
+              style={{
+                border: "1px solid #bfdbfe",
+                borderRadius: "8px",
+                padding: "7px 10px",
+                fontSize: "12px",
+                background: "#eff6ff",
+                color: "#1d4ed8",
+                fontWeight: 600,
+              }}
+              title="Select industry profile to adjust domain-specific detection heuristics"
+            >
+              <option value="universal">🌐 Universal Model</option>
+              <option value="ecommerce">🛒 E-Commerce & Retail</option>
+              <option value="fintech">💳 Fintech & Banking</option>
+              <option value="saas">⚡ SaaS & Subscriptions</option>
+              <option value="social_platform">👥 Social / Community</option>
+            </select>
+          </div>
+
+          {/* SENSITIVITY SELECTOR */}
+          <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+            <span style={{ fontSize: "11px", color: "#64748b", fontWeight: 600 }}>Tuning:</span>
+            <select
+              value={detectionSensitivity}
+              onChange={(e) => setDetectionSensitivity(e.target.value as "low" | "medium" | "high")}
+              style={{
+                border: "1px solid #e1e5e9",
+                borderRadius: "8px",
+                padding: "7px 10px",
+                fontSize: "12px",
+                background: "#fff",
+                color: "#25282d",
+              }}
+              title="Adjust anomaly detection threshold"
+            >
+              <option value="medium">⚖️ Balanced</option>
+              <option value="high">⚡ Aggressive</option>
+              <option value="low">🛡️ Strict</option>
+            </select>
+          </div>
+
+          {/* SEVERITY SELECTOR */}
+          <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+            <ShieldCheck size={14} style={{ color: "#79828d" }} />
+            <select
+              value={selectedSeverity}
+              onChange={(e) => setSelectedSeverity(e.target.value)}
+              style={{
+                border: "1px solid #e1e5e9",
+                borderRadius: "8px",
+                padding: "7px 10px",
+                fontSize: "12px",
+                background: "#fff",
+                color: "#25282d",
+              }}
+            >
+              <option value="ALL">All Severities</option>
+              <option value="CRITICAL">🔴 Critical Risk</option>
+              <option value="HIGH">🟠 High Risk</option>
+              <option value="MEDIUM">🟡 Medium Risk</option>
+              <option value="LOW">🟢 Low Risk</option>
+            </select>
+          </div>
+
+          {/* SEARCH BAR */}
+          <div className="search-field" style={{ maxWidth: "260px", flex: 1 }}>
+            <Search size={14} />
+            <input
+              type="text"
+              placeholder="Search table, record, field..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
         </div>
 
         {/* BULK ACTIONS */}
-        <div className="qp-bulk-actions">
+        <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
           {unreadCount > 0 && (
             <button
               type="button"
-              className="qp-text-btn"
+              className="small-button"
               onClick={markAllAsRead}
+              title="Mark all notifications as read"
             >
-              <CheckCheck size={15} /> Mark All as Read
+              <CheckCheck size={14} /> Mark all read
             </button>
           )}
 
           {notifications.length > 0 && (
             <button
               type="button"
-              className="qp-text-btn danger"
+              className="small-button"
+              style={{ color: "#dc2626" }}
               onClick={clearHistory}
             >
-              Clear History
+              Clear log
             </button>
           )}
         </div>
       </div>
 
-      {/* THE MAIN CHANGE NOTIFICATIONS FEED */}
-      <div className="qp-feed-section">
-        <div className="qp-feed-title">
-          <Layers size={18} />
-          <h2>Change & Modification Log</h2>
-          <span className="qp-feed-count">
-            {filteredNotifications.length} change
-            {filteredNotifications.length === 1 ? "" : "s"}
-          </span>
+      {/* THE MAIN CHANGE LOG FEED */}
+      <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0 4px 6px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <Clock size={16} style={{ color: "#79828d" }} />
+            <h2 style={{ fontSize: "14px", fontWeight: 700, margin: 0, color: "#191b20" }}>
+              Change & Modification Log
+            </h2>
+            <span style={{ fontSize: "11px", color: "#64748b", background: "#f1f5f9", padding: "2px 8px", borderRadius: "10px", fontWeight: 600 }}>
+              {filteredNotifications.length} event{filteredNotifications.length === 1 ? "" : "s"}
+            </span>
+          </div>
         </div>
 
-        {filteredNotifications.length === 0 ? (
-          <div className="qp-empty-box">
-            <CheckCircle2 size={44} className="qp-empty-icon" />
-            <h3>No Changes Recorded Yet</h3>
-            <p>
-              Live monitoring is active. Go to your database or Supabase and make
-              any change to any row or value—it will immediately appear here with
-              exact date, time, and value changes!
+        {loading && notifications.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "50px 20px", background: "#fff", border: "1px solid #eaedf0", borderRadius: "12px", color: "#8b9099" }}>
+            <RefreshCw size={24} className="spinning" style={{ margin: "0 auto 12px", display: "block" }} />
+            <p style={{ margin: 0, fontSize: "13px" }}>Connecting to live database and reading snapshot baseline...</p>
+          </div>
+        ) : filteredNotifications.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "60px 20px", background: "#fff", border: "1px solid #eaedf0", borderRadius: "13px" }}>
+            <div className="connected-icon" style={{ margin: "0 auto 14px", width: "52px", height: "52px", color: "#239b6b" }}>
+              <ShieldCheck size={28} />
+            </div>
+            <h3 style={{ margin: "0 0 6px", fontSize: "15px", color: "#191b20", fontWeight: 700 }}>
+              No Data Changes Detected
+            </h3>
+            <p style={{ margin: "0 auto", maxWidth: "460px", color: "#8b9099", fontSize: "12px", lineHeight: 1.6 }}>
+              Live auto-monitoring is active. Any row modification, column change, or insert in your database will be captured here in real-time with deduplicated accuracy.
             </p>
           </div>
         ) : (
-          <div className="qp-change-list">
+          <div style={{ display: "flex", flexDirection: "column", gap: "9px" }}>
             {filteredNotifications.map((item) => (
               <article
                 key={item.id}
-                className={`qp-change-card ${item.isRead ? "read" : "unread"}`}
                 onClick={() => !item.isRead && markAsRead(item.id)}
+                style={{
+                  background: "#fff",
+                  border: "1px solid #eaedf0",
+                  borderLeft: item.isRead ? "1px solid #eaedf0" : "4px solid #3b82f6",
+                  borderRadius: "11px",
+                  padding: "16px 20px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "12px",
+                  cursor: item.isRead ? "default" : "pointer",
+                  transition: "all 0.15s ease",
+                  boxShadow: item.isRead ? "none" : "0 1px 3px rgba(0,0,0,0.03)",
+                }}
               >
                 {/* CARD HEADER */}
-                <div className="qp-card-top">
-                  <div className="qp-meta-left">
-                    <span className="qp-date-pill">
-                      <Calendar size={13} />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    <span
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "5px",
+                        fontSize: "11px",
+                        color: "#475569",
+                        background: "#f1f5f9",
+                        padding: "3px 8px",
+                        borderRadius: "6px",
+                        fontWeight: 600,
+                      }}
+                    >
+                      <Calendar size={12} />
                       {formatDateTime(item.timestamp)}
                     </span>
-                    <span className="qp-table-tag">
-                      <Database size={13} />
+
+                    <span
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "4px",
+                        fontSize: "11px",
+                        color: "#1e40af",
+                        background: "#eff6ff",
+                        padding: "3px 8px",
+                        borderRadius: "6px",
+                        fontWeight: 700,
+                      }}
+                    >
+                      <Database size={12} />
                       {item.tableName}
                     </span>
-                    <span className="qp-record-tag">
-                      Record: <strong>#{item.recordId}</strong>
+
+                    <span style={{ fontSize: "11px", color: "#64748b" }}>
+                      Record: <strong style={{ color: "#0f172a" }}>#{item.recordId}</strong>
                     </span>
+
+                    <span
+                      style={{
+                        fontSize: "10px",
+                        fontWeight: 700,
+                        padding: "2px 6px",
+                        borderRadius: "4px",
+                        background: item.changeType === "INSERT" ? "#ecfdf5" : item.changeType === "DELETE" ? "#fef2f2" : "#f0f9ff",
+                        color: item.changeType === "INSERT" ? "#047857" : item.changeType === "DELETE" ? "#b91c1c" : "#0369a1",
+                      }}
+                    >
+                      {item.changeType}
+                    </span>
+
+                    {/* RISK SEVERITY BADGE */}
+                    {(() => {
+                      const sev = (item.riskSeverity || item.riskAssessment?.severity || "LOW") as RiskSeverity;
+                      const score = item.riskScore ?? item.riskAssessment?.score ?? 15;
+                      const sevConfig = {
+                        CRITICAL: { bg: "#fef2f2", color: "#dc2626", border: "#fecaca" },
+                        HIGH: { bg: "#fff7ed", color: "#ea580c", border: "#fed7aa" },
+                        MEDIUM: { bg: "#fefce8", color: "#ca8a04", border: "#fef08a" },
+                        LOW: { bg: "#f0fdf4", color: "#16a34a", border: "#bbf7d0" },
+                      }[sev] || { bg: "#f0fdf4", color: "#16a34a", border: "#bbf7d0" };
+                      return (
+                        <span
+                          style={{
+                            fontSize: "10px",
+                            fontWeight: 800,
+                            padding: "2px 7px",
+                            borderRadius: "4px",
+                            background: sevConfig.bg,
+                            color: sevConfig.color,
+                            border: `1px solid ${sevConfig.border}`,
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "4px",
+                          }}
+                        >
+                          <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: sevConfig.color }} />
+                          {sev} ({score})
+                        </span>
+                      );
+                    })()}
                   </div>
 
-                  <div className="qp-meta-right">
-                    {!item.isRead && (
-                      <span className="qp-unread-badge">
-                        <Sparkles size={11} /> NEW
-                      </span>
-                    )}
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                     <button
                       type="button"
-                      className="qp-card-read-btn"
                       onClick={(e) => {
                         e.stopPropagation();
-                        markAsRead(item.id);
+                        setActiveForensicIncident(item);
                       }}
-                      title="Mark as read"
+                      className="small-button"
+                      style={{
+                        padding: "3px 8px",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        background: "#f8fafc",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: "6px",
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "4px",
+                        color: "#334155",
+                      }}
+                      title="Open forensic analysis"
                     >
-                      <CheckCircle2 size={16} />
+                      <ShieldAlert size={12} style={{ color: "#dc2626" }} /> Forensic
                     </button>
+
+                    {!item.isRead && (
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "3px",
+                          fontSize: "10px",
+                          fontWeight: 800,
+                          color: "#1d4ed8",
+                          background: "#dbeafe",
+                          padding: "2px 7px",
+                          borderRadius: "10px",
+                        }}
+                      >
+                        <Sparkles size={10} /> NEW
+                      </span>
+                    )}
+
+                    {!item.isRead && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          markAsRead(item.id);
+                        }}
+                        style={{
+                          background: "transparent",
+                          border: 0,
+                          color: "#94a3b8",
+                          cursor: "pointer",
+                          padding: "2px",
+                          display: "flex",
+                          alignItems: "center",
+                        }}
+                        title="Mark as read"
+                      >
+                        <CheckCircle2 size={16} />
+                      </button>
+                    )}
                   </div>
                 </div>
 
-                {/* THE CORE BEFORE -> AFTER CHANGE DISPLAY */}
-                <div className="qp-diff-display">
-                  <div className="qp-diff-field-name">
-                    <span>Field Changed:</span>
-                    <strong>{item.columnName}</strong>
+                {/* THE CORE DIFF BOX (PREVIOUS -> NEW) */}
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "16px",
+                    background: "#f8fafc",
+                    border: "1px solid #f1f5f9",
+                    borderRadius: "9px",
+                    padding: "12px 16px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                    <span style={{ fontSize: "10px", color: "#64748b", textTransform: "uppercase", fontWeight: 700 }}>
+                      Field Modified
+                    </span>
+                    <strong style={{ fontSize: "13px", color: "#0f172a" }}>
+                      {item.columnName}
+                    </strong>
                   </div>
 
-                  <div className="qp-diff-values">
-                    <div className="qp-val-box old">
-                      <small>Previous Value</small>
-                      <span title={String(item.oldValue)}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "14px", flex: 1, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "2px", maxWidth: "240px" }}>
+                      <span style={{ fontSize: "10px", color: "#94a3b8", fontWeight: 700 }}>
+                        PREVIOUS VALUE
+                      </span>
+                      <span
+                        style={{
+                          fontFamily: "ui-monospace, monospace",
+                          fontSize: "12px",
+                          color: "#dc2626",
+                          textDecoration: "line-through",
+                          wordBreak: "break-all",
+                        }}
+                      >
                         {String(item.oldValue)}
                       </span>
                     </div>
 
-                    <ArrowRight size={18} className="qp-arrow-icon" />
+                    <ArrowRight size={16} style={{ color: "#94a3b8", flexShrink: 0 }} />
 
-                    <div className="qp-val-box new">
-                      <small>New Value</small>
-                      <span title={String(item.newValue)}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "2px", maxWidth: "240px" }}>
+                      <span style={{ fontSize: "10px", color: "#94a3b8", fontWeight: 700 }}>
+                        UPDATED VALUE
+                      </span>
+                      <span
+                        style={{
+                          fontFamily: "ui-monospace, monospace",
+                          fontSize: "12px",
+                          color: "#059669",
+                          fontWeight: 700,
+                          wordBreak: "break-all",
+                        }}
+                      >
                         {String(item.newValue)}
                       </span>
                     </div>
                   </div>
                 </div>
 
-                {/* FOOTER DETAILS */}
-                <div className="qp-card-footer">
-                  <span className="qp-reason-text">
-                    {item.reason || `Value in ${item.columnName} was modified.`}
-                  </span>
-                  <span className="qp-actor-text">
-                    Editor: <strong>{item.changedBy || "Database User"}</strong>
+                {/* FOOTER */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "#64748b" }}>
+                  <span>{item.reason || `Field "${item.columnName}" was modified.`}</span>
+                  <span>
+                    Source: <strong style={{ color: "#334155" }}>{item.changedBy || "Database Editor"}</strong>
                   </span>
                 </div>
               </article>
@@ -570,541 +1195,24 @@ export default function FraudDetectionDashboard() {
         )}
       </div>
 
-      {/* COMPONENT STYLES */}
-      <style jsx>{`
-        .qp-simple-root {
-          display: flex;
-          flex-direction: column;
-          gap: 20px;
-          max-width: 1100px;
-          margin: 0 auto;
-          color: #191b20;
-          font-family: inherit;
-        }
-
-        .qp-simple-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: flex-start;
-          gap: 20px;
-          flex-wrap: wrap;
-        }
-
-        .qp-live-tag {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          background: #f1f4f8;
-          padding: 5px 12px;
-          border-radius: 20px;
-          margin-bottom: 10px;
-        }
-
-        .qp-pulse-dot {
-          width: 9px;
-          height: 9px;
-          border-radius: 50%;
-        }
-
-        .qp-pulse-dot.online {
-          background: #10b981;
-          box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.25);
-        }
-
-        .qp-pulse-dot.offline {
-          background: #9ca3af;
-        }
-
-        .qp-live-text {
-          font-size: 11px;
-          font-weight: 750;
-          letter-spacing: 0.8px;
-          color: #374151;
-        }
-
-        .qp-pause-btn {
-          background: transparent;
-          border: 0;
-          color: #6b7280;
-          font-size: 11px;
-          text-decoration: underline;
-          cursor: pointer;
-          padding: 0;
-        }
-
-        .qp-simple-header h1 {
-          font-size: 28px;
-          font-weight: 750;
-          letter-spacing: -0.8px;
-          margin: 0 0 6px;
-        }
-
-        .qp-simple-header p {
-          color: #6b7280;
-          font-size: 13px;
-          margin: 0;
-          max-width: 600px;
-          line-height: 1.5;
-        }
-
-        .qp-simple-actions {
-          display: flex;
-          gap: 10px;
-          align-items: center;
-        }
-
-        .qp-action-btn {
-          display: inline-flex;
-          align-items: center;
-          gap: 7px;
-          padding: 9px 15px;
-          border-radius: 8px;
-          font-size: 12px;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-
-        .qp-action-btn.primary {
-          background: #191b20;
-          color: #fff;
-          border: 1px solid #191b20;
-        }
-
-        .qp-action-btn.primary:hover:not(:disabled) {
-          background: #32363f;
-        }
-
-        .qp-action-btn.secondary {
-          background: #fff;
-          color: #374151;
-          border: 1px solid #d1d5db;
-        }
-
-        .qp-action-btn.secondary:hover:not(:disabled) {
-          background: #f9fafb;
-        }
-
-        .qp-toast-notice {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          background: #ecfdf5;
-          border: 1px solid #6ee7b7;
-          color: #065f46;
-          padding: 12px 16px;
-          border-radius: 9px;
-          font-size: 13px;
-          animation: slideDown 0.3s ease-out;
-        }
-
-        @keyframes slideDown {
-          from {
-            opacity: 0;
-            transform: translateY(-8px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-
-        .qp-simple-error {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          background: #fef2f2;
-          border: 1px solid #fca5a5;
-          color: #991b1b;
-          padding: 10px 14px;
-          border-radius: 8px;
-          font-size: 12px;
-        }
-
-        .qp-simple-error button {
-          background: transparent;
-          border: 0;
-          font-size: 18px;
-          cursor: pointer;
-          color: inherit;
-        }
-
-        .qp-simple-summary {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-          gap: 14px;
-        }
-
-        .qp-summary-box {
-          background: #fff;
-          border: 1px solid #e5e7eb;
-          border-radius: 11px;
-          padding: 16px 20px;
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-
-        .qp-summary-box.highlight {
-          border-color: #fbbf24;
-          background: #fffdf5;
-        }
-
-        .qp-summary-box span {
-          font-size: 11px;
-          font-weight: 700;
-          color: #6b7280;
-          letter-spacing: 0.3px;
-        }
-
-        .qp-summary-box strong {
-          font-size: 26px;
-          font-weight: 800;
-          color: #111827;
-          letter-spacing: -0.5px;
-        }
-
-        .qp-summary-box small {
-          font-size: 11px;
-          color: #9ca3af;
-        }
-
-        .qp-simple-toolbar {
-          display: flex;
-          align-items: center;
-          gap: 14px;
-          flex-wrap: wrap;
-          background: #fff;
-          border: 1px solid #e5e7eb;
-          border-radius: 10px;
-          padding: 12px 16px;
-        }
-
-        .qp-tool-item {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .qp-tool-item label {
-          font-size: 12px;
-          font-weight: 650;
-          color: #4b5563;
-        }
-
-        .qp-tool-item select {
-          border: 1px solid #d1d5db;
-          border-radius: 7px;
-          padding: 6px 10px;
-          font-size: 12px;
-          background: #fff;
-          color: #1f2937;
-        }
-
-        .qp-tool-item.search-item {
-          display: flex;
-          align-items: center;
-          gap: 7px;
-          border: 1px solid #d1d5db;
-          border-radius: 7px;
-          padding: 6px 10px;
-          background: #fff;
-          flex: 1;
-          min-width: 220px;
-        }
-
-        .qp-tool-item.search-item input {
-          border: 0;
-          outline: 0;
-          font-size: 12px;
-          width: 100%;
-        }
-
-        .qp-bulk-actions {
-          display: flex;
-          gap: 8px;
-          margin-left: auto;
-        }
-
-        .qp-text-btn {
-          background: transparent;
-          border: 0;
-          color: #4b5563;
-          font-size: 12px;
-          font-weight: 600;
-          cursor: pointer;
-          display: inline-flex;
-          align-items: center;
-          gap: 5px;
-          padding: 4px 6px;
-        }
-
-        .qp-text-btn:hover {
-          color: #111827;
-        }
-
-        .qp-text-btn.danger {
-          color: #dc2626;
-        }
-
-        .qp-feed-section {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-
-        .qp-feed-title {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .qp-feed-title h2 {
-          font-size: 16px;
-          font-weight: 700;
-          margin: 0;
-        }
-
-        .qp-feed-count {
-          font-size: 11px;
-          font-weight: 700;
-          background: #f3f4f6;
-          color: #4b5563;
-          padding: 3px 8px;
-          border-radius: 12px;
-        }
-
-        .qp-empty-box {
-          text-align: center;
-          padding: 50px 20px;
-          background: #fff;
-          border: 1px solid #e5e7eb;
-          border-radius: 12px;
-          color: #6b7280;
-        }
-
-        .qp-empty-box h3 {
-          margin: 12px 0 6px;
-          font-size: 16px;
-          color: #111827;
-        }
-
-        .qp-empty-box p {
-          margin: 0;
-          font-size: 13px;
-          max-width: 500px;
-          margin-inline: auto;
-          line-height: 1.5;
-        }
-
-        .qp-change-list {
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-        }
-
-        .qp-change-card {
-          background: #fff;
-          border: 1px solid #e5e7eb;
-          border-radius: 11px;
-          padding: 16px 18px;
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          transition: all 0.15s ease;
-          cursor: pointer;
-        }
-
-        .qp-change-card:hover {
-          border-color: #cbd5e1;
-        }
-
-        .qp-change-card.unread {
-          border-left: 4px solid #3b82f6;
-          background: #fdfefe;
-        }
-
-        .qp-change-card.read {
-          opacity: 0.85;
-          background: #fff;
-        }
-
-        .qp-card-top {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 10px;
-        }
-
-        .qp-meta-left {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          flex-wrap: wrap;
-        }
-
-        .qp-date-pill {
-          display: inline-flex;
-          align-items: center;
-          gap: 5px;
-          font-size: 11px;
-          font-weight: 700;
-          background: #f3f4f6;
-          color: #374151;
-          padding: 3px 9px;
-          border-radius: 6px;
-        }
-
-        .qp-table-tag {
-          display: inline-flex;
-          align-items: center;
-          gap: 5px;
-          font-size: 11px;
-          font-weight: 650;
-          color: #1e40af;
-          background: #eff6ff;
-          padding: 3px 8px;
-          border-radius: 6px;
-        }
-
-        .qp-record-tag {
-          font-size: 11px;
-          color: #6b7280;
-        }
-
-        .qp-record-tag strong {
-          color: #111827;
-        }
-
-        .qp-meta-right {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .qp-unread-badge {
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          font-size: 10px;
-          font-weight: 800;
-          color: #1d4ed8;
-          background: #dbeafe;
-          padding: 2px 7px;
-          border-radius: 10px;
-        }
-
-        .qp-card-read-btn {
-          background: transparent;
-          border: 0;
-          color: #9ca3af;
-          cursor: pointer;
-          padding: 2px;
-          display: flex;
-          align-items: center;
-        }
-
-        .qp-card-read-btn:hover {
-          color: #10b981;
-        }
-
-        .qp-diff-display {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 14px;
-          background: #f8fafc;
-          border: 1px solid #edf2f7;
-          border-radius: 9px;
-          padding: 12px 16px;
-          flex-wrap: wrap;
-        }
-
-        .qp-diff-field-name {
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-
-        .qp-diff-field-name span {
-          font-size: 10px;
-          font-weight: 700;
-          color: #64748b;
-          text-transform: uppercase;
-        }
-
-        .qp-diff-field-name strong {
-          font-size: 14px;
-          color: #0f172a;
-        }
-
-        .qp-diff-values {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          flex: 1;
-          justify-content: flex-end;
-          min-width: 250px;
-        }
-
-        .qp-val-box {
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-          max-width: 220px;
-        }
-
-        .qp-val-box small {
-          font-size: 10px;
-          font-weight: 700;
-          color: #94a3b8;
-        }
-
-        .qp-val-box span {
-          font-family: monospace;
-          font-size: 13px;
-          word-break: break-all;
-        }
-
-        .qp-val-box.old span {
-          color: #dc2626;
-          text-decoration: line-through;
-        }
-
-        .qp-val-box.new span {
-          color: #059669;
-          font-weight: 750;
-        }
-
-        .qp-arrow-icon {
-          color: #94a3b8;
-          flex-shrink: 0;
-        }
-
-        .qp-card-footer {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          font-size: 11px;
-          color: #6b7280;
-          gap: 10px;
-          flex-wrap: wrap;
-        }
-
-        .qp-actor-text strong {
-          color: #374151;
-        }
-
-        .qp-spinning {
-          animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-          to {
-            transform: rotate(360deg);
-          }
-        }
-      `}</style>
+      {/* FORENSIC INVESTIGATION MODAL */}
+      <IncidentForensicModal
+        incident={activeForensicIncident}
+        onClose={() => setActiveForensicIncident(null)}
+      />
+
+      {/* SUPABASE CLOUD ARCHIVES MODAL */}
+      <CloudArchivesModal
+        isOpen={showCloudArchives}
+        onClose={() => setShowCloudArchives(false)}
+      />
+
+      {/* LIVE ATTACK & INCIDENT SIMULATION STUDIO */}
+      <SimulationStudioModal
+        isOpen={showSimulationStudio}
+        onClose={() => setShowSimulationStudio(false)}
+        onInjectIncident={handleInjectSimulatedIncident}
+      />
     </div>
   );
 }
