@@ -335,6 +335,15 @@ export default function DailyReportPanel({
             </div>
           )}
 
+          {storageStatus && storageStatus.schedulerOrgDbMapError && (
+            <div className={styles.warnBanner} style={{ marginTop: 10 }}>
+              <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+              <div>
+                <strong>Background Database Connector:</strong> {storageStatus.schedulerOrgDbMapError}
+              </div>
+            </div>
+          )}
+
           {storageStatus && storageStatus.missingProductionConfig.length > 0 && (
             <div className={styles.warnBanner} style={{ marginTop: 10 }}>
               <AlertCircle size={15} style={{ flexShrink: 0, marginTop: 1 }} />

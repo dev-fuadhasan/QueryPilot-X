@@ -17,6 +17,7 @@ import {
   formatFileSize,
   formatShortTimestamp,
   getDomainUiMeta,
+  isReportPdfDownloadable,
   MANUAL_QUICK_RANGE_OPTIONS,
   todayIsoInTimezone,
   validateManualRangeSelection
@@ -261,10 +262,19 @@ export default function ManualReportPanel({
           </div>
         ) : generatedReport ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div className={styles.successBanner}>
-              <CheckCircle2 size={15} style={{ flexShrink: 0 }} />
-              <span>Report generated and stored in Report History.</span>
-            </div>
+            {isReportPdfDownloadable(generatedReport) ? (
+              <div className={styles.successBanner}>
+                <CheckCircle2 size={15} style={{ flexShrink: 0 }} />
+                <span>Report generated, persisted to Report History, and validated PDF saved.</span>
+              </div>
+            ) : (
+              <div className={styles.warnBanner} role="status">
+                <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span>
+                  Report metadata was saved, but permanent PDF storage failed or is not configured. Download is disabled until a verified PDF artifact is available.
+                </span>
+              </div>
+            )}
 
             <div className={styles.kvList}>
               <div className={styles.kvRow}>
@@ -290,7 +300,7 @@ export default function ManualReportPanel({
                     ? `Validated PDF ${generatedReport.pdfSizeBytes ? `(${formatFileSize(generatedReport.pdfSizeBytes)})` : ""}`
                     : generatedReport.pdfStatus === "failed"
                       ? "Storage failed"
-                      : "Pending"}
+                      : "Unavailable"}
                 </strong>
               </div>
             </div>
@@ -302,23 +312,28 @@ export default function ManualReportPanel({
             )}
 
             {generatedReport.pdfError && (
-              <div className={styles.warnBanner} role="status">
-                <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+              <div className={styles.errorBanner} role="alert">
                 <span>
-                  <strong>PDF Storage Note:</strong> {generatedReport.pdfError} You can still generate an authorised on-demand PDF download below.
+                  <strong>PDF Storage Error:</strong> {generatedReport.pdfError}
                 </span>
               </div>
             )}
 
-            <button
-              type="button"
-              className={styles.primaryBtn}
-              disabled={downloadingReportId === generatedReport.id}
-              onClick={() => void onDownloadPdf(generatedReport)}
-            >
-              <Download size={14} />
-              {downloadingReportId === generatedReport.id ? "Preparing PDF..." : "Download PDF"}
-            </button>
+            {isReportPdfDownloadable(generatedReport) ? (
+              <button
+                type="button"
+                className={styles.primaryBtn}
+                disabled={downloadingReportId === generatedReport.id}
+                onClick={() => void onDownloadPdf(generatedReport)}
+              >
+                <Download size={14} />
+                {downloadingReportId === generatedReport.id ? "Preparing PDF..." : "Download PDF"}
+              </button>
+            ) : (
+              <span style={{ fontSize: 11, color: "var(--muted, #657c8a)" }}>
+                PDF download unavailable until private PDF storage is configured.
+              </span>
+            )}
           </div>
         ) : (
           <div className={styles.emptyBox}>

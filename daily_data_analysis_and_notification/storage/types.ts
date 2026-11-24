@@ -191,12 +191,30 @@ export interface PdfStorageAdapter {
   readPdf(storageKey: string): Promise<Buffer | null>;
 }
 
+export type SchedulerOrgDbMapStatus =
+  | "valid"
+  | "missing"
+  | "invalid_json"
+  | "invalid_uri"
+  | "org_not_mapped";
+
+export type ReportHistoryStorageState =
+  | "ready"
+  | "storage_unavailable"
+  | "empty_no_reports"
+  | "empty_filtered"
+  | "error";
+
 export type StorageCapabilityStatus = {
   databaseBackend: "postgres" | "sqlite";
   databaseProductionReady: boolean;
   pdfBackend: "supabase_private_storage" | "local_private_fs" | "unconfigured";
   pdfProductionReady: boolean;
   schedulerSecretConfigured: boolean;
+  schedulerOrgDbMapConfigured: boolean;
+  schedulerOrgDbMapStatus: SchedulerOrgDbMapStatus;
+  schedulerOrgMappedForCurrentOrg: boolean | null;
+  schedulerOrgDbMapError: string | null;
   schedulerProductionReady: boolean;
   missingProductionConfig: string[];
 };

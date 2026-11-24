@@ -119,6 +119,258 @@ export function isSafeTokenValue(value: unknown): string | null {
   return trimmed.toLowerCase();
 }
 
+const DATE_NAME_POSITIVE_TOKENS = new Set([
+  "date",
+  "day",
+  "time",
+  "timestamp",
+  "datetime",
+  "at",
+  "on",
+  "dt",
+  "created",
+  "ordered",
+  "purchased",
+  "sold",
+  "posted",
+  "recorded",
+  "shipped",
+  "delivered",
+  "promised",
+  "signup",
+  "signed",
+  "activity",
+  "event",
+  "snapshot",
+  "period",
+  "due"
+]);
+
+const DATE_NAME_NEGATIVE_TOKENS = new Set([
+  "count",
+  "days",
+  "hours",
+  "minutes",
+  "seconds",
+  "duration",
+  "lead",
+  "processing",
+  "cycle",
+  "age",
+  "rate",
+  "ratio",
+  "amount",
+  "price",
+  "cost",
+  "revenue",
+  "qty",
+  "quantity",
+  "id",
+  "name",
+  "status",
+  "type",
+  "category",
+  "region",
+  "rep",
+  "channel",
+  "zone",
+  "timezone"
+]);
+
+export function isDateLikeColumnName(columnName: string): boolean {
+  if (!columnName || isSensitiveColumnName(columnName)) return false;
+  const tokens = tokenizeName(columnName);
+  if (!tokens.length) return false;
+  if (tokens.some(t => DATE_NAME_NEGATIVE_TOKENS.has(t))) return false;
+  if (tokens.includes("date") || tokens.includes("timestamp") || tokens.includes("datetime")) return true;
+  const last = tokens[tokens.length - 1];
+  if (last === "at" || last === "on" || last === "dt" || last === "day" || last === "time") {
+    return tokens.length === 1 || tokens.some(t => DATE_NAME_POSITIVE_TOKENS.has(t));
+  }
+  return false;
+}
+
+const COMPOSITE_JOINERS = new Set(["and", "with", "plus", "vs", "versus", "combined"]);
+
+/**
+ * Detects composite multi-concept column names such as `Region_and_Sales_Rep` or `Category_and_Brand`
+ * so the semantic detector treats them as ambiguous unless explicitly confirmed by the user.
+ */
+export function isCompositeColumnName(columnName: string): boolean {
+  if (!columnName) return false;
+  if (/[&+/]/.test(columnName)) return true;
+  const tokens = tokenizeName(columnName);
+  if (tokens.length < 3) return false;
+  for (let i = 1; i < tokens.length - 1; i += 1) {
+    if (COMPOSITE_JOINERS.has(tokens[i])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const MONTH_NAME_MAP: Record<string, number> = {
+  jan: 1, january: 1,
+  feb: 2, february: 2,
+  mar: 3, march: 3,
+  apr: 4, april: 4,
+  may: 5,
+  jun: 6, june: 6,
+  jul: 7, july: 7,
+  aug: 8, august: 8,
+  sep: 9, sept: 9, september: 9,
+  oct: 10, october: 10,
+  nov: 11, november: 11,
+  dec: 12, december: 12
+};
+
+function isRealCalendarDate(year: number, month: number, day: number): boolean {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return false;
+  if (year < 1900 || year > 2199 || month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  return dt.getUTCFullYear() === year && dt.getUTCMonth() === month - 1 && dt.getUTCDate() === day;
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+export type ReliableDateParseResult =
+  | { status: "empty" }
+  | { status: "ambiguous" }
+  | { status: "invalid" }
+  | {
+      status: "valid";
+      iso: string;
+      dateOnly: string;
+      format: "iso_date" | "iso_timestamp" | "ymd_slash" | "month_name";
+    };
+
+/**
+ * Strictly parses unambiguous date/timestamp strings and validates calendar dates.
+ * - Accepts ISO dates (YYYY-MM-DD), ISO timestamps (YYYY-MM-DD[T ]HH:mm...), year-first YYYY/MM/DD,
+ *   and unambiguous named-month dates (e.g. "15 Jan 2026", "Jan 15, 2026", "2026-Jan-15").
+ * - Explicitly flags ambiguous numeric slash/hyphen dates (DD/MM/YYYY vs MM/DD/YYYY) as "ambiguous"
+ *   instead of silently guessing a locale convention.
+ * - Rejects invalid calendar dates (e.g. 2026-02-30, 2026-13-01) and non-date strings.
+ */
+export function parseReliableDateString(value: unknown): ReliableDateParseResult {
+  if (value === null || value === undefined) return { status: "empty" };
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return { status: "invalid" };
+    const iso = value.toISOString();
+    return { status: "valid", iso, dateOnly: iso.slice(0, 10), format: "iso_timestamp" };
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return { status: "invalid" };
+  }
+
+  const text = String(value).trim();
+  if (!text) return { status: "empty" };
+  if (text.length > 64) return { status: "invalid" };
+
+  // 1. Strict ISO date: YYYY-MM-DD
+  const isoDateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (isoDateMatch) {
+    const [, yStr, mStr, dStr] = isoDateMatch;
+    const y = Number(yStr);
+    const m = Number(mStr);
+    const d = Number(dStr);
+    if (!isRealCalendarDate(y, m, d)) return { status: "invalid" };
+    const dateOnly = `${yStr}-${mStr}-${dStr}`;
+    return { status: "valid", iso: `${dateOnly}T00:00:00.000Z`, dateOnly, format: "iso_date" };
+  }
+
+  // 2. Strict ISO timestamp: YYYY-MM-DD[T ]HH:mm(:ss(.fff)?)?(Z|[+-]HH:?mm)?
+  const isoTsMatch = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?(Z|[+-]\d{2}:?\d{2})?$/i.exec(text);
+  if (isoTsMatch) {
+    const [, yStr, mStr, dStr, hStr, minStr, secStr, fracStr, tzStr] = isoTsMatch;
+    const y = Number(yStr);
+    const m = Number(mStr);
+    const d = Number(dStr);
+    const hh = Number(hStr);
+    const mm = Number(minStr);
+    const ss = secStr ? Number(secStr) : 0;
+    if (!isRealCalendarDate(y, m, d) || hh > 23 || mm > 59 || ss > 59) {
+      return { status: "invalid" };
+    }
+    const msPart = fracStr ? `.${fracStr.slice(0, 3).padEnd(3, "0")}` : ".000";
+    const normTz = tzStr
+      ? (tzStr.toUpperCase() === "Z" ? "Z" : tzStr.includes(":") ? tzStr : `${tzStr.slice(0, 3)}:${tzStr.slice(3)}`)
+      : "Z";
+    const canonical = `${yStr}-${mStr}-${dStr}T${hStr}:${minStr}:${pad2(ss)}${msPart}${normTz}`;
+    const parsed = new Date(canonical);
+    if (Number.isNaN(parsed.getTime())) return { status: "invalid" };
+    return { status: "valid", iso: parsed.toISOString(), dateOnly: `${yStr}-${mStr}-${dStr}`, format: "iso_timestamp" };
+  }
+
+  // 3. Unambiguous year-first YYYY/MM/DD (with optional HH:mm[:ss])
+  const ymdSlashMatch = /^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
+  if (ymdSlashMatch) {
+    const [, yStr, mStr, dStr, hStr, minStr, secStr] = ymdSlashMatch;
+    const y = Number(yStr);
+    const m = Number(mStr);
+    const d = Number(dStr);
+    if (!isRealCalendarDate(y, m, d)) return { status: "invalid" };
+    const hh = hStr ? Number(hStr) : 0;
+    const mm = minStr ? Number(minStr) : 0;
+    const ss = secStr ? Number(secStr) : 0;
+    if (hh > 23 || mm > 59 || ss > 59) return { status: "invalid" };
+    const dateOnly = `${yStr}-${pad2(m)}-${pad2(d)}`;
+    return {
+      status: "valid",
+      iso: `${dateOnly}T${pad2(hh)}:${pad2(mm)}:${pad2(ss)}.000Z`,
+      dateOnly,
+      format: "ymd_slash"
+    };
+  }
+
+  // 4. Ambiguous numeric DD/MM/YYYY vs MM/DD/YYYY (or DD-MM-YYYY vs MM-DD-YYYY)
+  const numericAmbMatch = /^(\d{1,2})([/-])(\d{1,2})\2(\d{4})(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?$/.exec(text);
+  if (numericAmbMatch) {
+    const a = Number(numericAmbMatch[1]);
+    const b = Number(numericAmbMatch[3]);
+    // Both impossible months/days -> clearly invalid; otherwise ambiguous convention (never silently guess DD/MM vs MM/DD)
+    if (a < 1 || b < 1 || a > 31 || b > 31 || (a > 12 && b > 12)) {
+      return { status: "invalid" };
+    }
+    return { status: "ambiguous" };
+  }
+
+  // 5. Unambiguous named-month dates: "15 Jan 2026", "Jan 15, 2026", "2026-Jan-15"
+  const dmyNameMatch = /^(\d{1,2})[\s-]([A-Za-z]{3,9})[\s,-]+(\d{4})$/.exec(text);
+  if (dmyNameMatch) {
+    const d = Number(dmyNameMatch[1]);
+    const m = MONTH_NAME_MAP[dmyNameMatch[2].toLowerCase()];
+    const y = Number(dmyNameMatch[3]);
+    if (!m || !isRealCalendarDate(y, m, d)) return { status: "invalid" };
+    const dateOnly = `${y}-${pad2(m)}-${pad2(d)}`;
+    return { status: "valid", iso: `${dateOnly}T00:00:00.000Z`, dateOnly, format: "month_name" };
+  }
+
+  const mdyNameMatch = /^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/.exec(text);
+  if (mdyNameMatch) {
+    const m = MONTH_NAME_MAP[mdyNameMatch[1].toLowerCase()];
+    const d = Number(mdyNameMatch[2]);
+    const y = Number(mdyNameMatch[3]);
+    if (!m || !isRealCalendarDate(y, m, d)) return { status: "invalid" };
+    const dateOnly = `${y}-${pad2(m)}-${pad2(d)}`;
+    return { status: "valid", iso: `${dateOnly}T00:00:00.000Z`, dateOnly, format: "month_name" };
+  }
+
+  const ymdNameMatch = /^(\d{4})-([A-Za-z]{3,9})-(\d{1,2})$/.exec(text);
+  if (ymdNameMatch) {
+    const y = Number(ymdNameMatch[1]);
+    const m = MONTH_NAME_MAP[ymdNameMatch[2].toLowerCase()];
+    const d = Number(ymdNameMatch[3]);
+    if (!m || !isRealCalendarDate(y, m, d)) return { status: "invalid" };
+    const dateOnly = `${y}-${pad2(m)}-${pad2(d)}`;
+    return { status: "valid", iso: `${dateOnly}T00:00:00.000Z`, dateOnly, format: "month_name" };
+  }
+
+  return { status: "invalid" };
+}
+
 export function classifyPostgresDataType(
   rawDataType: string,
   udtName?: string,

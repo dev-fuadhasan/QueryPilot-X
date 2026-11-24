@@ -15,12 +15,16 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
         role: "orderId",
         label: "Order / Transaction ID",
         description: "Unique identifier for a sales order or invoice.",
-        required: true,
+        required: false,
         expectedCategories: ["identifier", "numeric", "text"],
         aliases: ["order_id", "orderid", "invoice_id", "sale_id", "transaction_id", "order_no", "order_number", "receipt_id", "bill_no", "tx_id", "tx_ref"],
         genericAliases: ["id"],
-        tokenHints: ["order", "invoice", "sale", "receipt", "bill"],
-        negativeTokens: ["customer", "user", "product", "item", "sku", "store", "warehouse", "campaign", "shipment"]
+        tokenHints: ["order", "invoice", "receipt", "bill"],
+        negativeTokens: [
+          "customer", "user", "product", "item", "sku", "store", "warehouse", "campaign", "shipment",
+          "rep", "representative", "agent", "person", "manager", "staff", "employee",
+          "channel", "region", "type", "category", "amount", "price", "date", "discount", "cost", "profit", "qty", "quantity", "status"
+        ]
       },
       {
         role: "transactionDate",
@@ -28,21 +32,32 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
         description: "Date or timestamp when the sale occurred.",
         required: true,
         expectedCategories: ["temporal", "text"],
-        aliases: ["order_date", "orderdate", "sale_date", "invoice_date", "transaction_date", "ordered_at", "purchased_at", "purchase_timestamp", "order_time", "booked_on", "sold_at"],
+        aliases: ["order_date", "orderdate", "sale_date", "saledate", "sales_date", "invoice_date", "transaction_date", "ordered_at", "purchased_at", "purchase_timestamp", "order_time", "booked_on", "sold_at"],
         genericAliases: ["created_at", "date", "timestamp"],
         tokenHints: ["order", "sale", "purchase", "invoice", "sold", "date", "time"],
-        negativeTokens: ["updated", "modified", "deleted", "birth", "dob", "expiry", "expire", "due", "shipped", "delivered"]
+        negativeTokens: ["updated", "modified", "deleted", "birth", "dob", "expiry", "expire", "due", "shipped", "delivered", "rep", "channel", "amount", "price"]
       },
       {
         role: "revenue",
         label: "Sales Revenue / Amount",
-        description: "Total sales revenue, net sales, or selling price.",
+        description: "Total sales revenue, net sales, or line-item sales amount.",
         required: false,
         expectedCategories: ["numeric"],
-        aliases: ["total_revenue", "revenue", "net_sales", "gross_sales", "sales_amount", "sale_amount", "order_total", "grand_total", "net_total", "selling_price", "total_price", "subtotal", "sales"],
-        genericAliases: ["total_amount", "amount", "total", "price", "net_amount", "gross_total", "unit_price"],
-        tokenHints: ["revenue", "sales", "selling", "subtotal", "grand", "price"],
-        negativeTokens: ["cost", "cogs", "expense", "discount", "tax", "refund", "shipping", "budget", "spend", "rating", "score", "qty", "quantity", "count", "salary", "wage"]
+        aliases: ["total_revenue", "revenue", "net_sales", "gross_sales", "sales_amount", "sale_amount", "order_total", "grand_total", "net_total", "selling_price", "total_price", "line_total", "subtotal", "sales"],
+        genericAliases: ["total_amount", "amount", "total", "net_amount", "gross_total"],
+        tokenHints: ["revenue", "sales", "subtotal", "grand"],
+        negativeTokens: ["unit", "unit_price", "unitprice", "item_price", "price_per_unit", "per_unit", "cost", "cogs", "expense", "discount", "tax", "refund", "shipping", "budget", "spend", "rating", "score", "qty", "quantity", "count", "salary", "wage", "rep"]
+      },
+      {
+        role: "unitPrice",
+        label: "Unit Selling Price",
+        description: "Per-unit selling price (distinct from total line or order revenue).",
+        required: false,
+        expectedCategories: ["numeric"],
+        aliases: ["unit_price", "unitprice", "item_price", "price_per_unit", "selling_unit_price", "list_price", "retail_price"],
+        genericAliases: ["price"],
+        tokenHints: ["price"],
+        negativeTokens: ["total", "amount", "revenue", "sales", "cost", "cogs", "purchase", "buying", "discount", "profit", "subtotal", "grand"]
       },
       {
         role: "quantity",
@@ -133,7 +148,7 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
         aliases: ["customer_id", "client_id", "buyer_id", "account_id", "member_id"],
         genericAliases: ["user_id"],
         tokenHints: ["customer", "client", "buyer", "member"],
-        negativeTokens: ["name", "email", "phone", "gender", "rating", "segment"]
+        negativeTokens: ["name", "email", "phone", "gender", "rating", "segment", "type", "tier", "group", "class", "category", "status", "kind", "role", "rep", "channel", "region"]
       },
       {
         role: "region",
@@ -143,7 +158,7 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
         expectedCategories: ["categorical", "text"],
         aliases: ["region", "customer_region", "sales_region", "area", "territory", "city", "state", "country", "zone", "location"],
         tokenHints: ["region", "city", "country", "area", "zone", "territory", "location"],
-        negativeTokens: ["warehouse", "ip", "currency"],
+        negativeTokens: ["warehouse", "ip", "currency", "rep", "representative", "agent", "manager", "staff", "person", "sales_rep"],
         valueConstraints: { preferLowCardinality: true }
       },
       {
@@ -186,16 +201,18 @@ export const BUSINESS_DOMAIN_PROFILES: Record<BusinessDomainId, BusinessDomainPr
       { fromRole: "orderId", toDomain: "operations_fulfillment", toRole: "orderId", description: "Links sales orders to fulfillment shipments." }
     ],
     metrics: [
+      { id: "totalRevenue", label: "Total Revenue", description: "Completed sales revenue.", requiredRoles: ["transactionDate"], anyOfRoleGroups: [["revenue"], ["unitPrice", "quantity"]] },
+      { id: "unitsSold", label: "Units Sold", description: "Sum of units sold.", requiredRoles: ["transactionDate", "quantity"] },
+      { id: "totalDiscounts", label: "Discounts", description: "Total discount value granted.", requiredRoles: ["transactionDate", "discount"] },
+      { id: "grossProfit", label: "Gross Profit", description: "Direct profit or revenue minus product cost.", requiredRoles: ["transactionDate"], anyOfRoleGroups: [["profit"], ["revenue", "cost"], ["unitPrice", "quantity", "cost"]] },
+      { id: "grossProfitMargin", label: "Gross Profit Margin", description: "Gross profit as a percentage of revenue.", requiredRoles: ["transactionDate"], anyOfRoleGroups: [["revenue", "profit"], ["revenue", "cost"], ["unitPrice", "quantity", "profit"], ["unitPrice", "quantity", "cost"]] },
+      { id: "averageSellingPrice", label: "Average Selling Price", description: "Completed revenue divided by units sold.", requiredRoles: ["transactionDate", "quantity"], anyOfRoleGroups: [["revenue"], ["unitPrice"]] },
       { id: "totalOrders", label: "Total Orders", description: "Distinct completed orders.", requiredRoles: ["orderId", "transactionDate"] },
-      { id: "totalProductLines", label: "Total Line Items", description: "Completed order line items.", requiredRoles: ["orderId", "transactionDate"] },
-      { id: "totalUnitsSold", label: "Total Units Sold", description: "Sum of units sold.", requiredRoles: ["orderId", "transactionDate", "quantity"] },
-      { id: "totalRevenue", label: "Total Revenue", description: "Completed sales revenue.", requiredRoles: ["orderId", "transactionDate", "revenue"] },
-      { id: "averageOrderValue", label: "Average Order Value", description: "Revenue divided by distinct orders.", requiredRoles: ["orderId", "transactionDate", "revenue"] },
-      { id: "grossProfit", label: "Gross Profit", description: "Direct profit or revenue minus cost.", requiredRoles: ["orderId", "transactionDate"], anyOfRoleGroups: [["profit"], ["revenue", "cost"]] },
-      { id: "grossProfitMargin", label: "Gross Profit Margin", description: "Gross profit as a percentage of revenue.", requiredRoles: ["orderId", "transactionDate", "revenue"], anyOfRoleGroups: [["profit"], ["cost"]] },
-      { id: "totalDiscounts", label: "Total Discounts", description: "Total discount value granted.", requiredRoles: ["orderId", "transactionDate", "discount"] },
-      { id: "averageCustomerRating", label: "Average Rating", description: "Average customer rating.", requiredRoles: ["orderId", "transactionDate", "rating"] },
-      { id: "cancellationRate", label: "Cancellation & Return Rate", description: "Share of cancelled or returned orders.", requiredRoles: ["orderId", "transactionDate", "status"] }
+      { id: "averageOrderValue", label: "Average Order Value", description: "Revenue divided by distinct orders.", requiredRoles: ["orderId", "transactionDate"], anyOfRoleGroups: [["revenue"], ["unitPrice", "quantity"]] },
+      { id: "cancellationRate", label: "Cancellation Rate", description: "Share of distinct orders marked cancelled.", requiredRoles: ["orderId", "transactionDate", "status"] },
+      { id: "returnRate", label: "Return Rate", description: "Share of distinct orders marked returned or refunded.", requiredRoles: ["orderId", "transactionDate", "status"] },
+      { id: "repeatCustomerRate", label: "Repeat Customer Rate", description: "Share of period customers with multiple completed orders.", requiredRoles: ["orderId", "transactionDate", "customerId"] },
+      { id: "customerLifetimeValueEstimate", label: "Customer Lifetime Value (Estimate)", description: "Estimated cumulative revenue per identified customer.", requiredRoles: ["orderId", "transactionDate", "customerId"], anyOfRoleGroups: [["revenue"], ["unitPrice", "quantity"]] }
     ]
   },
 

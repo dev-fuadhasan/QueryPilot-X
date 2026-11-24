@@ -32,7 +32,9 @@ import type {
   PersistentReportRecord,
   PersistentReportStatusFilter,
   PersistentReportSummary,
-  ReportFrequencyOrManual
+  ReportFrequencyOrManual,
+  ReportHistoryStorageState,
+  StorageCapabilityStatus
 } from "../storage/types";
 import {
   canCompareArchivedReports,
@@ -60,6 +62,8 @@ type ReportHistoryPanelProps = {
   pagination: ReportHistoryPagination;
   filters: ReportHistoryFilterState;
   loading: boolean;
+  storageState?: ReportHistoryStorageState;
+  storageStatus?: StorageCapabilityStatus | null;
   error: string | null;
   warning: string | null;
   timezone: string;
@@ -83,6 +87,8 @@ export default function ReportHistoryPanel({
   pagination,
   filters,
   loading,
+  storageState = "ready",
+  storageStatus = null,
   error,
   warning,
   timezone,
@@ -481,11 +487,55 @@ export default function ReportHistoryPanel({
               </div>
             </div>
           </>
+        ) : storageState === "storage_unavailable" ? (
+          <div className={styles.warnBanner} role="status" style={{ flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <AlertTriangle size={16} />
+              <strong>Persistent Report Storage Is Not Configured</strong>
+            </div>
+            <div>
+              {error || warning || "Application-owned persistent report storage is unavailable in this environment (local SQLite is restricted to development mode)."}
+            </div>
+            {storageStatus && storageStatus.missingProductionConfig.length > 0 && (
+              <div style={{ fontSize: 11 }}>
+                <strong>Required production environment variables:</strong>{" "}
+                <code>{storageStatus.missingProductionConfig.join(", ")}</code>
+              </div>
+            )}
+          </div>
+        ) : storageState === "error" ? (
+          <div className={styles.errorBanner} role="alert" style={{ flexDirection: "column", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <AlertCircle size={16} />
+              <strong>Failed to Retrieve Report History</strong>
+            </div>
+            <div>{error || "An unexpected storage or API error occurred while loading persisted reports."}</div>
+            <button type="button" className={styles.secondaryBtn} onClick={onRefresh} style={{ alignSelf: "flex-start" }}>
+              <RefreshCw size={13} /> Retry
+            </button>
+          </div>
+        ) : storageState === "empty_filtered" ? (
+          <div className={styles.emptyBox}>
+            <strong>No reports match your active filters</strong>
+            <p>
+              Persisted reports exist for your organisation, but none matched your current search term, date window, domain, or status filter.
+            </p>
+            <button
+              type="button"
+              className={styles.secondaryBtn}
+              onClick={() => {
+                setSearchDraft("");
+                onFiltersChange(DEFAULT_REPORT_HISTORY_FILTERS);
+              }}
+            >
+              Reset All Filters
+            </button>
+          </div>
         ) : (
           <div className={styles.emptyBox}>
-            <strong>No persisted reports match your current filters</strong>
+            <strong>No reports have been generated yet</strong>
             <p>
-              Generate a report from <strong>Manual Report</strong> or enable <strong>Daily Report</strong> automation, or broaden the date filter above.
+              Persistent report storage is ready, and no reports exist for your organisation yet. Generate one from <strong>Manual Report</strong> or configure <strong>Daily Report</strong> automation.
             </p>
           </div>
         )}

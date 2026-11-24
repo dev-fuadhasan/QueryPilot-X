@@ -4,9 +4,11 @@ import { runOAuthReadOnlyQuery } from "../../src/lib/supabase";
 import { analyzeDatabaseSemantics } from "./semantic-detector";
 import {
   classifyPostgresDataType,
+  isDateLikeColumnName,
   isSafeTokenValue,
   isSensitiveColumnName,
   normalizeName,
+  parseReliableDateString,
   quoteIdentifier,
   quoteQualifiedTable
 } from "./sql-safety";
@@ -95,18 +97,167 @@ function toNumber(value: unknown): number | null {
 }
 
 function toIsoDate(value: unknown): string | null {
-  if (value === null || value === undefined || value === "") return null;
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  const parsed = parseReliableDateString(value);
+  return parsed.status === "valid" ? parsed.iso : null;
+}
+
+const ISO_DATE_PG_REGEX = "^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]+)?)?(Z|[+-][0-9]{2}:?[0-9]{2})?)?$";
+const YMD_SLASH_PG_REGEX = "^[0-9]{4}/[0-9]{1,2}/[0-9]{1,2}([T ][0-9]{2}:[0-9]{2}(:[0-9]{2})?)?$";
+const AMBIGUOUS_NUMERIC_PG_REGEX = "^[0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{4}([T ][0-9]{1,2}:[0-9]{2}(:[0-9]{2})?)?$";
+
+/**
+ * Safe read-only aggregate probe for date-like TEXT columns (never SELECT *, never sensitive columns).
+ * Evaluates format distribution and computes MIN/MAX strictly over regex-verified ISO/YMD values
+ * without crashing PostgreSQL on invalid text values.
+ */
+export function buildTextDateProbeSql(
+  schema: string,
+  tableName: string,
+  columnName: string,
+  allowedTables: Set<string>,
+  allowedColumns: Set<string>
+): string {
+  if (isSensitiveColumnName(columnName)) {
+    throw new Error(`Refusing to probe date values from sensitive column "${columnName}".`);
   }
-  const text = String(value).trim();
-  if (!text) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
-    const parsed = new Date(`${text}T00:00:00.000Z`);
-    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  const qualified = quoteQualifiedTable(schema, tableName, allowedTables);
+  const qCol = quoteIdentifier(columnName, allowedColumns);
+  const expr = `TRIM(CAST(${qCol} AS TEXT))`;
+  return `SELECT
+    COUNT(*) FILTER (WHERE ${qCol} IS NOT NULL AND ${expr} <> '') AS non_empty_count,
+    COUNT(*) FILTER (WHERE ${expr} ~ '${ISO_DATE_PG_REGEX}') AS iso_count,
+    COUNT(*) FILTER (WHERE ${expr} ~ '${YMD_SLASH_PG_REGEX}') AS ymd_slash_count,
+    COUNT(*) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}') AS ambiguous_count,
+    MIN(SUBSTRING(${expr} FROM 1 FOR 10)) FILTER (WHERE ${expr} ~ '${ISO_DATE_PG_REGEX}') AS iso_min,
+    MAX(SUBSTRING(${expr} FROM 1 FOR 10)) FILTER (WHERE ${expr} ~ '${ISO_DATE_PG_REGEX}') AS iso_max,
+    MIN(REPLACE(SUBSTRING(${expr} FROM 1 FOR 10), '/', '-')) FILTER (WHERE ${expr} ~ '${YMD_SLASH_PG_REGEX}') AS ymd_min,
+    MAX(REPLACE(SUBSTRING(${expr} FROM 1 FOR 10), '/', '-')) FILTER (WHERE ${expr} ~ '${YMD_SLASH_PG_REGEX}') AS ymd_max
+  FROM ${qualified}`;
+}
+
+export function buildTextDateSampleSql(
+  schema: string,
+  tableName: string,
+  columnName: string,
+  allowedTables: Set<string>,
+  allowedColumns: Set<string>
+): string {
+  if (isSensitiveColumnName(columnName)) {
+    throw new Error(`Refusing to sample date values from sensitive column "${columnName}".`);
   }
-  const parsed = new Date(text);
-  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+  const qualified = quoteQualifiedTable(schema, tableName, allowedTables);
+  const qCol = quoteIdentifier(columnName, allowedColumns);
+  return `SELECT DISTINCT TRIM(CAST(${qCol} AS TEXT)) AS date_val FROM ${qualified} WHERE ${qCol} IS NOT NULL AND LENGTH(TRIM(CAST(${qCol} AS TEXT))) BETWEEN 6 AND 40 ORDER BY date_val LIMIT 24`;
+}
+
+function evaluateTextDateSamples(
+  values: unknown[],
+  now: Date
+): {
+  isReliableDateColumn: boolean;
+  temporalStats: TemporalColumnStats | null;
+  warning: string | null;
+} {
+  let validCount = 0;
+  let invalidCount = 0;
+  let ambiguousCount = 0;
+  const validIsos: string[] = [];
+  const formats = new Set<string>();
+
+  for (const val of values) {
+    const parsed = parseReliableDateString(val);
+    if (parsed.status === "empty") continue;
+    if (parsed.status === "valid") {
+      validCount += 1;
+      validIsos.push(parsed.iso);
+      formats.add(parsed.format);
+    } else if (parsed.status === "ambiguous") {
+      ambiguousCount += 1;
+    } else {
+      invalidCount += 1;
+    }
+  }
+
+  const totalChecked = validCount + invalidCount + ambiguousCount;
+  if (totalChecked === 0) {
+    return { isReliableDateColumn: false, temporalStats: null, warning: null };
+  }
+
+  if (ambiguousCount > 0 && validCount === 0) {
+    return {
+      isReliableDateColumn: false,
+      temporalStats: {
+        earliest: null,
+        latest: null,
+        spanDays: null,
+        freshnessHours: null,
+        invalidDateCount: invalidCount,
+        ambiguousDateCount: ambiguousCount,
+        inferredFromText: false,
+        detectedFormat: "ambiguous_numeric"
+      },
+      warning: `Detected ${ambiguousCount} ambiguous numeric date value(s) (DD/MM/YYYY vs MM/DD/YYYY); date range not inferred silently.`
+    };
+  }
+
+  const validRatio = validCount / totalChecked;
+  if (validCount > 0 && validRatio >= 0.7 && ambiguousCount === 0) {
+    validIsos.sort();
+    const earliest = validIsos[0];
+    const latest = validIsos[validIsos.length - 1];
+    const spanDays = Math.max(0, Math.round((Date.parse(latest) - Date.parse(earliest)) / 86_400_000));
+    const freshnessHours = roundTwo(Math.max(0, (now.getTime() - Date.parse(latest)) / 3_600_000));
+    return {
+      isReliableDateColumn: true,
+      temporalStats: {
+        earliest,
+        latest,
+        spanDays,
+        freshnessHours,
+        invalidDateCount: invalidCount,
+        ambiguousDateCount: ambiguousCount,
+        inferredFromText: true,
+        detectedFormat: [...formats].join(",")
+      },
+      warning: invalidCount > 0
+        ? `Skipped ${invalidCount} invalid/unparseable date value(s) while profiling text date column.`
+        : null
+    };
+  }
+
+  if (ambiguousCount > 0) {
+    return {
+      isReliableDateColumn: false,
+      temporalStats: {
+        earliest: null,
+        latest: null,
+        spanDays: null,
+        freshnessHours: null,
+        invalidDateCount: invalidCount,
+        ambiguousDateCount: ambiguousCount,
+        inferredFromText: false,
+        detectedFormat: "mixed_ambiguous"
+      },
+      warning: `Column contains mixed or ambiguous numeric date formats (${ambiguousCount} ambiguous, ${invalidCount} invalid); date range withheld for safety.`
+    };
+  }
+
+  return {
+    isReliableDateColumn: false,
+    temporalStats: invalidCount > 0
+      ? {
+          earliest: null,
+          latest: null,
+          spanDays: null,
+          freshnessHours: null,
+          invalidDateCount: invalidCount,
+          ambiguousDateCount: 0,
+          inferredFromText: false,
+          detectedFormat: null
+        }
+      : null,
+    warning: null
+  };
 }
 
 function roundTwo(value: number): number {
@@ -543,6 +694,87 @@ export async function profileDatabaseWithExecutor(
         });
       }
 
+      // 2b. Reliable text-based date detection for date-like non-sensitive text/categorical columns
+      const textDateCandidates = columnProfiles.filter(col =>
+        col.supported
+        && !col.isSensitive
+        && (col.category === "text" || col.category === "categorical")
+        && col.nonNullCount > 0
+        && isDateLikeColumnName(col.name)
+      ).slice(0, 6);
+
+      for (const col of textDateCandidates) {
+        try {
+          const probeSql = buildTextDateProbeSql(schema, tableName, col.name, allDiscoveredTables, allowedColumns);
+          const probeRows = await executor(probeSql);
+          const probe = probeRows[0] || {};
+          const nonEmpty = Math.max(0, Math.trunc(toNumber(probe.non_empty_count) ?? 0));
+          const isoCount = Math.max(0, Math.trunc(toNumber(probe.iso_count) ?? 0));
+          const ymdCount = Math.max(0, Math.trunc(toNumber(probe.ymd_slash_count) ?? 0));
+          const ambiguousCount = Math.max(0, Math.trunc(toNumber(probe.ambiguous_count) ?? 0));
+
+          if (nonEmpty > 0 && ambiguousCount > 0 && isoCount + ymdCount === 0) {
+            col.temporalStats = {
+              earliest: null,
+              latest: null,
+              spanDays: null,
+              freshnessHours: null,
+              invalidDateCount: Math.max(0, nonEmpty - ambiguousCount),
+              ambiguousDateCount: ambiguousCount,
+              inferredFromText: false,
+              detectedFormat: "ambiguous_numeric"
+            };
+            tableWarnings.push(`Column "${col.name}" contains ${ambiguousCount} ambiguous numeric date value(s) (DD/MM/YYYY vs MM/DD/YYYY); date range cannot be inferred safely.`);
+            continue;
+          }
+
+          if (nonEmpty > 0 && (isoCount + ymdCount) / nonEmpty >= 0.7 && ambiguousCount === 0) {
+            const candidateMins = [probe.iso_min, probe.ymd_min].map(toIsoDate).filter((v): v is string => Boolean(v)).sort();
+            const candidateMaxs = [probe.iso_max, probe.ymd_max].map(toIsoDate).filter((v): v is string => Boolean(v)).sort();
+            const earliest = candidateMins[0] || null;
+            const latest = candidateMaxs[candidateMaxs.length - 1] || null;
+
+            if (earliest && latest) {
+              const invalidDateCount = Math.max(0, nonEmpty - (isoCount + ymdCount));
+              const spanDays = Math.max(0, Math.round((Date.parse(latest) - Date.parse(earliest)) / 86_400_000));
+              const freshnessHours = roundTwo(Math.max(0, (now.getTime() - Date.parse(latest)) / 3_600_000));
+              col.category = "temporal";
+              col.temporalStats = {
+                earliest,
+                latest,
+                spanDays,
+                freshnessHours,
+                invalidDateCount,
+                ambiguousDateCount: 0,
+                inferredFromText: true,
+                detectedFormat: isoCount >= ymdCount ? "iso_date" : "ymd_slash"
+              };
+              if (invalidDateCount > 0) {
+                tableWarnings.push(`Column "${col.name}" had ${invalidDateCount} unparseable value(s) excluded from date range calculation.`);
+              }
+              continue;
+            }
+          }
+
+          // Fallback bounded distinct sample check (e.g. named-month dates like "15 Jan 2026" or invalid calendar check)
+          const sampleSql = buildTextDateSampleSql(schema, tableName, col.name, allDiscoveredTables, allowedColumns);
+          const sampleRows = await executor(sampleSql);
+          const sampleValues = sampleRows.map(r => r.date_val);
+          const sampleEval = evaluateTextDateSamples(sampleValues, now);
+          if (sampleEval.temporalStats) {
+            col.temporalStats = sampleEval.temporalStats;
+          }
+          if (sampleEval.isReliableDateColumn) {
+            col.category = "temporal";
+          }
+          if (sampleEval.warning) {
+            tableWarnings.push(`Column "${col.name}": ${sampleEval.warning}`);
+          }
+        } catch {
+          // Non-fatal: keep column as text if database probe is unsupported by a mock/driver
+        }
+      }
+
       // 3. Safe low-cardinality status/category token hints (STRICTLY skips sensitive columns)
       const tokenCandidates = columnProfiles.filter(col =>
         col.supported
@@ -701,24 +933,48 @@ export function profileRowsSnapshot(
           numericStats = { min: null, max: null, avg: null, negativeCount: 0, zeroCount: 0, isIntegerOnly: null };
         }
       } else if (classified.category === "temporal") {
-        const dates = nonNullValues.map(toIsoDate).filter((d): d is string => Boolean(d)).sort();
-        if (dates.length) {
+        let invalidCount = 0;
+        let ambiguousCount = 0;
+        const dates: string[] = [];
+        for (const v of nonNullValues) {
+          const parsed = parseReliableDateString(v);
+          if (parsed.status === "valid") dates.push(parsed.iso);
+          else if (parsed.status === "ambiguous") ambiguousCount += 1;
+          else if (parsed.status === "invalid") invalidCount += 1;
+        }
+        dates.sort();
+        if (dates.length && ambiguousCount === 0) {
           const earliest = dates[0];
           const latest = dates[dates.length - 1];
           const spanDays = Math.max(0, Math.round((Date.parse(latest) - Date.parse(earliest)) / 86_400_000));
           const freshnessHours = roundTwo(Math.max(0, (now.getTime() - Date.parse(latest)) / 3_600_000));
-          temporalStats = { earliest, latest, spanDays, freshnessHours };
+          temporalStats = { earliest, latest, spanDays, freshnessHours, invalidDateCount: invalidCount, ambiguousDateCount: ambiguousCount };
         } else {
-          temporalStats = { earliest: null, latest: null, spanDays: null, freshnessHours: null };
+          temporalStats = { earliest: null, latest: null, spanDays: null, freshnessHours: null, invalidDateCount: invalidCount, ambiguousDateCount: ambiguousCount };
         }
       } else if (classified.category === "boolean") {
         const trueCount = nonNullValues.filter(v => v === true || String(v).toLowerCase() === "true").length;
         valueHints.booleanTrueRatio = nonNullCount > 0 ? roundTwo(trueCount / nonNullCount) : null;
-      } else if (!isSensitive && (classified.category === "text" || classified.category === "categorical") && distinctCount <= LOW_CARDINALITY_TOKEN_LIMIT) {
-        const safeTokens = [...new Set(
-          nonNullValues.map(isSafeTokenValue).filter((t): t is string => Boolean(t))
-        )].sort().slice(0, LOW_CARDINALITY_TOKEN_LIMIT);
-        if (safeTokens.length) valueHints.safeLowCardinalityTokens = safeTokens;
+      } else if (!isSensitive && (classified.category === "text" || classified.category === "categorical")) {
+        // Reliable text-based date detection for date-like text columns (e.g. Sale_Date stored as TEXT)
+        let promotedTemporal = false;
+        if (nonNullCount > 0 && isDateLikeColumnName(spec.name)) {
+          const evalResult = evaluateTextDateSamples(nonNullValues, now);
+          if (evalResult.temporalStats) {
+            temporalStats = evalResult.temporalStats;
+          }
+          if (evalResult.isReliableDateColumn) {
+            promotedTemporal = true;
+          }
+        }
+        if (promotedTemporal) {
+          classified.category = "temporal";
+        } else if (distinctCount <= LOW_CARDINALITY_TOKEN_LIMIT) {
+          const safeTokens = [...new Set(
+            nonNullValues.map(isSafeTokenValue).filter((t): t is string => Boolean(t))
+          )].sort().slice(0, LOW_CARDINALITY_TOKEN_LIMIT);
+          if (safeTokens.length) valueHints.safeLowCardinalityTokens = safeTokens;
+        }
       }
     }
 
