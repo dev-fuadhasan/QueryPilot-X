@@ -7,13 +7,15 @@ import {
   CalendarClock,
   CheckCircle2,
   Clock,
+  Cloud,
   Download,
-  ExternalLink,
+  FilePlus2,
   FileText,
   Info,
   Save
 } from "lucide-react";
 import type {
+  ManualQuickRange,
   PersistentDailySettings,
   PersistentReportSummary,
   ReportFrequency,
@@ -32,13 +34,25 @@ import {
 } from "./dashboard-helpers";
 import styles from "./DailyAnalysisDashboard.module.css";
 
+const QUICK_EXPORT_RANGES: Array<{ value: Exclude<ManualQuickRange, "custom">; label: string }> = [
+  { value: "last_7_days", label: "Last 7 Days" },
+  { value: "last_30_days", label: "Last 30 Days" },
+  { value: "last_90_days", label: "Last 90 Days" },
+  { value: "last_365_days", label: "Last 365 Days" },
+  { value: "all_history", label: "All Available History" }
+];
+
 type DailyReportPanelProps = {
   settings: PersistentDailySettings | null;
   selectedDataset: string;
   storageStatus: StorageCapabilityStatus | null;
   scheduleSummary: ScheduleRuntimeSummary | null;
+  latestStoredReport?: PersistentReportSummary | null;
   loadingSettings: boolean;
   savingSchedule: boolean;
+  generatingPdf?: boolean;
+  pdfGenerateError?: string | null;
+  pdfGenerateNotice?: string | null;
   downloadingReportId: string | null;
   saveFeedback: { type: "success" | "error"; text: string } | null;
   onSaveSchedule: (payload: {
@@ -47,6 +61,7 @@ type DailyReportPanelProps = {
     scheduledTime: string;
     timezone: string;
   }) => Promise<void>;
+  onGenerateQuickPdf?: (quickRange: Exclude<ManualQuickRange, "custom">) => Promise<void>;
   onDownloadPdf: (report: PersistentReportSummary) => Promise<void>;
 };
 
@@ -55,17 +70,23 @@ export default function DailyReportPanel({
   selectedDataset,
   storageStatus,
   scheduleSummary,
+  latestStoredReport,
   loadingSettings,
   savingSchedule,
+  generatingPdf = false,
+  pdfGenerateError = null,
+  pdfGenerateNotice = null,
   downloadingReportId,
   saveFeedback,
   onSaveSchedule,
+  onGenerateQuickPdf,
   onDownloadPdf
 }: DailyReportPanelProps) {
   const [frequency, setFrequency] = useState<ReportFrequency>(settings?.frequency || "daily");
   const [scheduledTime, setScheduledTime] = useState<string>(settings?.scheduledTime || "00:15");
   const [timezone, setTimezone] = useState<string>(settings?.timezone || "Asia/Dhaka");
   const [autoReportEnabled, setAutoReportEnabled] = useState<boolean>(settings?.autoReportEnabled ?? true);
+  const [quickRange, setQuickRange] = useState<Exclude<ManualQuickRange, "custom">>("last_30_days");
   const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -78,6 +99,7 @@ export default function DailyReportPanel({
 
   const freqOption = getFrequencyOption(frequency);
   const latestAuto = scheduleSummary?.latestAutomaticReport || null;
+  const latestReport = latestStoredReport || latestAuto;
   const displayState = resolveAutoReportDisplayState({
     autoReportEnabled,
     saving: savingSchedule,
@@ -96,6 +118,13 @@ export default function DailyReportPanel({
           : displayState.tone === "critical"
             ? styles.badgeCritical
             : styles.badgeNeutral;
+
+  const cloudStorageReady = Boolean(storageStatus?.pdfProductionReady && storageStatus?.databaseProductionReady);
+  const storageBadgeLabel = storageStatus?.pdfProductionReady
+    ? "Cloud PDF Storage Active"
+    : storageStatus?.pdfBackend === "local_private_fs"
+      ? "Local Dev Storage"
+      : "Storage Not Configured";
 
   const timezoneOptions = COMMON_TIMEZONES.includes(timezone)
     ? COMMON_TIMEZONES
@@ -133,7 +162,7 @@ export default function DailyReportPanel({
               <CalendarClock size={17} /> Daily Report Automation
             </h2>
             <p className={styles.cardSub}>
-              Configure recurring automatic report generation and private PDF archiving for the connected dataset.
+              Configure recurring automatic report generation and private cloud PDF archiving for the connected dataset.
             </p>
           </div>
           <span className={`${styles.badge} ${badgeToneClass}`} role="status">
@@ -154,7 +183,7 @@ export default function DailyReportPanel({
                 <strong>Automatic Report Generation</strong>
                 <small>
                   {autoReportEnabled
-                    ? "Enabled — runs on completed periods without keeping the browser open."
+                    ? "Enabled — runs on completed periods and stores PDFs in private cloud storage."
                     : "Paused — disabling cancels future scheduled execution until re-enabled."}
                 </small>
               </div>
@@ -270,149 +299,153 @@ export default function DailyReportPanel({
         )}
       </form>
 
-      {/* Right column: Actual Schedule Status + Latest Generated Automatic PDF */}
+      {/* Right column: Cloud PDF Storage & Instant Export + Latest Stored PDF */}
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <div className={styles.card}>
           <div className={styles.cardHeader}>
             <div className={styles.cardTitleGroup}>
-              <h3 className={styles.cardTitle}>Scheduler Status &amp; Timing Precision</h3>
-              <p className={styles.cardSub}>Live backend capability and next scheduled execution window.</p>
+              <h3 className={styles.cardTitle}>
+                <Cloud size={15} /> Cloud PDF Archive &amp; Export
+              </h3>
+              <p className={styles.cardSub}>
+                Generated PDFs are stored privately in shared cloud storage and synced across every device.
+              </p>
             </div>
+            <span className={`${styles.badge} ${cloudStorageReady ? styles.badgePositive : styles.badgeInfo}`}>
+              {storageBadgeLabel}
+            </span>
           </div>
 
-          <div className={styles.kvList}>
-            <div className={styles.kvRow}>
-              <span>Automatic Execution</span>
-              <strong>{scheduleSummary?.active ? "Active in production" : autoReportEnabled ? "Saved (production inactive)" : "Paused"}</strong>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className={styles.kvList}>
+              <div className={styles.kvRow}>
+                <span>PDF Cloud Bucket</span>
+                <strong>{storageStatus?.pdfProductionReady ? "Supabase Private Storage (Synced)" : "Local Dev Storage"}</strong>
+              </div>
+              <div className={styles.kvRow}>
+                <span>Report History Database</span>
+                <strong>{storageStatus?.databaseProductionReady ? "Cloud PostgreSQL (Cross-Device)" : "Local SQLite (Dev)"}</strong>
+              </div>
+              {scheduleSummary?.nextExecution && (
+                <div className={styles.kvRow}>
+                  <span>Next Scheduled Run</span>
+                  <strong>
+                    {scheduleSummary.nextExecution.nextNominalRunDate} at {scheduleSummary.nextExecution.nextNominalRunTime}
+                  </strong>
+                </div>
+              )}
             </div>
-            <div className={styles.kvRow}>
-              <span>Next Nominal Run</span>
-              <strong>
-                {scheduleSummary?.nextExecution
-                  ? `${scheduleSummary.nextExecution.nextNominalRunDate} at ${scheduleSummary.nextExecution.nextNominalRunTime} (${scheduleSummary.nextExecution.timezone})`
-                  : "Paused"}
-              </strong>
-            </div>
-            <div className={styles.kvRow}>
-              <span>Next Covered Period</span>
-              <strong>
-                {scheduleSummary?.nextExecution
-                  ? `${scheduleSummary.nextExecution.targetPeriod.periodStart} to ${scheduleSummary.nextExecution.targetPeriod.periodEnd}`
-                  : "None"}
-              </strong>
-            </div>
-            <div className={styles.kvRow}>
-              <span>Trigger Engine</span>
-              <strong>
-                {scheduleSummary?.providerStatus.engine === "vercel_schedules"
-                  ? "Vercel Schedules (Dynamic)"
-                  : scheduleSummary?.providerStatus.engine === "vercel_hobby_daily_cron"
-                    ? "Vercel Hobby Daily Cron (15 18 * * * UTC)"
-                    : "Local Storage Only (Unconfigured in Prod)"}
-              </strong>
-            </div>
+
+            {onGenerateQuickPdf && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 10, borderTop: "1px solid #edf3f2" }}>
+                <div className={styles.fieldGroup}>
+                  <label htmlFor="qp-quick-pdf-range" className={styles.fieldLabel}>
+                    Generate &amp; Store PDF Now
+                  </label>
+                  <select
+                    id="qp-quick-pdf-range"
+                    className={styles.selectInput}
+                    value={quickRange}
+                    disabled={generatingPdf}
+                    onChange={event => setQuickRange(event.target.value as Exclude<ManualQuickRange, "custom">)}
+                  >
+                    {QUICK_EXPORT_RANGES.map(opt => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  className={styles.primaryBtn}
+                  disabled={generatingPdf || !selectedDataset}
+                  onClick={() => void onGenerateQuickPdf(quickRange)}
+                >
+                  <FilePlus2 size={14} />
+                  {generatingPdf ? "Generating & Storing PDF..." : "Generate & Save PDF to Cloud"}
+                </button>
+              </div>
+            )}
+
+            {pdfGenerateError && (
+              <div className={styles.errorBanner} role="alert">
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <AlertCircle size={14} /> {pdfGenerateError}
+                </span>
+              </div>
+            )}
+
+            {pdfGenerateNotice && (
+              <div className={styles.successBanner} role="status">
+                <CheckCircle2 size={14} />
+                <span>{pdfGenerateNotice}</span>
+              </div>
+            )}
           </div>
-
-          {scheduleSummary?.providerStatus.precisionNotice && (
-            <div className={styles.warnBanner} style={{ marginTop: 12 }}>
-              <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-              <div>
-                <div>{scheduleSummary.providerStatus.precisionNotice}</div>
-                {scheduleSummary.providerStatus.vercelSchedules.blocker && (
-                  <div style={{ marginTop: 6, fontSize: 11 }}>
-                    <strong>Vercel Schedules Beta:</strong> {scheduleSummary.providerStatus.vercelSchedules.blocker}{" "}
-                    <a
-                      href={scheduleSummary.providerStatus.vercelSchedules.docsUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ color: "inherit", textDecoration: "underline", display: "inline-flex", alignItems: "center", gap: 3 }}
-                    >
-                      Docs <ExternalLink size={10} />
-                    </a>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {storageStatus && storageStatus.schedulerOrgDbMapError && (
-            <div className={styles.warnBanner} style={{ marginTop: 10 }}>
-              <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-              <div>
-                <strong>Background Database Connector:</strong> {storageStatus.schedulerOrgDbMapError}
-              </div>
-            </div>
-          )}
-
-          {storageStatus && storageStatus.missingProductionConfig.length > 0 && (
-            <div className={styles.warnBanner} style={{ marginTop: 10 }}>
-              <AlertCircle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-              <div>
-                <strong>Missing production configuration:</strong>{" "}
-                <code>{storageStatus.missingProductionConfig.join(", ")}</code>
-              </div>
-            </div>
-          )}
         </div>
 
         <div className={styles.card}>
           <div className={styles.cardHeader}>
             <div className={styles.cardTitleGroup}>
               <h3 className={styles.cardTitle}>
-                <FileText size={15} /> Latest Automatic Report
+                <FileText size={15} /> Latest Stored PDF Report
               </h3>
-              <p className={styles.cardSub}>Most recent scheduled report persisted by the backend.</p>
+              <p className={styles.cardSub}>Most recent automatic or manual PDF saved in your archive.</p>
             </div>
           </div>
 
-          {latestAuto ? (
+          {latestReport ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div className={styles.kvList}>
                 <div className={styles.kvRow}>
                   <span>Reporting Period</span>
-                  <strong>{latestAuto.periodStart} to {latestAuto.periodEnd}</strong>
+                  <strong>{latestReport.periodStart} to {latestReport.periodEnd}</strong>
                 </div>
                 <div className={styles.kvRow}>
-                  <span>Frequency</span>
-                  <strong style={{ textTransform: "capitalize" }}>{latestAuto.frequency}</strong>
+                  <span>Report Type</span>
+                  <strong style={{ textTransform: "capitalize" }}>
+                    {latestReport.generationType} · {latestReport.frequency}
+                  </strong>
                 </div>
                 <div className={styles.kvRow}>
                   <span>Generated At</span>
-                  <strong>{formatShortTimestamp(latestAuto.generatedAt, timezone)}</strong>
+                  <strong>{formatShortTimestamp(latestReport.generatedAt, timezone)}</strong>
                 </div>
                 <div className={styles.kvRow}>
                   <span>Domain &amp; Dataset</span>
-                  <strong>{latestAuto.domainName} · {latestAuto.datasetTable}</strong>
+                  <strong>{latestReport.domainName} · {latestReport.datasetTable}</strong>
                 </div>
                 <div className={styles.kvRow}>
                   <span>PDF Status</span>
                   <strong>
-                    {latestAuto.pdfStatus === "generated"
-                      ? `Ready ${latestAuto.pdfSizeBytes ? `(${formatFileSize(latestAuto.pdfSizeBytes)})` : ""}`
-                      : latestAuto.pdfStatus === "failed"
-                        ? "PDF generation failed"
+                    {latestReport.pdfStatus === "generated"
+                      ? `Stored ${latestReport.pdfSizeBytes ? `(${formatFileSize(latestReport.pdfSizeBytes)})` : ""}`
+                      : latestReport.pdfStatus === "failed"
+                        ? "PDF storage failed"
                         : "Not generated yet"}
                   </strong>
                 </div>
               </div>
 
-              {(latestAuto.errorMessage || latestAuto.pdfError) && (
+              {(latestReport.errorMessage || latestReport.pdfError) && (
                 <div className={styles.errorBanner} role="alert">
-                  <span>{latestAuto.errorMessage || latestAuto.pdfError}</span>
+                  <span>{latestReport.errorMessage || latestReport.pdfError}</span>
                 </div>
               )}
 
-              {isReportPdfDownloadable(latestAuto) ? (
+              {isReportPdfDownloadable(latestReport) ? (
                 <button
                   type="button"
                   className={styles.primaryBtn}
-                  disabled={downloadingReportId === latestAuto.id}
-                  onClick={() => void onDownloadPdf(latestAuto)}
+                  disabled={downloadingReportId === latestReport.id}
+                  onClick={() => void onDownloadPdf(latestReport)}
                 >
                   <Download size={14} />
-                  {downloadingReportId === latestAuto.id
+                  {downloadingReportId === latestReport.id
                     ? "Preparing PDF..."
-                    : "Download Latest Automatic PDF"}
+                    : "Download Latest PDF"}
                 </button>
               ) : (
                 <div className={styles.warnBanner} role="status">
@@ -425,9 +458,9 @@ export default function DailyReportPanel({
             </div>
           ) : (
             <div className={styles.emptyBox}>
-              <strong>No automatic report generated yet</strong>
+              <strong>No stored PDF report yet</strong>
               <p>
-                {displayState.detail}
+                Click &ldquo;Generate &amp; Save PDF to Cloud&rdquo; above or enable Daily Report Automation to persist PDFs across all devices.
               </p>
             </div>
           )}

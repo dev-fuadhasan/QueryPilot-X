@@ -184,6 +184,7 @@ export interface PdfStorageAdapter {
   readonly isProductionPersistent: boolean;
   savePdf(input: {
     organizationId: string;
+    storageUserId?: string;
     reportId: string;
     filename: string;
     bytes: Buffer;

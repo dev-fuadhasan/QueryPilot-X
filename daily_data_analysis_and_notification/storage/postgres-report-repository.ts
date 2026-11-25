@@ -189,15 +189,16 @@ export class PostgresReportRepository implements PersistentReportRepository {
   private schemaReadyPromise: Promise<void> | null = null;
 
   constructor(connectionString: string) {
-    if (!connectionString || !/^postgres(?:ql)?:\/\//i.test(connectionString)) {
-      throw new Error("QUERYPILOT_APP_DATABASE_URL must be a valid PostgreSQL connection string.");
+    const cleaned = connectionString.trim().replace(/^["']|["']$/g, "");
+    if (!cleaned || !/^postgres(?:ql)?:\/\//i.test(cleaned)) {
+      throw new Error("DATABASE_URL / QUERYPILOT_APP_DATABASE_URL must be a valid PostgreSQL connection string.");
     }
     this.pool = new Pool({
-      connectionString,
+      connectionString: cleaned,
       max: 5,
       idleTimeoutMillis: 15_000,
       connectionTimeoutMillis: 8_000,
-      ssl: connectionString.includes("localhost") || connectionString.includes("127.0.0.1")
+      ssl: cleaned.includes("localhost") || cleaned.includes("127.0.0.1")
         ? undefined
         : { rejectUnauthorized: false }
     });
@@ -205,7 +206,13 @@ export class PostgresReportRepository implements PersistentReportRepository {
 
   private async ensureSchema(): Promise<void> {
     if (!this.schemaReadyPromise) {
-      this.schemaReadyPromise = this.pool.query(POSTGRES_PERSISTENT_STORAGE_DDL).then(() => undefined);
+      this.schemaReadyPromise = this.pool
+        .query(POSTGRES_PERSISTENT_STORAGE_DDL)
+        .then(() => undefined)
+        .catch(err => {
+          this.schemaReadyPromise = null;
+          throw err;
+        });
     }
     await this.schemaReadyPromise;
   }

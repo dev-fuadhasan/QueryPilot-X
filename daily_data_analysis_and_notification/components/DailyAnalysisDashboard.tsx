@@ -7,6 +7,7 @@ import type { ComparisonPreset } from "../metrics/types";
 import type { ReportArchiveComparisonResult, UnifiedDailyAnalysisResult } from "../intelligence/types";
 import { DEFAULT_ALERT_RULES, sanitizeAlertRules, type AlertRules } from "../notifications";
 import type {
+  ManualQuickRange,
   PersistentDailySettings,
   PersistentReportRecord,
   PersistentReportSummary,
@@ -81,6 +82,9 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
 
   const [readAlertIds, setReadAlertIds] = useState<Set<string>>(() => new Set());
   const [savingAlertRules, setSavingAlertRules] = useState<boolean>(false);
+  const [generatingPdf, setGeneratingPdf] = useState<boolean>(false);
+  const [pdfGenerateError, setPdfGenerateError] = useState<string | null>(null);
+  const [pdfGenerateNotice, setPdfGenerateNotice] = useState<string | null>(null);
   const [downloadingReportId, setDownloadingReportId] = useState<string | null>(null);
   const [pdfDownloadError, setPdfDownloadError] = useState<string | null>(null);
 
@@ -97,6 +101,10 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   );
 
   const availableTables = profile?.tables || [];
+  const currentTableProfile = useMemo(
+    () => availableTables.find(item => item.name === selectedDataset) || null,
+    [availableTables, selectedDataset]
+  );
   const currentUnderstanding = selectedDataset && profile?.tableUnderstandings
     ? profile.tableUnderstandings[selectedDataset] || null
     : null;
@@ -412,6 +420,44 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     }
   }
 
+  async function handleGenerateQuickPdf(quickRange: Exclude<ManualQuickRange, "custom">) {
+    if (generatingPdf || !selectedDataset) return;
+    setGeneratingPdf(true);
+    setPdfGenerateError(null);
+    setPdfGenerateNotice(null);
+    try {
+      const response = await fetch("/api/daily-analysis/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "manual",
+          table: selectedDataset,
+          domain: selectedDomain,
+          quickRange,
+          timezone,
+          overrides: Object.keys(columnOverrides).length ? columnOverrides : undefined,
+          earliestAvailableDate: currentTableProfile?.freshness.earliestDate?.slice(0, 10) || undefined,
+          latestAvailableDate: currentTableProfile?.freshness.latestDate?.slice(0, 10) || undefined
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Could not generate and store the PDF report.");
+      }
+      const created = data.report as PersistentReportRecord;
+      if (created.pdfStatus === "generated") {
+        setPdfGenerateNotice(`PDF saved to cloud archive (${created.periodStart} to ${created.periodEnd}).`);
+      } else {
+        setPdfGenerateError(created.pdfError || "Report metadata saved, but PDF upload did not complete.");
+      }
+      await loadArchiveReports();
+    } catch (error) {
+      setPdfGenerateError(error instanceof Error ? error.message : "Could not generate and store the PDF report.");
+    } finally {
+      setGeneratingPdf(false);
+    }
+  }
+
   async function handleDownloadPdf(report: PersistentReportSummary | PersistentReportRecord, compareWithId?: string) {
     if (downloadingReportId) return;
     setDownloadingReportId(report.id);
@@ -609,17 +655,22 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         onRefreshAll={() => void handleRefreshAll()}
       />
 
-      {/* Daily Report Automation */}
+      {/* Daily Report Automation & Cloud PDF Storage */}
       <DailyReportPanel
         settings={settings}
         selectedDataset={selectedDataset}
         storageStatus={storageStatus}
         scheduleSummary={scheduleSummary}
+        latestStoredReport={archivedReports[0] || scheduleSummary?.latestAutomaticReport || null}
         loadingSettings={loadingSettings}
         savingSchedule={savingSchedule}
+        generatingPdf={generatingPdf}
+        pdfGenerateError={pdfGenerateError}
+        pdfGenerateNotice={pdfGenerateNotice}
         downloadingReportId={downloadingReportId}
         saveFeedback={saveFeedback}
         onSaveSchedule={handleSaveSchedule}
+        onGenerateQuickPdf={handleGenerateQuickPdf}
         onDownloadPdf={report => handleDownloadPdf(report)}
       />
 
