@@ -62,4 +62,5 @@ export async function executeFraudQuery(
   } catch {
     return await queryFraudDatabase(session.dbUrl, sql);
   }
+  
 }
