@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { deriveUserIdFromSession } from "@/lib/storage/session-auth";
 import { addDays, generateAutomaticReport, generateAutomaticReportForDate, generateHistoricalReport, type HistoricalRange } from "@/../daily_data_analysis_and_notification/analysis-service";
@@ -11,17 +12,29 @@ import {
   type BusinessDomainId
 } from "@/../daily_data_analysis_and_notification/profiler";
 import { isValidIsoDate, type ComparisonPreset } from "@/../daily_data_analysis_and_notification/metrics";
+import { runUnifiedDailyAnalysisWithExecutor } from "@/../daily_data_analysis_and_notification/intelligence";
 import {
+  assertValidPdfBuffer,
+  buildPdfMetadataFromRecord,
+  buildReportPdfFilename,
   generateAndPersistManualReport,
   getPersistentReportRepository,
   getStorageCapabilityStatus,
+  renderValidatedPdfForPayload,
+  resolveManualReportPeriod,
   type ManualQuickRange,
   type PersistentReportPdfStatus,
+  type PersistentReportRecord,
   type PersistentReportStatusFilter,
+  type PersistentReportSummary,
   type ReportFrequencyOrManual,
   type ReportGenerationType,
   type ReportHistoryStorageState
 } from "@/../daily_data_analysis_and_notification/storage";
+import {
+  listDailyPdfsFromSharedStorage,
+  uploadDailyPdfToSharedStorage
+} from "@/../daily_data_analysis_and_notification/storage/shared-cloud-storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,6 +47,23 @@ const ALLOWED_MANUAL_RANGES = new Set<ManualQuickRange>([
   "all_history",
   "custom"
 ]);
+
+function mergeCloudReports(
+  repoItems: PersistentReportSummary[],
+  cloudItems: PersistentReportSummary[]
+): PersistentReportSummary[] {
+  const seenKeys = new Set<string>();
+  const merged: PersistentReportSummary[] = [];
+  for (const item of repoItems) {
+    if (item.pdfStorageKey) seenKeys.add(item.pdfStorageKey);
+    merged.push(item);
+  }
+  for (const item of cloudItems) {
+    if (item.pdfStorageKey && seenKeys.has(item.pdfStorageKey)) continue;
+    merged.push(item);
+  }
+  return merged.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt));
+}
 
 export async function GET(request: NextRequest) {
   const access = await readDailyAnalysisSession(request);
@@ -96,7 +126,11 @@ export async function GET(request: NextRequest) {
 
   const includeAllDates = params.get("all") === "true";
   const organizationId = deriveOrganizationId(access.session);
+  const storageUserId = deriveUserIdFromSession(access.session);
   const storageStatus = getStorageCapabilityStatus(organizationId);
+
+  // Always list PDFs stored in the team's shared Supabase Storage bucket (`querypilotx-storage`)
+  const cloudReports = await listDailyPdfsFromSharedStorage(storageUserId, organizationId).catch(() => [] as PersistentReportSummary[]);
 
   try {
     const repository = getPersistentReportRepository();
@@ -116,8 +150,9 @@ export async function GET(request: NextRequest) {
       pageSize
     });
 
+    const combined = mergeCloudReports(result.items, cloudReports);
     let storageState: ReportHistoryStorageState = "ready";
-    if (result.total === 0) {
+    if (combined.length === 0) {
       const unfiltered = await repository.listReports({
         organizationId,
         defaultDays: 0,
@@ -129,12 +164,12 @@ export async function GET(request: NextRequest) {
 
     return access.applyCookie(NextResponse.json(
       {
-        reports: result.items,
+        reports: combined,
         pagination: {
-          total: result.total,
+          total: Math.max(result.total, combined.length),
           page: result.page,
           pageSize: result.pageSize,
-          totalPages: result.totalPages,
+          totalPages: Math.max(1, Math.ceil(Math.max(result.total, combined.length) / pageSize)),
           appliedStartDate: result.appliedStartDate,
           appliedEndDate: result.appliedEndDate
         },
@@ -143,19 +178,40 @@ export async function GET(request: NextRequest) {
       },
       { headers: { "Cache-Control": "no-store" } }
     ));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Persistent report history storage is unavailable.";
-    const isUnavailable = /development mode|not configured|QUERYPILOT_APP_DATABASE_URL/i.test(message);
-    const storageState: ReportHistoryStorageState = isUnavailable ? "storage_unavailable" : "error";
+  } catch {
+    // Fallback cleanly to shared Supabase Storage report listing (no Postgres/SQLite required!)
+    const filteredCloud = cloudReports.filter(item => {
+      if (domainParam && item.domainId !== domainParam) return false;
+      if (generationTypeParam && item.generationType !== generationTypeParam) return false;
+      if (frequencyParam && item.frequency !== frequencyParam) return false;
+      if (search && !`${item.pdfFilename || ""} ${item.domainName} ${item.periodStart} ${item.periodEnd}`.toLowerCase().includes(search.toLowerCase())) {
+        return false;
+      }
+      return true;
+    });
+    const offset = (page - 1) * pageSize;
+    const paged = filteredCloud.slice(offset, offset + pageSize);
+    const storageState: ReportHistoryStorageState = filteredCloud.length > 0
+      ? "ready"
+      : cloudReports.length > 0
+        ? "empty_filtered"
+        : "empty_no_reports";
+
     return access.applyCookie(NextResponse.json(
       {
-        reports: [],
-        pagination: { total: 0, page, pageSize, totalPages: 1, appliedStartDate: startDate || null, appliedEndDate: endDate || null },
+        reports: paged,
+        pagination: {
+          total: filteredCloud.length,
+          page,
+          pageSize,
+          totalPages: Math.max(1, Math.ceil(filteredCloud.length / pageSize)),
+          appliedStartDate: startDate || null,
+          appliedEndDate: endDate || null
+        },
         storageStatus,
-        storageState,
-        error: message
+        storageState
       },
-      { status: isUnavailable ? 503 : 500, headers: { "Cache-Control": "no-store" } }
+      { headers: { "Cache-Control": "no-store" } }
     ));
   }
 }
@@ -171,7 +227,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "A valid JSON body is required." }, { status: 400 });
   }
 
-  // Stage 4 Multi-Domain Manual Report Generation with durable persistence & private PDF storage
+  // Stage 4+ Multi-Domain Manual Report Generation with shared cloud PDF storage
   if (body.mode === "manual") {
     const table = typeof body.table === "string" ? body.table.trim() : "";
     if (!table || !isValidIdentifier(table)) {
@@ -205,37 +261,38 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    try {
-      const organizationId = deriveOrganizationId(access.session);
-      const repository = getPersistentReportRepository();
-      const executor = createSessionQueryExecutor(access.session);
+    const organizationId = deriveOrganizationId(access.session);
+    const storageUserId = deriveUserIdFromSession(access.session);
+    const executor = createSessionQueryExecutor(access.session);
 
-      let earliestAvailableDate = typeof body.earliestAvailableDate === "string" && isValidIsoDate(body.earliestAvailableDate.trim())
-        ? body.earliestAvailableDate.trim()
-        : null;
-      let latestAvailableDate = typeof body.latestAvailableDate === "string" && isValidIsoDate(body.latestAvailableDate.trim())
-        ? body.latestAvailableDate.trim()
-        : null;
+    let earliestAvailableDate = typeof body.earliestAvailableDate === "string" && isValidIsoDate(body.earliestAvailableDate.trim())
+      ? body.earliestAvailableDate.trim()
+      : null;
+    let latestAvailableDate = typeof body.latestAvailableDate === "string" && isValidIsoDate(body.latestAvailableDate.trim())
+      ? body.latestAvailableDate.trim()
+      : null;
 
-      if (quickRange === "all_history" && (!earliestAvailableDate || !latestAvailableDate)) {
-        try {
-          const tableProfile = await profileConnectedDatabase(access.session, {
-            selectedDomain: domainId || null,
-            tableNames: [table]
-          });
-          const profiledTable = tableProfile.tables.find(t => t.name === table);
-          if (profiledTable?.freshness.earliestDate) {
-            earliestAvailableDate = earliestAvailableDate || profiledTable.freshness.earliestDate.slice(0, 10);
-          }
-          if (profiledTable?.freshness.latestDate) {
-            latestAvailableDate = latestAvailableDate || profiledTable.freshness.latestDate.slice(0, 10);
-          }
-        } catch {
-          // Proceed with safe defaults if freshness bounds cannot be pre-fetched
+    if (quickRange === "all_history" && (!earliestAvailableDate || !latestAvailableDate)) {
+      try {
+        const tableProfile = await profileConnectedDatabase(access.session, {
+          selectedDomain: domainId || null,
+          tableNames: [table]
+        });
+        const profiledTable = tableProfile.tables.find(t => t.name === table);
+        if (profiledTable?.freshness.earliestDate) {
+          earliestAvailableDate = earliestAvailableDate || profiledTable.freshness.earliestDate.slice(0, 10);
         }
+        if (profiledTable?.freshness.latestDate) {
+          latestAvailableDate = latestAvailableDate || profiledTable.freshness.latestDate.slice(0, 10);
+        }
+      } catch {
+        // Proceed with safe defaults
       }
+    }
 
-      const storageUserId = deriveUserIdFromSession(access.session);
+    try {
+      // First try full repository + shared PDF storage persistence (Postgres in prod or SQLite in dev)
+      const repository = getPersistentReportRepository();
       const { record, downloadUrl } = await generateAndPersistManualReport({
         organizationId,
         ownerRef: access.session.projectName || access.session.projectRef || storageUserId,
@@ -258,23 +315,119 @@ export async function POST(request: NextRequest) {
         { report: record, downloadUrl },
         { status: 201, headers: { "Cache-Control": "no-store" } }
       ));
-    } catch (error) {
-      const organizationId = deriveOrganizationId(access.session);
-      const storageStatus = getStorageCapabilityStatus(organizationId);
-      const message = error instanceof Error ? error.message : "Could not generate manual report.";
-      const isUnavailable = /development mode|not configured|QUERYPILOT_APP_DATABASE_URL/i.test(message);
-      return NextResponse.json(
-        {
-          error: message,
-          storageState: isUnavailable ? "storage_unavailable" : "error",
-          storageStatus
-        },
-        { status: isUnavailable ? 503 : 400 }
-      );
+    } catch (repoError) {
+      const repoMsg = repoError instanceof Error ? repoError.message : "";
+      const isRepoUnavailable = /development mode|not configured|QUERYPILOT_APP_DATABASE_URL|DATABASE_URL/i.test(repoMsg);
+      if (!isRepoUnavailable) {
+        return NextResponse.json(
+          { error: repoMsg || "Could not generate manual report.", storageStatus: getStorageCapabilityStatus(organizationId) },
+          { status: 400 }
+        );
+      }
+
+      // Direct shared Supabase Storage mode (no Postgres/SQLite needed — uses src/lib/storage/service.ts!)
+      try {
+        const tz = typeof body.timezone === "string" && body.timezone.trim() ? body.timezone.trim() : "Asia/Dhaka";
+        const { periodStart, periodEnd, reportingDate } = resolveManualReportPeriod({
+          quickRange,
+          startDate: typeof body.startDate === "string" ? body.startDate : undefined,
+          endDate: typeof body.endDate === "string" ? body.endDate : undefined,
+          timezone: tz,
+          earliestAvailableDate,
+          latestAvailableDate
+        });
+
+        const unified = await runUnifiedDailyAnalysisWithExecutor(executor, table, {
+          domainId,
+          periodStart,
+          periodEnd,
+          timezone: tz,
+          comparisonPreset: typeof body.comparisonPreset === "string"
+            ? body.comparisonPreset as ComparisonPreset
+            : quickRange === "all_history"
+              ? "none"
+              : "previous_30_days",
+          overrides: Object.keys(overrides).length ? overrides : undefined
+        });
+
+        const reportId = randomUUID();
+        const summaryText = unified.tools.intelligenceBrief?.executiveSummary
+          || `${unified.domainName} manual report (${periodStart} to ${periodEnd})`;
+
+        const record: PersistentReportRecord = {
+          id: `cloud_${reportId.slice(0, 8)}`,
+          organizationId,
+          ownerRef: storageUserId,
+          domainId: unified.domainId,
+          domainName: unified.domainName,
+          datasetTable: unified.tableName,
+          reportingDate,
+          periodStart,
+          periodEnd,
+          comparisonStart: unified.comparisonPeriod?.start ?? null,
+          comparisonEnd: unified.comparisonPeriod?.end ?? null,
+          comparisonPreset: unified.comparisonPeriod?.preset ?? null,
+          frequency: "manual",
+          generationType: "manual",
+          executionKey: null,
+          status: "generated",
+          summaryText,
+          reportPayload: unified as unknown as Record<string, unknown>,
+          pdfStatus: "not_generated",
+          pdfStorageKey: null,
+          pdfFilename: null,
+          pdfGeneratedAt: null,
+          pdfSizeBytes: null,
+          pdfError: null,
+          errorMessage: null,
+          generatedAt: unified.generatedAt,
+          createdAt: unified.generatedAt
+        };
+
+        const filename = buildReportPdfFilename(record);
+        const pdfBytes = await renderValidatedPdfForPayload(record.reportPayload, "historical", {
+          metadata: buildPdfMetadataFromRecord(record, access.session.projectName || organizationId, quickRange)
+        });
+        assertValidPdfBuffer(pdfBytes);
+
+        const uploaded = await uploadDailyPdfToSharedStorage({
+          userId: storageUserId,
+          filename,
+          bytes: pdfBytes,
+          metadata: {
+            domainId: record.domainId,
+            datasetTable: record.datasetTable,
+            periodStart,
+            periodEnd,
+            generationType: "manual"
+          }
+        });
+
+        record.id = `cloud_${uploaded.fileId}`;
+        record.pdfStatus = "generated";
+        record.pdfStorageKey = uploaded.storageKey;
+        record.pdfFilename = uploaded.filename;
+        record.pdfGeneratedAt = uploaded.createdAt;
+        record.pdfSizeBytes = uploaded.sizeBytes;
+
+        return access.applyCookie(NextResponse.json(
+          {
+            report: record,
+            downloadUrl: `/api/storage/download?key=${encodeURIComponent(uploaded.storageKey)}`
+          },
+          { status: 201, headers: { "Cache-Control": "no-store" } }
+        ));
+      } catch (cloudError) {
+        const message = cloudError instanceof Error ? cloudError.message : "Could not generate and upload PDF report.";
+        return NextResponse.json(
+          { error: message, storageStatus: getStorageCapabilityStatus(organizationId) },
+          { status: 500 }
+        );
+      }
     }
   }
 
-  // Legacy Sales report generation (100% preserved for existing DailyAnalysisDashboard compatibility)
+  // Legacy Sales report generation (100% preserved for compatibility)
   try {
     const selection = body.dataset && typeof body.dataset === "object" ? body.dataset as DatasetSelection : { table: "daily_sales_orders" };
     if (typeof selection.table !== "string" || !selection.table) return NextResponse.json({ error: "Select a Supabase table." }, { status: 400 });

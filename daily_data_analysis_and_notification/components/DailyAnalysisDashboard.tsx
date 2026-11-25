@@ -572,8 +572,11 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     setDownloadingReportId(report.id);
     setPdfDownloadError(null);
     try {
-      const query = compareWithId ? `?compareWith=${encodeURIComponent(compareWithId)}` : "";
-      const response = await fetch(`/api/daily-analysis/reports/${encodeURIComponent(report.id)}/pdf${query}`, {
+      const isCloudDirect = !compareWithId && report.id.startsWith("cloud_") && Boolean(report.pdfStorageKey);
+      const endpoint = isCloudDirect && report.pdfStorageKey
+        ? `/api/storage/download?key=${encodeURIComponent(report.pdfStorageKey)}`
+        : `/api/daily-analysis/reports/${encodeURIComponent(report.id)}/pdf${compareWithId ? `?compareWith=${encodeURIComponent(compareWithId)}` : ""}`;
+      const response = await fetch(endpoint, {
         method: "GET",
         cache: "no-store"
       });
