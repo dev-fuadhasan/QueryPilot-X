@@ -123,7 +123,7 @@ export default function DailyReportPanel({
             ? styles.badgeCritical
             : styles.badgeNeutral;
 
-  const cloudStorageReady = Boolean(storageStatus?.pdfProductionReady && storageStatus?.databaseProductionReady);
+  const cloudStorageReady = Boolean(storageStatus?.pdfProductionReady);
   const storageBadgeLabel = storageStatus?.pdfProductionReady
     ? "Cloud PDF Storage Active"
     : storageStatus?.pdfBackend === "local_private_fs"
@@ -340,8 +340,8 @@ export default function DailyReportPanel({
                 <strong>{storageStatus?.pdfProductionReady ? "Supabase Private Storage (Synced)" : "Local Dev Storage"}</strong>
               </div>
               <div className={styles.kvRow}>
-                <span>Report History Database</span>
-                <strong>{storageStatus?.databaseProductionReady ? "Cloud PostgreSQL (Cross-Device)" : "Local SQLite (Dev)"}</strong>
+                <span>Cross-Device Archive</span>
+                <strong>{storageStatus?.pdfProductionReady ? "Enabled via Shared Storage" : "Local Dev Mode"}</strong>
               </div>
               {scheduleSummary?.nextExecution && (
                 <div className={styles.kvRow}>

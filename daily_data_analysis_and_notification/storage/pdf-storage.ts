@@ -225,6 +225,7 @@ export function resolveSharedPdfStorageEnv(): {
   const serviceRoleKey = (
     process.env.QUERYPILOT_STORAGE_SUPABASE_SERVICE_ROLE_KEY
     || process.env.SUPABASE_SERVICE_ROLE_KEY
+    || process.env.QUERYPILOT_CORE_SUPABASE_ANON_KEY
     || ""
   ).trim();
   const explicitBucket = (process.env.QUERYPILOT_STORAGE_BUCKET || "").trim();
