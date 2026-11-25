@@ -38,7 +38,6 @@ export function getStorageConfig(): StorageConfig {
   const supabaseUrl = (
     process.env.QUERYPILOT_STORAGE_SUPABASE_URL ||
     process.env.QUERYPILOT_CORE_SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_QUERYPILOT_CORE_SUPABASE_URL ||
     ""
   ).trim();
 
@@ -51,7 +50,6 @@ export function getStorageConfig(): StorageConfig {
 
   const anonKey = (
     process.env.QUERYPILOT_CORE_SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_QUERYPILOT_CORE_SUPABASE_ANON_KEY ||
     ""
   ).trim();
 
