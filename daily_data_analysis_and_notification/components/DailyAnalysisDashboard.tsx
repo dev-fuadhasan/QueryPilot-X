@@ -1,27 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Activity,
-  AlertCircle,
-  Archive,
-  ArrowLeft,
-  CalendarClock,
-  Clock,
-  FileSpreadsheet,
-  TrendingUp
-} from "lucide-react";
+import { AlertCircle, ArrowLeft, Clock } from "lucide-react";
 import type { BusinessDomainId, DatabaseProfile } from "../profiler/types";
-import type { ComparisonPreset, DynamicAnalysisResult } from "../metrics/types";
+import type { ComparisonPreset } from "../metrics/types";
 import type { ReportArchiveComparisonResult, UnifiedDailyAnalysisResult } from "../intelligence/types";
 import { DEFAULT_ALERT_RULES, sanitizeAlertRules, type AlertRules } from "../notifications";
 import type {
-  ManualQuickRange,
   PersistentDailySettings,
   PersistentReportRecord,
   PersistentReportSummary,
   ReportFrequency,
-  ReportHistoryStorageState,
   StorageCapabilityStatus
 } from "../storage/types";
 import type { ScheduleRuntimeSummary } from "../storage/schedule-provider";
@@ -30,16 +19,11 @@ import {
   createStaleResetSnapshot,
   DEFAULT_REPORT_HISTORY_FILTERS,
   formatShortTimestamp,
-  mergeToolAlertsWithReadState,
-  type DashboardSectionTab,
-  type ReportHistoryFilterState
+  mergeToolAlertsWithReadState
 } from "./dashboard-helpers";
 import DomainDatasetBar from "./DomainDatasetBar";
 import DailyReportPanel from "./DailyReportPanel";
-import ManualReportPanel from "./ManualReportPanel";
 import DailyToolsSection from "./DailyToolsSection";
-import HistoricalDashboardPanel from "./HistoricalDashboardPanel";
-import ReportHistoryPanel, { type ReportHistoryPagination } from "./ReportHistoryPanel";
 import styles from "./DailyAnalysisDashboard.module.css";
 
 type Props = { onBack: () => void };
@@ -65,17 +49,7 @@ function saveReadAlertIds(ids: Set<string>) {
   }
 }
 
-const DEFAULT_PAGINATION: ReportHistoryPagination = {
-  total: 0,
-  page: 1,
-  pageSize: DEFAULT_REPORT_HISTORY_FILTERS.pageSize,
-  totalPages: 1,
-  appliedStartDate: null,
-  appliedEndDate: null
-};
-
 export default function DailyAnalysisDashboard({ onBack }: Props) {
-  const [activeTab, setActiveTab] = useState<DashboardSectionTab>("daily_report");
   const [selectedDomain, setSelectedDomain] = useState<BusinessDomainId>("sales_ecommerce");
   const [selectedDataset, setSelectedDataset] = useState<string>("");
   const [columnOverrides, setColumnOverrides] = useState<Record<string, string>>({});
@@ -92,39 +66,18 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   const [savingSchedule, setSavingSchedule] = useState<boolean>(false);
   const [saveFeedback, setSaveFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  // Unified Daily Intelligence state (7 Daily Analysis Tools)
+  // Unified Daily Intelligence state (7 Daily Analysis Tools rendered directly as cards)
   const [intelligence, setIntelligence] = useState<UnifiedDailyAnalysisResult | null>(null);
   const [loadingIntelligence, setLoadingIntelligence] = useState<boolean>(false);
   const [intelligenceError, setIntelligenceError] = useState<string | null>(null);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
 
-  // Stage 7 Dynamic 30-Day Historical Dashboard state
-  const [historicalRange, setHistoricalRange] = useState<ManualQuickRange>("last_30_days");
-  const [historicalCustomStart, setHistoricalCustomStart] = useState<string>("");
-  const [historicalCustomEnd, setHistoricalCustomEnd] = useState<string>("");
-  const [historicalAnalysis, setHistoricalAnalysis] = useState<DynamicAnalysisResult | null>(null);
-  const [loadingHistorical, setLoadingHistorical] = useState<boolean>(false);
-  const [historicalError, setHistoricalError] = useState<string | null>(null);
-  const [historicalRefreshedAt, setHistoricalRefreshedAt] = useState<string | null>(null);
-
-  // Manual Report state
-  const [generatingManual, setGeneratingManual] = useState<boolean>(false);
-  const [manualError, setManualError] = useState<string | null>(null);
-  const [manualResult, setManualResult] = useState<PersistentReportRecord | null>(null);
-
-  // Stage 7 Complete Report History & Comparison state
-  const [historyFilters, setHistoryFilters] = useState<ReportHistoryFilterState>(DEFAULT_REPORT_HISTORY_FILTERS);
+  // Archived reports & comparison state (Tool #7 card)
   const [archivedReports, setArchivedReports] = useState<PersistentReportSummary[]>([]);
-  const [historyPagination, setHistoryPagination] = useState<ReportHistoryPagination>(DEFAULT_PAGINATION);
   const [loadingArchive, setLoadingArchive] = useState<boolean>(false);
-  const [historyStorageState, setHistoryStorageState] = useState<ReportHistoryStorageState>("ready");
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const [historyWarning, setHistoryWarning] = useState<string | null>(null);
   const [archiveComparison, setArchiveComparison] = useState<ReportArchiveComparisonResult | null>(null);
   const [comparingArchive, setComparingArchive] = useState<boolean>(false);
   const [archiveCompareError, setArchiveCompareError] = useState<string | null>(null);
-  const [inspectedReport, setInspectedReport] = useState<PersistentReportRecord | null>(null);
-  const [loadingInspect, setLoadingInspect] = useState<boolean>(false);
 
   const [readAlertIds, setReadAlertIds] = useState<Set<string>>(() => new Set());
   const [savingAlertRules, setSavingAlertRules] = useState<boolean>(false);
@@ -134,7 +87,6 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   // Request sequence guards prevent stale async responses from flashing after a domain/dataset switch
   const profileSeqRef = useRef(0);
   const intelSeqRef = useRef(0);
-  const histSeqRef = useRef(0);
   const archiveSeqRef = useRef(0);
   const initializedRef = useRef(false);
 
@@ -145,10 +97,6 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   );
 
   const availableTables = profile?.tables || [];
-  const currentTableProfile = useMemo(
-    () => availableTables.find(item => item.name === selectedDataset) || null,
-    [availableTables, selectedDataset]
-  );
   const currentUnderstanding = selectedDataset && profile?.tableUnderstandings
     ? profile.tableUnderstandings[selectedDataset] || null
     : null;
@@ -158,13 +106,11 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     [intelligence?.tools.alerts, readAlertIds]
   );
 
-  const loadArchiveReports = useCallback(async (overrideFilters?: ReportHistoryFilterState) => {
+  const loadArchiveReports = useCallback(async () => {
     const seq = ++archiveSeqRef.current;
-    const activeFilters = overrideFilters || historyFilters;
     setLoadingArchive(true);
-    setHistoryError(null);
     try {
-      const qs = buildReportHistoryQueryString(activeFilters);
+      const qs = buildReportHistoryQueryString(DEFAULT_REPORT_HISTORY_FILTERS);
       const response = await fetch(`/api/daily-analysis/reports?${qs}`, { cache: "no-store" });
       const data = await response.json();
       if (seq !== archiveSeqRef.current) return;
@@ -172,37 +118,20 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         setStorageStatus(data.storageStatus as StorageCapabilityStatus);
       }
       if (!response.ok) {
-        const nextState: ReportHistoryStorageState =
-          data.storageState === "storage_unavailable" || response.status === 503
-            ? "storage_unavailable"
-            : "error";
         setArchivedReports([]);
-        setHistoryPagination(DEFAULT_PAGINATION);
-        setHistoryStorageState(nextState);
-        setHistoryError(data.error || "Could not load persisted report history.");
-        setHistoryWarning(null);
         return;
       }
       const items = Array.isArray(data.reports) ? (data.reports as PersistentReportSummary[]) : [];
       setArchivedReports(items);
-      if (data.pagination) {
-        setHistoryPagination(data.pagination as ReportHistoryPagination);
-      }
-      setHistoryStorageState(
-        (data.storageState as ReportHistoryStorageState | undefined)
-        || (items.length > 0 ? "ready" : "empty_no_reports")
-      );
-      setHistoryWarning(typeof data.warning === "string" ? data.warning : null);
-    } catch (error) {
+    } catch {
       if (seq !== archiveSeqRef.current) return;
-      setHistoryStorageState("error");
-      setHistoryError(error instanceof Error ? error.message : "Could not load persisted report history.");
+      setArchivedReports([]);
     } finally {
       if (seq === archiveSeqRef.current) {
         setLoadingArchive(false);
       }
     }
-  }, [historyFilters]);
+  }, []);
 
   const loadProfile = useCallback(async (domain: BusinessDomainId, preferredTable?: string | null) => {
     const seq = ++profileSeqRef.current;
@@ -285,58 +214,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     }
   }, []);
 
-  const loadHistoricalAnalysis = useCallback(async (params: {
-    domain: BusinessDomainId;
-    table: string;
-    quickRange: ManualQuickRange;
-    startDate?: string;
-    endDate?: string;
-    overrides: Record<string, string>;
-    tz: string;
-    earliestAvailableDate?: string | null;
-    latestAvailableDate?: string | null;
-  }) => {
-    if (!params.table) return;
-    if (params.quickRange === "custom" && (!params.startDate || !params.endDate)) return;
-    const seq = ++histSeqRef.current;
-    setLoadingHistorical(true);
-    setHistoricalError(null);
-    try {
-      const response = await fetch("/api/daily-analysis/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          table: params.table,
-          domain: params.domain,
-          quickRange: params.quickRange,
-          periodStart: params.quickRange === "custom" ? params.startDate : undefined,
-          periodEnd: params.quickRange === "custom" ? params.endDate : undefined,
-          timezone: params.tz,
-          overrides: Object.keys(params.overrides).length ? params.overrides : undefined,
-          earliestAvailableDate: params.earliestAvailableDate?.slice(0, 10) || undefined,
-          latestAvailableDate: params.latestAvailableDate?.slice(0, 10) || undefined
-        })
-      });
-      const data = await response.json();
-      if (seq !== histSeqRef.current) return;
-      if (!response.ok) {
-        throw new Error(data.error || "Could not load historical analysis.");
-      }
-      const nextAnalysis = data.analysis as DynamicAnalysisResult;
-      setHistoricalAnalysis(nextAnalysis);
-      setHistoricalRefreshedAt(nextAnalysis.generatedAt || new Date().toISOString());
-    } catch (error) {
-      if (seq !== histSeqRef.current) return;
-      setHistoricalAnalysis(null);
-      setHistoricalError(error instanceof Error ? error.message : "Could not load historical analysis.");
-    } finally {
-      if (seq === histSeqRef.current) {
-        setLoadingHistorical(false);
-      }
-    }
-  }, []);
-
-  // Initial load: settings + profile + archive + intelligence + default 30-day historical dashboard
+  // Initial load: settings + profile + archive + intelligence for all 7 tool cards
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
@@ -375,34 +253,22 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
 
       const [profileResult] = await Promise.all([
         loadProfile(initialDomain, initialTable),
-        loadArchiveReports(DEFAULT_REPORT_HISTORY_FILTERS)
+        loadArchiveReports()
       ]);
 
       const tableToRun = profileResult?.resolvedTable || initialTable || "";
-      const profiledTable = profileResult?.nextProfile.tables.find(t => t.name === tableToRun) || null;
       if (tableToRun) {
-        await Promise.all([
-          loadIntelligence({
-            domain: initialDomain,
-            table: tableToRun,
-            preset: "previous_day",
-            overrides: initialOverrides,
-            tz: initialTz,
-            rules: initialRules
-          }),
-          loadHistoricalAnalysis({
-            domain: initialDomain,
-            table: tableToRun,
-            quickRange: "last_30_days",
-            overrides: initialOverrides,
-            tz: initialTz,
-            earliestAvailableDate: profiledTable?.freshness.earliestDate || null,
-            latestAvailableDate: profiledTable?.freshness.latestDate || null
-          })
-        ]);
+        await loadIntelligence({
+          domain: initialDomain,
+          table: tableToRun,
+          preset: "previous_day",
+          overrides: initialOverrides,
+          tz: initialTz,
+          rules: initialRules
+        });
       }
     })();
-  }, [loadArchiveReports, loadHistoricalAnalysis, loadIntelligence, loadProfile]);
+  }, [loadArchiveReports, loadIntelligence, loadProfile]);
 
   // Compatible event-driven refresh hook
   useEffect(() => {
@@ -416,17 +282,6 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         tz: timezone,
         rules: alertRules
       });
-      void loadHistoricalAnalysis({
-        domain: selectedDomain,
-        table: selectedDataset,
-        quickRange: historicalRange,
-        startDate: historicalCustomStart,
-        endDate: historicalCustomEnd,
-        overrides: columnOverrides,
-        tz: timezone,
-        earliestAvailableDate: currentTableProfile?.freshness.earliestDate || null,
-        latestAvailableDate: currentTableProfile?.freshness.latestDate || null
-      });
       void loadArchiveReports();
     };
     window.addEventListener("querypilot:daily-analysis-refresh", handleRefreshEvent);
@@ -435,13 +290,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     alertRules,
     columnOverrides,
     comparisonPreset,
-    currentTableProfile?.freshness.earliestDate,
-    currentTableProfile?.freshness.latestDate,
-    historicalCustomEnd,
-    historicalCustomStart,
-    historicalRange,
     loadArchiveReports,
-    loadHistoricalAnalysis,
     loadIntelligence,
     selectedDataset,
     selectedDomain,
@@ -451,12 +300,8 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   function resetStaleResults() {
     const reset = createStaleResetSnapshot();
     setIntelligence(reset.intelligence);
-    setHistoricalAnalysis(reset.historicalAnalysis);
-    setManualResult(reset.manualResult);
     setArchiveComparison(reset.archiveComparison);
-    setManualError(null);
     setIntelligenceError(null);
-    setHistoricalError(null);
     setArchiveCompareError(null);
   }
 
@@ -467,29 +312,15 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     setColumnOverrides({});
     const result = await loadProfile(nextDomain, selectedDataset);
     const nextTable = result?.resolvedTable || selectedDataset;
-    const profiledTable = result?.nextProfile.tables.find(t => t.name === nextTable) || null;
     if (nextTable) {
-      await Promise.all([
-        loadIntelligence({
-          domain: nextDomain,
-          table: nextTable,
-          preset: comparisonPreset,
-          overrides: {},
-          tz: timezone,
-          rules: alertRules
-        }),
-        loadHistoricalAnalysis({
-          domain: nextDomain,
-          table: nextTable,
-          quickRange: historicalRange,
-          startDate: historicalCustomStart,
-          endDate: historicalCustomEnd,
-          overrides: {},
-          tz: timezone,
-          earliestAvailableDate: profiledTable?.freshness.earliestDate || null,
-          latestAvailableDate: profiledTable?.freshness.latestDate || null
-        })
-      ]);
+      await loadIntelligence({
+        domain: nextDomain,
+        table: nextTable,
+        preset: comparisonPreset,
+        overrides: {},
+        tz: timezone,
+        rules: alertRules
+      });
     }
   }
 
@@ -498,29 +329,15 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     resetStaleResults();
     setSelectedDataset(nextTable);
     setColumnOverrides({});
-    const profiledTable = availableTables.find(t => t.name === nextTable) || null;
     if (nextTable) {
-      await Promise.all([
-        loadIntelligence({
-          domain: selectedDomain,
-          table: nextTable,
-          preset: comparisonPreset,
-          overrides: {},
-          tz: timezone,
-          rules: alertRules
-        }),
-        loadHistoricalAnalysis({
-          domain: selectedDomain,
-          table: nextTable,
-          quickRange: historicalRange,
-          startDate: historicalCustomStart,
-          endDate: historicalCustomEnd,
-          overrides: {},
-          tz: timezone,
-          earliestAvailableDate: profiledTable?.freshness.earliestDate || null,
-          latestAvailableDate: profiledTable?.freshness.latestDate || null
-        })
-      ]);
+      await loadIntelligence({
+        domain: selectedDomain,
+        table: nextTable,
+        preset: comparisonPreset,
+        overrides: {},
+        tz: timezone,
+        rules: alertRules
+      });
     }
   }
 
@@ -536,62 +353,8 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         tz: timezone,
         rules: alertRules
       }),
-      loadHistoricalAnalysis({
-        domain: selectedDomain,
-        table: selectedDataset,
-        quickRange: historicalRange,
-        startDate: historicalCustomStart,
-        endDate: historicalCustomEnd,
-        overrides: columnOverrides,
-        tz: timezone,
-        earliestAvailableDate: currentTableProfile?.freshness.earliestDate || null,
-        latestAvailableDate: currentTableProfile?.freshness.latestDate || null
-      }),
       loadArchiveReports()
     ]);
-  }
-
-  async function handleHistoricalRangeChange(input: {
-    quickRange: ManualQuickRange;
-    startDate?: string;
-    endDate?: string;
-  }) {
-    setHistoricalRange(input.quickRange);
-    if (input.startDate !== undefined) setHistoricalCustomStart(input.startDate);
-    if (input.endDate !== undefined) setHistoricalCustomEnd(input.endDate);
-    if (!selectedDataset) return;
-    if (input.quickRange === "custom" && (!input.startDate || !input.endDate)) return;
-
-    await loadHistoricalAnalysis({
-      domain: selectedDomain,
-      table: selectedDataset,
-      quickRange: input.quickRange,
-      startDate: input.startDate ?? historicalCustomStart,
-      endDate: input.endDate ?? historicalCustomEnd,
-      overrides: columnOverrides,
-      tz: timezone,
-      earliestAvailableDate: currentTableProfile?.freshness.earliestDate || null,
-      latestAvailableDate: currentTableProfile?.freshness.latestDate || null
-    });
-  }
-
-  async function handleHistoryFiltersChange(nextFilters: ReportHistoryFilterState) {
-    setHistoryFilters(nextFilters);
-    await loadArchiveReports(nextFilters);
-  }
-
-  async function handleInspectReport(reportId: string) {
-    setLoadingInspect(true);
-    try {
-      const response = await fetch(`/api/daily-analysis/reports/${encodeURIComponent(reportId)}`, { cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not load report details.");
-      setInspectedReport(data.report as PersistentReportRecord);
-    } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : "Could not load report details.");
-    } finally {
-      setLoadingInspect(false);
-    }
   }
 
   async function handleComparisonPresetChange(nextPreset: ComparisonPreset) {
@@ -646,44 +409,6 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       });
     } finally {
       setSavingSchedule(false);
-    }
-  }
-
-  async function handleGenerateManualReport(input: {
-    quickRange: ManualQuickRange;
-    startDate?: string;
-    endDate?: string;
-  }) {
-    if (generatingManual) return;
-    setGeneratingManual(true);
-    setManualError(null);
-    try {
-      const response = await fetch("/api/daily-analysis/reports", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "manual",
-          table: selectedDataset,
-          domain: selectedDomain,
-          quickRange: input.quickRange,
-          startDate: input.startDate,
-          endDate: input.endDate,
-          timezone,
-          overrides: Object.keys(columnOverrides).length ? columnOverrides : undefined,
-          earliestAvailableDate: currentTableProfile?.freshness.earliestDate?.slice(0, 10) || undefined,
-          latestAvailableDate: currentTableProfile?.freshness.latestDate?.slice(0, 10) || undefined
-        })
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Could not generate manual report.");
-      }
-      setManualResult(data.report as PersistentReportRecord);
-      await loadArchiveReports();
-    } catch (error) {
-      setManualError(error instanceof Error ? error.message : "Could not generate manual report.");
-    } finally {
-      setGeneratingManual(false);
     }
   }
 
@@ -800,10 +525,10 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
           <button type="button" className={styles.backLink} onClick={onBack}>
             <ArrowLeft size={13} /> Back to Smart Dashboard
           </button>
-          <span className={styles.eyebrow}>DAILY INTELLIGENCE, HISTORICAL ANALYTICS &amp; ARCHIVES</span>
+          <span className={styles.eyebrow}>DAILY REPORT AUTOMATION &amp; LIVE INTELLIGENCE</span>
           <h1 className={styles.pageTitle}>Daily Analysis</h1>
           <p className={styles.pageSubtitle}>
-            Automated Daily/Weekly/Monthly PDF reporting, on-demand manual reports, live multi-domain intelligence, dynamic 30-day historical analytics, and persisted Report History.
+            Automated Daily/Weekly/Monthly PDF reporting and all 7 live Daily Analysis tools displayed directly in one unified view.
           </p>
         </div>
 
@@ -837,74 +562,6 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         </div>
       )}
 
-      {/* Primary 5-section navigation */}
-      <nav className={styles.sectionNav} aria-label="Daily Analysis main sections">
-        <button
-          type="button"
-          className={`${styles.sectionTab} ${activeTab === "daily_report" ? styles.sectionTabActive : ""}`}
-          aria-current={activeTab === "daily_report" ? "page" : undefined}
-          onClick={() => setActiveTab("daily_report")}
-        >
-          <span className={styles.sectionTabIcon}><CalendarClock size={17} /></span>
-          <span className={styles.sectionTabText}>
-            <strong>Daily Report</strong>
-            <small>Automatic PDF schedule</small>
-          </span>
-        </button>
-
-        <button
-          type="button"
-          className={`${styles.sectionTab} ${activeTab === "manual_report" ? styles.sectionTabActive : ""}`}
-          aria-current={activeTab === "manual_report" ? "page" : undefined}
-          onClick={() => setActiveTab("manual_report")}
-        >
-          <span className={styles.sectionTabIcon}><FileSpreadsheet size={17} /></span>
-          <span className={styles.sectionTabText}>
-            <strong>Manual Report</strong>
-            <small>Quick &amp; custom ranges</small>
-          </span>
-        </button>
-
-        <button
-          type="button"
-          className={`${styles.sectionTab} ${activeTab === "tools" ? styles.sectionTabActive : ""}`}
-          aria-current={activeTab === "tools" ? "page" : undefined}
-          onClick={() => setActiveTab("tools")}
-        >
-          <span className={styles.sectionTabIcon}><Activity size={17} /></span>
-          <span className={styles.sectionTabText}>
-            <strong>Analysis Tools</strong>
-            <small>7 intelligence tools</small>
-          </span>
-        </button>
-
-        <button
-          type="button"
-          className={`${styles.sectionTab} ${activeTab === "historical" ? styles.sectionTabActive : ""}`}
-          aria-current={activeTab === "historical" ? "page" : undefined}
-          onClick={() => setActiveTab("historical")}
-        >
-          <span className={styles.sectionTabIcon}><TrendingUp size={17} /></span>
-          <span className={styles.sectionTabText}>
-            <strong>Historical Dashboard</strong>
-            <small>30-day KPIs &amp; trends</small>
-          </span>
-        </button>
-
-        <button
-          type="button"
-          className={`${styles.sectionTab} ${activeTab === "history" ? styles.sectionTabActive : ""}`}
-          aria-current={activeTab === "history" ? "page" : undefined}
-          onClick={() => setActiveTab("history")}
-        >
-          <span className={styles.sectionTabIcon}><Archive size={17} /></span>
-          <span className={styles.sectionTabText}>
-            <strong>Report History</strong>
-            <small>Archive, filter &amp; compare</small>
-          </span>
-        </button>
-      </nav>
-
       {/* Dynamic Business Domain, Dataset & Automatic Column Understanding Bar */}
       <DomainDatasetBar
         selectedDomain={selectedDomain}
@@ -914,7 +571,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         understanding={currentUnderstanding}
         columnOverrides={columnOverrides}
         loadingProfile={loadingProfile}
-        loadingAnalysis={loadingIntelligence || loadingHistorical}
+        loadingAnalysis={loadingIntelligence}
         onDomainChange={domain => void handleDomainChange(domain)}
         onDatasetChange={table => void handleDatasetChange(table)}
         onOverrideChange={(role, columnName) => {
@@ -928,180 +585,67 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         onClearOverrides={() => {
           setColumnOverrides({});
           if (selectedDataset) {
-            void Promise.all([
-              loadIntelligence({
-                domain: selectedDomain,
-                table: selectedDataset,
-                preset: comparisonPreset,
-                overrides: {},
-                tz: timezone,
-                rules: alertRules
-              }),
-              loadHistoricalAnalysis({
-                domain: selectedDomain,
-                table: selectedDataset,
-                quickRange: historicalRange,
-                startDate: historicalCustomStart,
-                endDate: historicalCustomEnd,
-                overrides: {},
-                tz: timezone,
-                earliestAvailableDate: currentTableProfile?.freshness.earliestDate || null,
-                latestAvailableDate: currentTableProfile?.freshness.latestDate || null
-              })
-            ]);
+            void loadIntelligence({
+              domain: selectedDomain,
+              table: selectedDataset,
+              preset: comparisonPreset,
+              overrides: {},
+              tz: timezone,
+              rules: alertRules
+            });
           }
         }}
         onApplyOverrides={() => {
           if (!selectedDataset) return;
-          void Promise.all([
-            loadIntelligence({
-              domain: selectedDomain,
-              table: selectedDataset,
-              preset: comparisonPreset,
-              overrides: columnOverrides,
-              tz: timezone,
-              rules: alertRules
-            }),
-            loadHistoricalAnalysis({
-              domain: selectedDomain,
-              table: selectedDataset,
-              quickRange: historicalRange,
-              startDate: historicalCustomStart,
-              endDate: historicalCustomEnd,
-              overrides: columnOverrides,
-              tz: timezone,
-              earliestAvailableDate: currentTableProfile?.freshness.earliestDate || null,
-              latestAvailableDate: currentTableProfile?.freshness.latestDate || null
-            })
-          ]);
+          void loadIntelligence({
+            domain: selectedDomain,
+            table: selectedDataset,
+            preset: comparisonPreset,
+            overrides: columnOverrides,
+            tz: timezone,
+            rules: alertRules
+          });
         }}
         onRefreshAll={() => void handleRefreshAll()}
       />
 
-      {/* Section 1: Daily Report */}
-      {activeTab === "daily_report" && (
-        <DailyReportPanel
-          settings={settings}
-          selectedDataset={selectedDataset}
-          storageStatus={storageStatus}
-          scheduleSummary={scheduleSummary}
-          loadingSettings={loadingSettings}
-          savingSchedule={savingSchedule}
-          downloadingReportId={downloadingReportId}
-          saveFeedback={saveFeedback}
-          onSaveSchedule={handleSaveSchedule}
-          onDownloadPdf={report => handleDownloadPdf(report)}
-        />
-      )}
+      {/* Daily Report Automation */}
+      <DailyReportPanel
+        settings={settings}
+        selectedDataset={selectedDataset}
+        storageStatus={storageStatus}
+        scheduleSummary={scheduleSummary}
+        loadingSettings={loadingSettings}
+        savingSchedule={savingSchedule}
+        downloadingReportId={downloadingReportId}
+        saveFeedback={saveFeedback}
+        onSaveSchedule={handleSaveSchedule}
+        onDownloadPdf={report => handleDownloadPdf(report)}
+      />
 
-      {/* Section 2: Manual Report */}
-      {activeTab === "manual_report" && (
-        <ManualReportPanel
-          selectedDomain={selectedDomain}
-          selectedDataset={selectedDataset}
-          timezone={timezone}
-          earliestAvailableDate={currentTableProfile?.freshness.earliestDate || null}
-          latestAvailableDate={currentTableProfile?.freshness.latestDate || null}
-          generating={generatingManual}
-          downloadingReportId={downloadingReportId}
-          error={manualError}
-          generatedReport={manualResult}
-          onGenerateManualReport={handleGenerateManualReport}
-          onDownloadPdf={report => handleDownloadPdf(report)}
-        />
-      )}
-
-      {/* Section 3: Seven Daily Analysis Tools */}
-      {activeTab === "tools" && (
-        <DailyToolsSection
-          intelligence={intelligence}
-          loadingIntelligence={loadingIntelligence}
-          intelligenceError={intelligenceError}
-          comparisonPreset={comparisonPreset}
-          onComparisonPresetChange={preset => void handleComparisonPresetChange(preset)}
-          alerts={displayAlerts}
-          alertRules={alertRules}
-          savingAlertRules={savingAlertRules}
-          onToggleAlertRead={handleToggleAlertRead}
-          onMarkAllAlertsRead={handleMarkAllAlertsRead}
-          onSaveAlertRules={handleSaveAlertRules}
-          archivedReports={archivedReports}
-          loadingArchive={loadingArchive}
-          archiveComparison={archiveComparison}
-          comparingArchive={comparingArchive}
-          archiveCompareError={archiveCompareError}
-          downloadingReportId={downloadingReportId}
-          timezone={timezone}
-          onCompareArchivedReports={handleCompareArchivedReports}
-          onDownloadReportPdf={handleDownloadPdf}
-          onOpenReportHistory={() => setActiveTab("history")}
-          onOpenHistoricalDashboard={() => setActiveTab("historical")}
-        />
-      )}
-
-      {/* Section 4: Dynamic 30-Day Historical Dashboard */}
-      {activeTab === "historical" && (
-        <HistoricalDashboardPanel
-          selectedDomain={selectedDomain}
-          selectedDataset={selectedDataset}
-          timezone={timezone}
-          earliestAvailableDate={currentTableProfile?.freshness.earliestDate || null}
-          latestAvailableDate={currentTableProfile?.freshness.latestDate || null}
-          quickRange={historicalRange}
-          customStart={historicalCustomStart}
-          customEnd={historicalCustomEnd}
-          analysis={historicalAnalysis}
-          loading={loadingHistorical}
-          error={historicalError}
-          lastAnalyzedAt={historicalRefreshedAt}
-          onRangeChange={input => void handleHistoricalRangeChange(input)}
-          onRefresh={() => {
-            if (!selectedDataset) return;
-            void loadHistoricalAnalysis({
-              domain: selectedDomain,
-              table: selectedDataset,
-              quickRange: historicalRange,
-              startDate: historicalCustomStart,
-              endDate: historicalCustomEnd,
-              overrides: columnOverrides,
-              tz: timezone,
-              earliestAvailableDate: currentTableProfile?.freshness.earliestDate || null,
-              latestAvailableDate: currentTableProfile?.freshness.latestDate || null
-            });
-          }}
-        />
-      )}
-
-      {/* Section 5: Complete Report History & Archived Report Comparison */}
-      {activeTab === "history" && (
-        <ReportHistoryPanel
-          reports={archivedReports}
-          pagination={historyPagination}
-          filters={historyFilters}
-          loading={loadingArchive}
-          storageState={historyStorageState}
-          storageStatus={storageStatus}
-          error={historyError}
-          warning={historyWarning}
-          timezone={timezone}
-          downloadingReportId={downloadingReportId}
-          comparison={archiveComparison}
-          comparing={comparingArchive}
-          compareError={archiveCompareError}
-          inspectedReport={inspectedReport}
-          loadingInspect={loadingInspect}
-          onFiltersChange={next => void handleHistoryFiltersChange(next)}
-          onRefresh={() => void loadArchiveReports()}
-          onInspectReport={handleInspectReport}
-          onCloseInspect={() => setInspectedReport(null)}
-          onCompareReports={handleCompareArchivedReports}
-          onClearComparison={() => {
-            setArchiveComparison(null);
-            setArchiveCompareError(null);
-          }}
-          onDownloadPdf={handleDownloadPdf}
-        />
-      )}
+      {/* All 7 Daily Analysis Tools rendered directly as expanded cards */}
+      <DailyToolsSection
+        intelligence={intelligence}
+        loadingIntelligence={loadingIntelligence}
+        intelligenceError={intelligenceError}
+        comparisonPreset={comparisonPreset}
+        onComparisonPresetChange={preset => void handleComparisonPresetChange(preset)}
+        alerts={displayAlerts}
+        alertRules={alertRules}
+        savingAlertRules={savingAlertRules}
+        onToggleAlertRead={handleToggleAlertRead}
+        onMarkAllAlertsRead={handleMarkAllAlertsRead}
+        onSaveAlertRules={handleSaveAlertRules}
+        archivedReports={archivedReports}
+        loadingArchive={loadingArchive}
+        archiveComparison={archiveComparison}
+        comparingArchive={comparingArchive}
+        archiveCompareError={archiveCompareError}
+        downloadingReportId={downloadingReportId}
+        timezone={timezone}
+        onCompareArchivedReports={handleCompareArchivedReports}
+        onDownloadReportPdf={handleDownloadPdf}
+      />
     </div>
   );
 }
