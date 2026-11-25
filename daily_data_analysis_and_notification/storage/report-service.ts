@@ -19,7 +19,12 @@ import {
   type UnifiedDailyAnalysisResult
 } from "../intelligence";
 import { sanitizeAlertRules } from "../notifications";
-import { assertValidPdfBuffer, createDefaultPdfStorage, getStorageCapabilityStatus } from "./pdf-storage";
+import {
+  assertValidPdfBuffer,
+  createDefaultPdfStorage,
+  getStorageCapabilityStatus,
+  resolveAppDatabaseUrl
+} from "./pdf-storage";
 import { PostgresReportRepository } from "./postgres-report-repository";
 import {
   buildScheduledExecutionKey,
@@ -190,7 +195,7 @@ export function validateAndMergeSettings(
 
 export function getPersistentReportRepository(): PersistentReportRepository {
   if (cachedRepository) return cachedRepository;
-  const appDbUrl = process.env.QUERYPILOT_APP_DATABASE_URL?.trim();
+  const appDbUrl = resolveAppDatabaseUrl();
   if (appDbUrl) {
     cachedRepository = new PostgresReportRepository(appDbUrl);
     return cachedRepository;
@@ -523,6 +528,7 @@ export function toArchivedReportFromPersistent(record: PersistentReportRecord): 
 export async function generateAndPersistManualReport(input: {
   organizationId: string;
   ownerRef?: string | null;
+  storageUserId?: string;
   executor: ReadOnlyQueryExecutor;
   repository: PersistentReportRepository;
   pdfStorage?: PdfStorageAdapter;
@@ -600,6 +606,7 @@ export async function generateAndPersistManualReport(input: {
     });
     const stored = await pdfStorage.savePdf({
       organizationId: input.organizationId,
+      storageUserId: input.storageUserId,
       reportId: saved.id,
       filename,
       bytes: pdfBytes
@@ -818,8 +825,12 @@ export async function runScheduledReports(input: {
             metadata: buildPdfMetadataFromRecord(persistedReport),
             historicalContext: storedHistoricalContext
           });
+          const ownerStorageUserId = persistedReport.ownerRef && /^(?:usr|pgusr)_[a-f0-9]+$/i.test(persistedReport.ownerRef)
+            ? persistedReport.ownerRef
+            : undefined;
           const stored = await pdfStorage.savePdf({
             organizationId: settings.organizationId,
+            storageUserId: ownerStorageUserId,
             reportId: persistedReport.id,
             filename,
             bytes: pdfBytes

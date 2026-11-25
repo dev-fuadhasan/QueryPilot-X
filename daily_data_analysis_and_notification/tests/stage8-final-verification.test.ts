@@ -19,6 +19,7 @@ import { runUnifiedDailyAnalysisFromRows } from "../intelligence";
 import { renderDynamicAnalysisPdf } from "../pdf/report-pdf";
 import {
   assertValidPdfBuffer,
+  buildPrivatePdfStorageKey,
   getStorageCapabilityStatus,
   inspectSchedulerOrgDbMap,
   type PersistentReportRecord,
@@ -396,8 +397,11 @@ test("Priority Fix D: scheduler production readiness validates QUERYPILOT_SCHEDU
   // Save/restore env vars around getStorageCapabilityStatus check
   const envKeys = [
     "QUERYPILOT_APP_DATABASE_URL",
+    "DATABASE_URL",
     "QUERYPILOT_STORAGE_SUPABASE_URL",
+    "QUERYPILOT_CORE_SUPABASE_URL",
     "QUERYPILOT_STORAGE_SUPABASE_SERVICE_ROLE_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
     "QUERYPILOT_STORAGE_BUCKET",
     "CRON_SECRET",
     "QUERYPILOT_SCHEDULER_ORG_DB_MAP"
@@ -414,11 +418,23 @@ test("Priority Fix D: scheduler production readiness validates QUERYPILOT_SCHEDU
     assert.ok(allMissing.missingProductionConfig.includes("QUERYPILOT_SCHEDULER_ORG_DB_MAP"));
     assert.equal(allMissing.missingProductionConfig.length, 6);
 
-    // DB + PDF + CRON set, but ORG_DB_MAP still missing => DB & PDF ready, Scheduler NOT ready!
-    process.env.QUERYPILOT_APP_DATABASE_URL = "postgresql://app:pw@db.example.com:5432/qp";
+    // Main branch shared env setup (DATABASE_URL + QUERYPILOT_STORAGE_*) enables DB + PDF cloud storage
+    process.env.DATABASE_URL = "postgresql://shared:pw@db.example.com:6543/postgres";
     process.env.QUERYPILOT_STORAGE_SUPABASE_URL = "https://storage.example.supabase.co";
     process.env.QUERYPILOT_STORAGE_SUPABASE_SERVICE_ROLE_KEY = "service-role-test";
-    process.env.QUERYPILOT_STORAGE_BUCKET = "daily-reports-private";
+    process.env.QUERYPILOT_STORAGE_BUCKET = "querypilotx-storage";
+    const sharedEnvStatus = getStorageCapabilityStatus("org_a");
+    assert.equal(sharedEnvStatus.databaseProductionReady, true);
+    assert.equal(sharedEnvStatus.pdfProductionReady, true);
+    assert.equal(sharedEnvStatus.pdfBackend, "supabase_private_storage");
+
+    // Shared user-isolated storage key matches src/lib/storage/validation.ts pattern ({userId}/reports/{prefix}-{filename})
+    const sharedKey = buildPrivatePdfStorageKey("org_a", "12345678-abcd-efgh", "daily-report.pdf", "usr_abc12345");
+    assert.equal(sharedKey, "usr_abc12345/reports/12345678-daily-report.pdf");
+    delete process.env.DATABASE_URL;
+
+    // DB + PDF + CRON set, but ORG_DB_MAP still missing => DB & PDF ready, Scheduler NOT ready!
+    process.env.QUERYPILOT_APP_DATABASE_URL = "postgresql://app:pw@db.example.com:5432/qp";
     process.env.CRON_SECRET = "cron-test-secret";
     const missingMap = getStorageCapabilityStatus("org_a");
     assert.equal(missingMap.databaseProductionReady, true);

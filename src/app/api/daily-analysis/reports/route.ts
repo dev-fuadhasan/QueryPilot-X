@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { deriveUserIdFromSession } from "@/lib/storage/session-auth";
 import { addDays, generateAutomaticReport, generateAutomaticReportForDate, generateHistoricalReport, type HistoricalRange } from "@/../daily_data_analysis_and_notification/analysis-service";
 import { deriveOrganizationId, readDailyAnalysisSession } from "@/../daily_data_analysis_and_notification/api-helpers";
 import { createSupabaseSalesRepository, type DatasetSelection } from "@/../daily_data_analysis_and_notification/database/supabase-sales-repository";
@@ -234,9 +235,11 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      const storageUserId = deriveUserIdFromSession(access.session);
       const { record, downloadUrl } = await generateAndPersistManualReport({
         organizationId,
-        ownerRef: access.session.projectName || access.session.projectRef || "authenticated_user",
+        ownerRef: access.session.projectName || access.session.projectRef || storageUserId,
+        storageUserId,
         executor,
         repository,
         tableName: table,

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { deriveUserIdFromSession } from "@/lib/storage/session-auth";
 import { deriveOrganizationId, readDailyAnalysisSession } from "@/../daily_data_analysis_and_notification/api-helpers";
 import { renderAnalysisReport, type HistoricalContextBundle } from "@/../daily_data_analysis_and_notification/pdf/report-pdf";
 import type { AnalysisReport } from "@/../daily_data_analysis_and_notification/types";
@@ -113,8 +114,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
       if (!archivedComparison) {
         try {
           const filename = record.pdfFilename || buildReportPdfFilename(record);
+          const storageUserId = deriveUserIdFromSession(access.session);
           const stored = await pdfStorage.savePdf({
             organizationId,
+            storageUserId,
             reportId: record.id,
             filename,
             bytes: pdfBytes

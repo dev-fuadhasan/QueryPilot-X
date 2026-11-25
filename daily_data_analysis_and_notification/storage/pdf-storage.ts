@@ -25,8 +25,20 @@ export function assertValidPdfBuffer(bytes: Buffer): void {
   }
 }
 
-export function buildPrivatePdfStorageKey(organizationId: string, reportId: string, filename: string): string {
-  return `${safePathSegment(organizationId)}/${safePathSegment(reportId)}/${safePathSegment(filename)}`;
+export const DEFAULT_SHARED_STORAGE_BUCKET = "querypilotx-storage";
+
+export function buildPrivatePdfStorageKey(
+  organizationId: string,
+  reportId: string,
+  filename: string,
+  storageUserId?: string
+): string {
+  const safeName = safePathSegment(filename);
+  if (storageUserId && /^[a-zA-Z0-9_-]{1,128}$/.test(storageUserId.trim())) {
+    const prefix = safePathSegment(reportId).slice(0, 8) || "report";
+    return `${storageUserId.trim()}/reports/${prefix}-${safeName}`;
+  }
+  return `${safePathSegment(organizationId)}/${safePathSegment(reportId)}/${safeName}`;
 }
 
 /**
@@ -54,9 +66,20 @@ export class LocalPrivatePdfStorage implements PdfStorageAdapter {
     return target;
   }
 
-  async savePdf(input: { organizationId: string; reportId: string; filename: string; bytes: Buffer }): Promise<StoredPdfDescriptor> {
+  async savePdf(input: {
+    organizationId: string;
+    storageUserId?: string;
+    reportId: string;
+    filename: string;
+    bytes: Buffer;
+  }): Promise<StoredPdfDescriptor> {
     assertValidPdfBuffer(input.bytes);
-    const storageKey = buildPrivatePdfStorageKey(input.organizationId, input.reportId, input.filename);
+    const storageKey = buildPrivatePdfStorageKey(
+      input.organizationId,
+      input.reportId,
+      input.filename,
+      input.storageUserId
+    );
     const fullPath = this.resolveSafePath(storageKey);
     await mkdir(path.dirname(fullPath), { recursive: true });
     await writeFile(fullPath, input.bytes);
@@ -107,13 +130,37 @@ export class SupabasePrivatePdfStorage implements PdfStorageAdapter {
     });
   }
 
-  async savePdf(input: { organizationId: string; reportId: string; filename: string; bytes: Buffer }): Promise<StoredPdfDescriptor> {
+  async savePdf(input: {
+    organizationId: string;
+    storageUserId?: string;
+    reportId: string;
+    filename: string;
+    bytes: Buffer;
+  }): Promise<StoredPdfDescriptor> {
     assertValidPdfBuffer(input.bytes);
-    const storageKey = buildPrivatePdfStorageKey(input.organizationId, input.reportId, input.filename);
-    const { error } = await this.client().storage.from(this.bucket).upload(storageKey, input.bytes, {
+    const storageKey = buildPrivatePdfStorageKey(
+      input.organizationId,
+      input.reportId,
+      input.filename,
+      input.storageUserId
+    );
+    const supabase = this.client();
+    let { error } = await supabase.storage.from(this.bucket).upload(storageKey, input.bytes, {
       contentType: "application/pdf",
       upsert: true
     });
+    if (error && /bucket.*not found/i.test(error.message)) {
+      // Ensure shared private bucket exists (aligned with src/lib/storage/client.ts)
+      await supabase.storage.createBucket(this.bucket, {
+        public: false,
+        fileSizeLimit: 52428800
+      }).catch(() => undefined);
+      const retry = await supabase.storage.from(this.bucket).upload(storageKey, input.bytes, {
+        contentType: "application/pdf",
+        upsert: true
+      });
+      error = retry.error;
+    }
     if (error) {
       throw new Error(`Private PDF upload failed: ${error.message}`);
     }
@@ -164,13 +211,49 @@ export function isServerlessProduction(): boolean {
   return Boolean(process.env.VERCEL || process.env.NODE_ENV === "production");
 }
 
-export function createDefaultPdfStorage(): PdfStorageAdapter {
-  const url = process.env.QUERYPILOT_STORAGE_SUPABASE_URL?.trim();
-  const key = process.env.QUERYPILOT_STORAGE_SUPABASE_SERVICE_ROLE_KEY?.trim();
-  const bucket = process.env.QUERYPILOT_STORAGE_BUCKET?.trim();
+export function resolveSharedPdfStorageEnv(): {
+  url: string;
+  serviceRoleKey: string;
+  bucket: string;
+  configured: boolean;
+} {
+  const url = (
+    process.env.QUERYPILOT_STORAGE_SUPABASE_URL
+    || process.env.QUERYPILOT_CORE_SUPABASE_URL
+    || ""
+  ).trim();
+  const serviceRoleKey = (
+    process.env.QUERYPILOT_STORAGE_SUPABASE_SERVICE_ROLE_KEY
+    || process.env.SUPABASE_SERVICE_ROLE_KEY
+    || ""
+  ).trim();
+  const explicitBucket = (process.env.QUERYPILOT_STORAGE_BUCKET || "").trim();
+  const bucket = explicitBucket || (url && serviceRoleKey ? DEFAULT_SHARED_STORAGE_BUCKET : "");
+  return {
+    url,
+    serviceRoleKey,
+    bucket,
+    configured: Boolean(url && serviceRoleKey && bucket)
+  };
+}
 
-  if (url && key && bucket) {
-    return new SupabasePrivatePdfStorage({ url, serviceRoleKey: key, bucket });
+export function resolveAppDatabaseUrl(): string {
+  return (
+    process.env.QUERYPILOT_APP_DATABASE_URL
+    || process.env.DATABASE_URL
+    || ""
+  ).trim();
+}
+
+export function createDefaultPdfStorage(): PdfStorageAdapter {
+  const storageEnv = resolveSharedPdfStorageEnv();
+
+  if (storageEnv.configured) {
+    return new SupabasePrivatePdfStorage({
+      url: storageEnv.url,
+      serviceRoleKey: storageEnv.serviceRoleKey,
+      bucket: storageEnv.bucket
+    });
   }
   if (isServerlessProduction() && !process.env.QUERYPILOT_ALLOW_LOCAL_PDF_STORAGE) {
     return new UnconfiguredProductionPdfStorage();
@@ -323,12 +406,9 @@ export function inspectSchedulerOrgDbMap(
 }
 
 export function getStorageCapabilityStatus(organizationId?: string): StorageCapabilityStatus {
-  const hasAppDb = Boolean(process.env.QUERYPILOT_APP_DATABASE_URL?.trim());
-  const hasPdfBucket = Boolean(
-    process.env.QUERYPILOT_STORAGE_SUPABASE_URL?.trim()
-    && process.env.QUERYPILOT_STORAGE_SUPABASE_SERVICE_ROLE_KEY?.trim()
-    && process.env.QUERYPILOT_STORAGE_BUCKET?.trim()
-  );
+  const hasAppDb = Boolean(resolveAppDatabaseUrl());
+  const storageEnv = resolveSharedPdfStorageEnv();
+  const hasPdfBucket = storageEnv.configured;
   const hasSchedulerSecret = Boolean(
     process.env.CRON_SECRET?.trim() || process.env.QUERYPILOT_SCHEDULER_SECRET?.trim()
   );
