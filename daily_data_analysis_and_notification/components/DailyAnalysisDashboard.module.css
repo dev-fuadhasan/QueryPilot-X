@@ -642,7 +642,61 @@
   overflow-wrap: anywhere;
 }
 
-/* Seven Daily Analysis Tools Navigation & Content */
+/* Seven Daily Analysis Tools Cards Layout */
+.toolsSection {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.toolsIntroCard {
+  background: var(--qp-surface, #f5faf8);
+  border: 1px solid var(--qp-mint, #CFEAE0);
+  border-radius: 13px;
+  padding: 16px 20px;
+}
+
+.toolsCardsStack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.toolCard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.toolCardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #edf3f2;
+}
+
+.toolCardTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+
+.toolCardIcon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: var(--qp-surface, #f5faf8);
+  color: var(--qp-slate, #2F4A63);
+  border: 1px solid var(--qp-mint, #CFEAE0);
+}
+
 .toolsTabs {
   display: flex;
   flex-wrap: wrap;
