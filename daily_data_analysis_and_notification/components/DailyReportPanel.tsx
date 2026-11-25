@@ -51,6 +51,7 @@ type DailyReportPanelProps = {
   loadingSettings: boolean;
   savingSchedule: boolean;
   generatingPdf?: boolean;
+  runningScheduledNow?: boolean;
   pdfGenerateError?: string | null;
   pdfGenerateNotice?: string | null;
   downloadingReportId: string | null;
@@ -61,6 +62,7 @@ type DailyReportPanelProps = {
     scheduledTime: string;
     timezone: string;
   }) => Promise<void>;
+  onRunScheduledNow?: () => Promise<void>;
   onGenerateQuickPdf?: (quickRange: Exclude<ManualQuickRange, "custom">) => Promise<void>;
   onDownloadPdf: (report: PersistentReportSummary) => Promise<void>;
 };
@@ -74,11 +76,13 @@ export default function DailyReportPanel({
   loadingSettings,
   savingSchedule,
   generatingPdf = false,
+  runningScheduledNow = false,
   pdfGenerateError = null,
   pdfGenerateNotice = null,
   downloadingReportId,
   saveFeedback,
   onSaveSchedule,
+  onRunScheduledNow,
   onGenerateQuickPdf,
   onDownloadPdf
 }: DailyReportPanelProps) {
@@ -286,14 +290,27 @@ export default function DailyReportPanel({
               <span style={{ fontSize: 11, color: "var(--muted, #657c8a)", display: "inline-flex", alignItems: "center", gap: 5 }}>
                 <Clock size={12} /> Configured timezone: <strong>{timezone}</strong>
               </span>
-              <button
-                type="submit"
-                className={styles.primaryBtn}
-                disabled={savingSchedule || loadingSettings}
-              >
-                <Save size={14} />
-                {savingSchedule ? "Saving Schedule..." : "Save Schedule"}
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                {onRunScheduledNow && (
+                  <button
+                    type="button"
+                    className={styles.secondaryBtn}
+                    disabled={runningScheduledNow || savingSchedule || loadingSettings || !selectedDataset}
+                    onClick={() => void onRunScheduledNow()}
+                  >
+                    <FilePlus2 size={14} />
+                    {runningScheduledNow ? "Generating Auto PDF..." : "Run Auto PDF Now"}
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  className={styles.primaryBtn}
+                  disabled={savingSchedule || loadingSettings}
+                >
+                  <Save size={14} />
+                  {savingSchedule ? "Saving Schedule..." : "Save Schedule"}
+                </button>
+              </div>
             </div>
           </div>
         )}
