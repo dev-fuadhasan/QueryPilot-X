@@ -50,6 +50,29 @@ function saveReadAlertIds(ids: Set<string>) {
   }
 }
 
+function getCurrentClockInTz(tz: string): { date: string; time: string } {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23"
+    }).formatToParts(new Date()).reduce<Record<string, string>>((acc, p) => {
+      if (p.type !== "literal") acc[p.type] = p.value;
+      return acc;
+    }, {});
+    const hh = (parts.hour === "24" ? "00" : parts.hour || "00").padStart(2, "0");
+    const mm = (parts.minute || "00").padStart(2, "0");
+    return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${hh}:${mm}` };
+  } catch {
+    const now = new Date();
+    return { date: now.toISOString().slice(0, 10), time: now.toISOString().slice(11, 16) };
+  }
+}
+
 export default function DailyAnalysisDashboard({ onBack }: Props) {
   const [selectedDomain, setSelectedDomain] = useState<BusinessDomainId>("sales_ecommerce");
   const [selectedDataset, setSelectedDataset] = useState<string>("");
@@ -83,6 +106,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   const [readAlertIds, setReadAlertIds] = useState<Set<string>>(() => new Set());
   const [savingAlertRules, setSavingAlertRules] = useState<boolean>(false);
   const [generatingPdf, setGeneratingPdf] = useState<boolean>(false);
+  const [runningScheduledNow, setRunningScheduledNow] = useState<boolean>(false);
   const [pdfGenerateError, setPdfGenerateError] = useState<string | null>(null);
   const [pdfGenerateNotice, setPdfGenerateNotice] = useState<string | null>(null);
   const [downloadingReportId, setDownloadingReportId] = useState<string | null>(null);
@@ -93,6 +117,8 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   const intelSeqRef = useRef(0);
   const archiveSeqRef = useRef(0);
   const initializedRef = useRef(false);
+  const lastScheduledCheckKeyRef = useRef<string>("");
+  const runningScheduledRef = useRef(false);
 
   const timezone = settings?.timezone || "Asia/Dhaka";
   const alertRules: AlertRules = useMemo(
@@ -378,6 +404,80 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     });
   }
 
+  const triggerScheduledRun = useCallback(async (forceRun = false) => {
+    if (runningScheduledRef.current) return;
+    runningScheduledRef.current = true;
+    setRunningScheduledNow(true);
+    if (forceRun) {
+      setPdfGenerateError(null);
+      setPdfGenerateNotice(null);
+    }
+    try {
+      const response = await fetch("/api/daily-analysis/reports/run-scheduled", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ forceRun })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        if (forceRun) {
+          setPdfGenerateError(data.error || "Could not run scheduled automatic report.");
+        }
+        return;
+      }
+      if (data.storageStatus) {
+        setStorageStatus(data.storageStatus as StorageCapabilityStatus);
+      }
+      if (data.generated) {
+        setSaveFeedback({
+          type: "success",
+          text: "Automatic scheduled PDF generated and saved to cloud archive."
+        });
+        setPdfGenerateNotice("Automatic scheduled PDF generated and stored in cloud archive.");
+        await loadArchiveReports();
+        if (data.latestAutomaticReport) {
+          setScheduleSummary(prev => (prev ? { ...prev, latestAutomaticReport: data.latestAutomaticReport } : prev));
+        }
+      } else if (data.error && forceRun) {
+        setPdfGenerateError(data.error);
+      } else if (forceRun) {
+        setPdfGenerateNotice("The latest completed period already has a stored automatic PDF in your archive.");
+        await loadArchiveReports();
+      }
+    } catch (error) {
+      if (forceRun) {
+        setPdfGenerateError(error instanceof Error ? error.message : "Could not run scheduled automatic report.");
+      }
+    } finally {
+      runningScheduledRef.current = false;
+      setRunningScheduledNow(false);
+    }
+  }, [loadArchiveReports]);
+
+  // Watch the configured schedule clock while the dashboard is open and auto-generate when due
+  useEffect(() => {
+    if (!settings?.autoReportEnabled || !selectedDataset) return;
+    const checkDue = () => {
+      const clock = getCurrentClockInTz(settings.timezone || "Asia/Dhaka");
+      const dueTime = settings.scheduledTime || "00:15";
+      if (clock.time < dueTime) return;
+      const checkKey = `${clock.date}|${settings.frequency}|${dueTime}|${selectedDataset}`;
+      if (lastScheduledCheckKeyRef.current === checkKey) return;
+      lastScheduledCheckKeyRef.current = checkKey;
+      void triggerScheduledRun(false);
+    };
+    checkDue();
+    const timer = window.setInterval(checkDue, 20_000);
+    return () => window.clearInterval(timer);
+  }, [
+    selectedDataset,
+    settings?.autoReportEnabled,
+    settings?.frequency,
+    settings?.scheduledTime,
+    settings?.timezone,
+    triggerScheduledRun
+  ]);
+
   async function handleSaveSchedule(payload: {
     autoReportEnabled: boolean;
     frequency: ReportFrequency;
@@ -401,15 +501,24 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       if (!response.ok) {
         throw new Error(data.error || "Could not save schedule settings.");
       }
-      setSettings(data.settings as PersistentDailySettings);
+      const savedSettings = data.settings as PersistentDailySettings;
+      setSettings(savedSettings);
       if (data.storageStatus) setStorageStatus(data.storageStatus as StorageCapabilityStatus);
       if (data.scheduleSummary) setScheduleSummary(data.scheduleSummary as ScheduleRuntimeSummary);
+      lastScheduledCheckKeyRef.current = "";
 
-      const syncNotice = (data.scheduleSummary as ScheduleRuntimeSummary | undefined)?.lastSync?.notice;
       setSaveFeedback({
         type: "success",
-        text: syncNotice || "Schedule settings confirmed and saved by the backend."
+        text: savedSettings.autoReportEnabled
+          ? `Schedule saved (${savedSettings.frequency} at ${savedSettings.scheduledTime} ${savedSettings.timezone}). PDF will auto-generate and save to cloud storage when due.`
+          : "Automatic report generation paused and saved."
       });
+      if (savedSettings.autoReportEnabled) {
+        const clock = getCurrentClockInTz(savedSettings.timezone || "Asia/Dhaka");
+        if (clock.time >= savedSettings.scheduledTime) {
+          void triggerScheduledRun(false);
+        }
+      }
     } catch (error) {
       setSaveFeedback({
         type: "error",
@@ -665,11 +774,13 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         loadingSettings={loadingSettings}
         savingSchedule={savingSchedule}
         generatingPdf={generatingPdf}
+        runningScheduledNow={runningScheduledNow}
         pdfGenerateError={pdfGenerateError}
         pdfGenerateNotice={pdfGenerateNotice}
         downloadingReportId={downloadingReportId}
         saveFeedback={saveFeedback}
         onSaveSchedule={handleSaveSchedule}
+        onRunScheduledNow={() => triggerScheduledRun(true)}
         onGenerateQuickPdf={handleGenerateQuickPdf}
         onDownloadPdf={report => handleDownloadPdf(report)}
       />

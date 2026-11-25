@@ -669,6 +669,7 @@ export async function runScheduledReports(input: {
   repository: PersistentReportRepository;
   pdfStorage?: PdfStorageAdapter;
   resolveSourceExecutor: OrganizationSourceResolver;
+  storageUserId?: string;
   now?: Date;
   forceDue?: boolean;
   organizationIdFilter?: string;
@@ -775,7 +776,7 @@ export async function runScheduledReports(input: {
           persistedReport = await input.repository.saveReport({
             id: randomUUID(),
             organizationId: settings.organizationId,
-            ownerRef: "scheduler",
+            ownerRef: input.storageUserId || "scheduler",
             domainId: unified.domainId,
             domainName: unified.domainName,
             datasetTable: unified.tableName,
@@ -825,9 +826,10 @@ export async function runScheduledReports(input: {
             metadata: buildPdfMetadataFromRecord(persistedReport),
             historicalContext: storedHistoricalContext
           });
-          const ownerStorageUserId = persistedReport.ownerRef && /^(?:usr|pgusr)_[a-f0-9]+$/i.test(persistedReport.ownerRef)
-            ? persistedReport.ownerRef
-            : undefined;
+          const ownerStorageUserId = input.storageUserId
+            || (persistedReport.ownerRef && /^(?:usr|pgusr)_[a-f0-9]+$/i.test(persistedReport.ownerRef)
+              ? persistedReport.ownerRef
+              : undefined);
           const stored = await pdfStorage.savePdf({
             organizationId: settings.organizationId,
             storageUserId: ownerStorageUserId,
