@@ -179,7 +179,15 @@ function computeSalesRowFinancials(row: Record<string, unknown>, accessor: RoleA
 
   const isRevenueUnitPriceCol = Boolean(accessor.has("revenue") && accessor.has("quantity") && ["unitprice", "itemprice", "price"].includes(revenueCol));
   const isDiscountPercent = discountCol.includes("percent") || discountCol.includes("pct") || discountCol.includes("rate");
-  const isTotalCost = costCol.includes("totalcost") || costCol.includes("linecost") || costCol === "cogs";
+  const isTotalCost = (
+    costCol.includes("totalcost")
+    || costCol.includes("linecost")
+    || costCol.includes("ordercost")
+    || costCol.includes("totalcogs")
+    || costCol.includes("linecogs")
+    || costCol.includes("costofgoodssold")
+    || costCol === "cogs"
+  );
 
   const quantity = accessor.has("quantity") ? (accessor.num(row, "quantity") ?? 0) : 0;
   const rawRev = accessor.has("revenue") ? accessor.num(row, "revenue") : null;
@@ -254,6 +262,7 @@ function summarizeSalesSlice(
   let aggregatedOrdersCount = 0;
   let usedDerivedUnitPriceRevenue = false;
   let deduplicatedOrderHeaderLines = 0;
+  let negativeProfitRowCount = 0;
 
   for (const row of rows) {
     // Support high-volume database-side daily rollup rows (_agg_row_count present without per-order IDs)
@@ -266,7 +275,10 @@ function summarizeSalesSlice(
       const fin = computeSalesRowFinancials(row, accessor);
       if (fin.derivedRevenueFromUnitPrice) usedDerivedUnitPriceRevenue = true;
       if (fin.revenue !== null) revenues.push(fin.revenue);
-      if (fin.profit !== null) profits.push(fin.profit);
+      if (fin.profit !== null) {
+      profits.push(fin.profit);
+      if (fin.profit < 0) negativeProfitRowCount += 1;
+    }
       if (accessor.has("discount")) discounts.push(fin.discountAmount);
       if (accessor.has("quantity")) quantities.push(fin.quantity);
       continue;
@@ -307,7 +319,10 @@ function summarizeSalesSlice(
       revenues.push(fin.revenue);
     }
 
-    if (fin.profit !== null) profits.push(fin.profit);
+    if (fin.profit !== null) {
+      profits.push(fin.profit);
+      if (fin.profit < 0) negativeProfitRowCount += 1;
+    }
     if (accessor.has("discount")) discounts.push(fin.discountAmount);
     if (accessor.has("quantity")) quantities.push(fin.quantity);
   }
@@ -334,7 +349,8 @@ function summarizeSalesSlice(
     returnRate: hasOrderId && accessor.has("status") ? safePercent(returnedOrderIds.size, allOrderIds.size) : null,
     activeCustomerIds,
     usedDerivedUnitPriceRevenue,
-    deduplicatedOrderHeaderLines
+    deduplicatedOrderHeaderLines,
+    negativeProfitRowCount
   };
 }
 
@@ -356,6 +372,16 @@ function calculateSalesDomain(input: DomainCalculationInput): DomainCalculationO
   }
   if (curr.deduplicatedOrderHeaderLines > 0) {
     domainWarnings.push(`Deduplicated order-level total across ${curr.deduplicatedOrderHeaderLines} multi-line order row(s) to prevent double-counting.`);
+  }
+  if (curr.grossProfit !== null && curr.grossProfit < 0 && !accessor.has("profit") && accessor.has("cost")) {
+    const costLabel = accessor.column("cost") || "cost";
+    const revLabel = accessor.column("revenue") || accessor.column("unitPrice") || "revenue";
+    const qtyNote = accessor.has("quantity") ? ` × ${accessor.column("quantity")}` : "";
+    addMetricWarning(
+      metricWarnings,
+      "grossProfit",
+      `Gross Profit is negative (${curr.negativeProfitRowCount} of ${curr.completedRows.length} completed row(s) had computed cost "${costLabel}"${qtyNote} exceeding "${revLabel}"). Negative values are preserved accurately as operating losses.`
+    );
   }
   if (!accessor.has("orderId")) {
     domainWarnings.push("No reliable Order ID column was mapped: independent sales totals are computed, while order-level metrics (Total Orders, AOV, Cancellation/Return Rates, Repeat Rate, CLV) remain unavailable.");

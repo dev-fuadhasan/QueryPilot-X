@@ -326,8 +326,10 @@ function renderIntelligenceBrief(cursor: PdfLayoutCursor, unified: DynamicPdfRep
     const lines = [
       `What happened: ${cleanText(finding.whatHappened, 220)}`,
       finding.whatChanged ? `What changed: ${cleanText(finding.whatChanged, 200)}` : null,
-      `Affected area: ${cleanText(finding.affectedArea, 120)} · Why it matters: ${cleanText(finding.whyItMatters, 180)}`,
-      `Next step: ${cleanText(finding.investigateNext, 200)}`
+      finding.performanceLabel
+        ? `Performance: ${cleanText(finding.performanceLabel, 80)}${finding.financialPositionLabel ? ` · Current Financial Position: ${cleanText(finding.financialPositionLabel, 80)}` : ""}`
+        : null,
+      finding.possibleExplanation ? `Possible explanation: ${cleanText(finding.possibleExplanation, 220)}` : null
     ].filter((l): l is string => Boolean(l));
 
     const bodyText = lines.join("\n");
@@ -579,8 +581,13 @@ function renderSmartComparison(cursor: PdfLayoutCursor, comparison: SmartDayComp
     } else if (r.baselineStatus === "no_history") {
       statusStr = "No history";
     } else if (r.changePercent !== null) {
-      statusStr = `${r.changePercent >= 0 ? "+" : ""}${r.changePercent.toFixed(1)}%`;
-      statusColor = r.outcome === "improved" ? COLORS.green : r.outcome === "declined" ? COLORS.red : COLORS.slate;
+      const pct = `${r.changePercent >= 0 ? "+" : ""}${r.changePercent.toFixed(1)}%`;
+      statusStr = r.isLossPosition ? `${pct} (Loss)` : pct;
+      statusColor = r.outcome === "improved"
+        ? (r.isLossPosition ? COLORS.amber : COLORS.green)
+        : r.outcome === "declined"
+          ? COLORS.red
+          : COLORS.slate;
     }
 
     cursor.text(cleanText(r.name, 34), cols[0].x + 4, cursor.y + 3, { fontSize: 8, width: cols[0].w - 6, ellipsis: true, lineBreak: false });

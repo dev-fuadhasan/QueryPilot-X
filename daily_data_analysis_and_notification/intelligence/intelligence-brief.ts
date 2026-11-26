@@ -1,3 +1,4 @@
+import { evaluateMetricComparisonStatus } from "../metrics/math-and-periods";
 import type { DynamicAnalysisResult, MetricResult } from "../metrics/types";
 import type {
   BriefFinding,
@@ -5,12 +6,6 @@ import type {
   DataHealthReport,
   RootCauseAnalysisResult
 } from "./types";
-
-function isFavorableChange(metric: MetricResult): boolean | null {
-  if (metric.changePercent === null || metric.trendDirection === "flat" || metric.polarity === "neutral") return null;
-  if (metric.polarity === "higher_is_better") return metric.changePercent > 0;
-  return metric.changePercent < 0;
-}
 
 function whyMetricMatters(domainName: string, metric: MetricResult): string {
   if (metric.polarity === "higher_is_better") {
@@ -89,11 +84,19 @@ export function buildDailyIntelligenceBrief(
     .sort((a, b) => Math.abs(b.changePercent!) - Math.abs(a.changePercent!));
 
   for (const metric of comparedMetrics) {
-    const favorable = isFavorableChange(metric);
-    const absChange = Math.abs(metric.changePercent!);
+    const evalStatus = evaluateMetricComparisonStatus({
+      metricId: metric.metricId,
+      metricName: metric.name,
+      polarity: metric.polarity,
+      currentValue: metric.value,
+      referenceValue: metric.comparisonValue,
+      available: metric.availability === "available"
+    });
+    const effectiveChangePct = evalStatus.changePercent ?? metric.changePercent!;
+    const absChange = Math.abs(effectiveChangePct);
     const isUnusual = absChange >= 35;
     const rc = rootCauseByMetric.get(metric.metricId);
-    const topContributor = metric.changePercent! < 0
+    const topContributor = effectiveChangePct < 0
       ? rc?.negativeContributors[0]
       : rc?.positiveContributors[0];
 
@@ -103,17 +106,34 @@ export function buildDailyIntelligenceBrief(
         ? `${analysis.breakdowns[0].label}: ${analysis.breakdowns[0].items[0].label}`
         : analysis.domainName;
 
-    const category: BriefFinding["category"] = isUnusual && favorable === null
-      ? "unusual"
-      : favorable === true
-        ? "positive"
-        : favorable === false
-          ? "negative"
-          : "unusual";
+    // Never mark a metric that is STILL in a loss position as a healthy "positive" highlight,
+    // and never mark loss reduction as "negative" performance.
+    let category: BriefFinding["category"];
+    if (evalStatus.isLossPosition && evalStatus.performanceDirection === "improved") {
+      category = "domain_event";
+    } else if (evalStatus.performanceDirection === "improved") {
+      category = "positive";
+    } else if (evalStatus.performanceDirection === "declined") {
+      category = "negative";
+    } else {
+      category = isUnusual ? "unusual" : "domain_event";
+    }
 
-    const directionWord = metric.changePercent! >= 0 ? "increased" : "decreased";
-    const headline = `${metric.name} ${directionWord} by ${absChange.toFixed(1)}%`;
-    const whatChanged = `${metric.formattedValue} vs ${metric.formattedComparisonValue} reference (${metric.changePercent! >= 0 ? "+" : ""}${metric.changePercent!.toFixed(1)}%).`;
+    let headline: string;
+    if (evalStatus.performanceLabel === "Improved — Loss Reduced") {
+      headline = `${metric.name} loss reduced by ${absChange.toFixed(1)}% (still negative)`;
+    } else if (evalStatus.performanceLabel === "Declined — Loss Increased") {
+      headline = `${metric.name} loss increased by ${absChange.toFixed(1)}%`;
+    } else if (evalStatus.performanceLabel === "Turned Profitable") {
+      headline = `${metric.name} turned profitable (+${absChange.toFixed(1)}%)`;
+    } else if (evalStatus.performanceLabel === "Moved Into Loss") {
+      headline = `${metric.name} moved into loss (-${absChange.toFixed(1)}%)`;
+    } else {
+      const directionWord = effectiveChangePct >= 0 ? "increased" : "decreased";
+      headline = `${metric.name} ${directionWord} by ${absChange.toFixed(1)}%`;
+    }
+
+    const whatChanged = `${metric.formattedValue} vs ${metric.formattedComparisonValue} reference (${effectiveChangePct >= 0 ? "+" : ""}${effectiveChangePct.toFixed(1)}%).`;
 
     const investigateNext = topContributor
       ? `Review ${topContributor.dimensionLabel.toLowerCase()} "${topContributor.groupLabel}", which was associated with ${topContributor.evidence}.`
@@ -136,7 +156,12 @@ export function buildDailyIntelligenceBrief(
       possibleExplanation,
       metricId: metric.metricId,
       metricValue: metric.formattedValue,
-      changePercent: metric.changePercent
+      changePercent: effectiveChangePct,
+      performanceDirection: evalStatus.performanceDirection,
+      performanceLabel: evalStatus.performanceLabel,
+      financialPosition: evalStatus.financialPosition,
+      financialPositionLabel: evalStatus.financialPositionLabel,
+      isLossPosition: evalStatus.isLossPosition
     });
   }
 

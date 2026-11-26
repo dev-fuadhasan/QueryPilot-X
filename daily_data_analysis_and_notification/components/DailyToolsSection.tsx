@@ -107,6 +107,21 @@ function healthStatusBadgeClass(status: string): string {
   return styles.badgeInfo;
 }
 
+function performanceBadgeClass(outcome: string, isLossPosition?: boolean): string {
+  if (outcome === "improved") {
+    return isLossPosition ? styles.badgeWarning : styles.badgePositive;
+  }
+  if (outcome === "declined") return styles.badgeCritical;
+  if (outcome === "unavailable") return styles.badgeWarning;
+  return styles.badgeNeutral;
+}
+
+function financialPositionBadgeClass(position: "positive" | "negative" | "zero" | null | undefined): string {
+  if (position === "positive") return styles.badgePositive;
+  if (position === "negative") return styles.badgeCritical;
+  return styles.badgeNeutral;
+}
+
 function investigationStatusBadgeClass(status: FindingInvestigationStatus): string {
   if (status === "completed") return styles.badgePositive;
   if (status === "partially_completed") return styles.badgeInfo;
@@ -628,7 +643,7 @@ export default function DailyToolsSection({
                         <th className={styles.numCell}>Current</th>
                         <th className={styles.numCell}>Reference</th>
                         <th className={styles.numCell}>Change</th>
-                        <th>Direction</th>
+                        <th>Performance &amp; Position</th>
                         <th>Notes</th>
                       </tr>
                     </thead>
@@ -646,22 +661,23 @@ export default function DailyToolsSection({
                                 : "N/A"}
                           </td>
                           <td>
-                            <span
-                              className={`${styles.badge} ${
-                                row.outcome === "improved"
-                                  ? styles.badgePositive
-                                  : row.outcome === "declined"
-                                    ? styles.badgeCritical
-                                    : row.outcome === "unavailable"
-                                      ? styles.badgeWarning
-                                      : styles.badgeNeutral
-                              }`}
-                            >
-                              {row.trendDirection === "up" && <ArrowUpRight size={11} />}
-                              {row.trendDirection === "down" && <ArrowDownRight size={11} />}
-                              {row.trendDirection === "flat" && <Minus size={11} />}
-                              {row.outcome}
-                            </span>
+                            <div className={styles.comparisonStatusCell}>
+                              <span
+                                className={`${styles.badge} ${performanceBadgeClass(row.outcome, row.isLossPosition)}`}
+                              >
+                                {row.trendDirection === "up" && <ArrowUpRight size={11} />}
+                                {row.trendDirection === "down" && <ArrowDownRight size={11} />}
+                                {row.trendDirection === "flat" && <Minus size={11} />}
+                                {row.performanceLabel || row.outcome}
+                              </span>
+                              {row.financialPositionLabel && (
+                                <span
+                                  className={`${styles.badge} ${financialPositionBadgeClass(row.financialPosition)}`}
+                                >
+                                  {row.financialPositionLabel}
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td style={{ fontSize: 11, color: "var(--muted, #657c8a)" }}>{row.note || "—"}</td>
                         </tr>
@@ -768,6 +784,30 @@ export default function DailyToolsSection({
                           <p className={styles.findingBody}>
                             <strong>Change:</strong> {finding.whatChanged}
                           </p>
+                        )}
+                        {(finding.performanceLabel || finding.financialPositionLabel) && (
+                          <div className={styles.findingStatusMeta}>
+                            {finding.performanceLabel && (
+                              <div className={styles.findingStatusItem}>
+                                <strong>Performance:</strong>{" "}
+                                <span
+                                  className={`${styles.badge} ${performanceBadgeClass(finding.performanceDirection || "unavailable", finding.isLossPosition)}`}
+                                >
+                                  {finding.performanceLabel}
+                                </span>
+                              </div>
+                            )}
+                            {finding.financialPositionLabel && (
+                              <div className={styles.findingStatusItem}>
+                                <strong>Current Financial Position:</strong>{" "}
+                                <span
+                                  className={`${styles.badge} ${financialPositionBadgeClass(finding.financialPosition)}`}
+                                >
+                                  {finding.financialPositionLabel}
+                                </span>
+                              </div>
+                            )}
+                          </div>
                         )}
                         {showArea && (
                           <p className={styles.findingArea}>

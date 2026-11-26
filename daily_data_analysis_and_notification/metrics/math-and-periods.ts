@@ -2,8 +2,11 @@ import { parseReliableDateString, type NumericDateOrder } from "../profiler/sql-
 import type {
   ComparisonPreset,
   ComparisonWindow,
+  FinancialPosition,
   MetricFormat,
+  MetricPolarity,
   MetricUnit,
+  PerformanceDirection,
   PeriodWindow,
   TrendDirection
 } from "./types";
@@ -304,6 +307,250 @@ export function determineTrendDirection(changePercent: number | null): TrendDire
   if (changePercent === null || !Number.isFinite(changePercent)) return "unavailable";
   if (Math.abs(changePercent) < 0.05) return "flat";
   return changePercent > 0 ? "up" : "down";
+}
+
+const SIGNED_FINANCIAL_METRIC_IDS = new Set([
+  "grossProfit",
+  "grossProfitMargin",
+  "netCashFlow",
+  "budgetVariance"
+]);
+
+export type MetricComparisonEvaluation = {
+  absoluteChange: number | null;
+  changePercent: number | null;
+  trendDirection: TrendDirection;
+  performanceDirection: PerformanceDirection;
+  performanceLabel: string;
+  financialPosition: FinancialPosition | null;
+  financialPositionLabel: string | null;
+  isLossPosition: boolean;
+};
+
+/**
+ * Single source of truth for evaluating comparison deltas, percentage change,
+ * Performance Direction, and Current Financial Position.
+ *
+ * Guarantees that absoluteChange, changePercent, trendDirection, performanceDirection,
+ * performanceLabel, and financialPositionLabel are always derived from the exact same
+ * (currentValue, referenceValue) pair using the absolute-reference-baseline convention:
+ *   changePercent = ((current - reference) / Math.abs(reference)) * 100
+ *
+ * For higher-is-better signed financial metrics (e.g. Gross Profit, Gross Profit Margin,
+ * Net Cash Flow, or any higher-is-better metric with negative values), explicitly separates:
+ *   - Performance Direction: "Improved — Loss Reduced", "Declined — Loss Increased",
+ *     "Turned Profitable", "Moved Into Loss", or normal "Improved"/"Declined"/"Flat"
+ *   - Current Financial Position: "Positive ...", "Still Negative (Loss)", "Negative ... (Loss)", or "Zero ..."
+ */
+export function evaluateMetricComparisonStatus(input: {
+  metricId: string;
+  metricName: string;
+  polarity: MetricPolarity;
+  currentValue: number | null;
+  referenceValue: number | null;
+  available?: boolean;
+}): MetricComparisonEvaluation {
+  const { metricId, metricName, polarity, currentValue, referenceValue, available = true } = input;
+
+  const isSignedFinancial = polarity === "higher_is_better" && (
+    SIGNED_FINANCIAL_METRIC_IDS.has(metricId)
+    || (currentValue !== null && currentValue < 0)
+    || (referenceValue !== null && referenceValue < 0)
+  );
+
+  // Determine Current Financial Position independently of comparison availability
+  let financialPosition: FinancialPosition | null = null;
+  let financialPositionLabel: string | null = null;
+  if (available && currentValue !== null && Number.isFinite(currentValue) && isSignedFinancial) {
+    if (currentValue > 0) {
+      financialPosition = "positive";
+      financialPositionLabel = `Positive ${metricName}`;
+    } else if (currentValue < 0) {
+      financialPosition = "negative";
+      financialPositionLabel = referenceValue !== null && referenceValue < 0
+        ? "Still Negative (Loss)"
+        : `Negative ${metricName} (Loss)`;
+    } else {
+      financialPosition = "zero";
+      financialPositionLabel = `Zero ${metricName}`;
+    }
+  }
+
+  const isLossPosition = financialPosition === "negative";
+
+  if (!available || currentValue === null || !Number.isFinite(currentValue) || referenceValue === null || !Number.isFinite(referenceValue)) {
+    return {
+      absoluteChange: null,
+      changePercent: null,
+      trendDirection: "unavailable",
+      performanceDirection: "unavailable",
+      performanceLabel: "Unavailable",
+      financialPosition,
+      financialPositionLabel,
+      isLossPosition
+    };
+  }
+
+  const absoluteChange = safeRound(currentValue - referenceValue, 2);
+  const changePercent = safeChangePercent(currentValue, referenceValue);
+  const trendDirection = determineTrendDirection(changePercent);
+
+  if (changePercent === null) {
+    return {
+      absoluteChange,
+      changePercent: null,
+      trendDirection: "unavailable",
+      performanceDirection: "unavailable",
+      performanceLabel: referenceValue === 0 ? "Unavailable (Zero Baseline)" : "Unavailable",
+      financialPosition,
+      financialPositionLabel,
+      isLossPosition
+    };
+  }
+
+  if (polarity === "neutral") {
+    return {
+      absoluteChange,
+      changePercent,
+      trendDirection,
+      performanceDirection: trendDirection === "flat" ? "flat" : "neutral",
+      performanceLabel: trendDirection === "flat" ? "Flat" : "Neutral",
+      financialPosition,
+      financialPositionLabel,
+      isLossPosition
+    };
+  }
+
+  if (polarity === "lower_is_better") {
+    if (trendDirection === "flat") {
+      return {
+        absoluteChange,
+        changePercent,
+        trendDirection,
+        performanceDirection: "flat",
+        performanceLabel: "Flat",
+        financialPosition: null,
+        financialPositionLabel: null,
+        isLossPosition: false
+      };
+    }
+    const improved = trendDirection === "down";
+    return {
+      absoluteChange,
+      changePercent,
+      trendDirection,
+      performanceDirection: improved ? "improved" : "declined",
+      performanceLabel: improved ? "Improved" : "Declined",
+      financialPosition: null,
+      financialPositionLabel: null,
+      isLossPosition: false
+    };
+  }
+
+  // polarity === "higher_is_better"
+  if (isSignedFinancial) {
+    // Case 1: Negative -> Positive
+    if (referenceValue < 0 && currentValue > 0) {
+      return {
+        absoluteChange,
+        changePercent,
+        trendDirection,
+        performanceDirection: "improved",
+        performanceLabel: "Turned Profitable",
+        financialPosition,
+        financialPositionLabel,
+        isLossPosition: false
+      };
+    }
+    // Case 2: Positive -> Negative
+    if (referenceValue > 0 && currentValue < 0) {
+      return {
+        absoluteChange,
+        changePercent,
+        trendDirection,
+        performanceDirection: "declined",
+        performanceLabel: "Moved Into Loss",
+        financialPosition,
+        financialPositionLabel,
+        isLossPosition: true
+      };
+    }
+    // Case 3: Both negative
+    if (referenceValue < 0 && currentValue < 0) {
+      if (trendDirection === "flat") {
+        return {
+          absoluteChange,
+          changePercent,
+          trendDirection,
+          performanceDirection: "flat",
+          performanceLabel: "Flat — Loss Unchanged",
+          financialPosition,
+          financialPositionLabel,
+          isLossPosition: true
+        };
+      }
+      if (currentValue > referenceValue) {
+        return {
+          absoluteChange,
+          changePercent,
+          trendDirection,
+          performanceDirection: "improved",
+          performanceLabel: "Improved — Loss Reduced",
+          financialPosition,
+          financialPositionLabel,
+          isLossPosition: true
+        };
+      }
+      return {
+        absoluteChange,
+        changePercent,
+        trendDirection,
+        performanceDirection: "declined",
+        performanceLabel: "Declined — Loss Increased",
+        financialPosition,
+        financialPositionLabel,
+        isLossPosition: true
+      };
+    }
+    // Case 4: Negative -> Zero (loss eliminated)
+    if (referenceValue < 0 && currentValue === 0) {
+      return {
+        absoluteChange,
+        changePercent,
+        trendDirection,
+        performanceDirection: "improved",
+        performanceLabel: "Improved — Loss Reduced",
+        financialPosition,
+        financialPositionLabel,
+        isLossPosition: false
+      };
+    }
+  }
+
+  // Standard higher-is-better (both values positive / non-negative)
+  if (trendDirection === "flat") {
+    return {
+      absoluteChange,
+      changePercent,
+      trendDirection,
+      performanceDirection: "flat",
+      performanceLabel: "Flat",
+      financialPosition,
+      financialPositionLabel,
+      isLossPosition
+    };
+  }
+  const improved = trendDirection === "up";
+  return {
+    absoluteChange,
+    changePercent,
+    trendDirection,
+    performanceDirection: improved ? "improved" : "declined",
+    performanceLabel: improved ? "Improved" : "Declined",
+    financialPosition,
+    financialPositionLabel,
+    isLossPosition
+  };
 }
 
 export function formatMetricValue(value: number | null, format: MetricFormat, unit: MetricUnit): string | null {
