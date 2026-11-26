@@ -167,12 +167,12 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     }
   }, []);
 
-  const loadProfile = useCallback(async (domain: BusinessDomainId, preferredTable?: string | null) => {
+  const loadProfile = useCallback(async (_domain?: BusinessDomainId, preferredTable?: string | null) => {
     const seq = ++profileSeqRef.current;
     setLoadingProfile(true);
     setProfileError(null);
     try {
-      const response = await fetch(`/api/daily-analysis/profile?domain=${encodeURIComponent(domain)}`, { cache: "no-store" });
+      const response = await fetch("/api/daily-analysis/profile", { cache: "no-store" });
       const data = await response.json();
       if (seq !== profileSeqRef.current) return null;
       if (!response.ok) {
@@ -185,7 +185,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       const resolvedTable =
         (preferredTable && tables.find(t => t.name === preferredTable)?.name)
         || (selectedDataset && tables.find(t => t.name === selectedDataset)?.name)
-        || nextProfile.domainSuggestions.find(s => s.domainId === domain)?.matchedTables[0]
+        || nextProfile.suggestedDomain?.matchedTables[0]
         || tables[0]?.name
         || "";
 
@@ -205,7 +205,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   }, [selectedDataset]);
 
   const loadIntelligence = useCallback(async (params: {
-    domain: BusinessDomainId;
+    domain?: BusinessDomainId;
     table: string;
     preset: ComparisonPreset;
     overrides: Record<string, string>;
@@ -218,21 +218,15 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     setLoadingIntelligence(true);
     setIntelligenceError(null);
     try {
-      const todayIso = getCurrentClockInTz(params.tz).date;
-      const latestIso = params.latestAvailableDate?.slice(0, 10) || null;
-      const targetDate = latestIso && latestIso < todayIso ? latestIso : undefined;
-
       const response = await fetch("/api/daily-analysis/intelligence", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           table: params.table,
-          domain: params.domain,
           timezone: params.tz,
-          periodStart: targetDate,
-          periodEnd: targetDate,
           comparisonPreset: params.preset,
           includeAllDatasetColumns: true,
+          anchorToDatasetDates: true,
           overrides: Object.keys(params.overrides).length ? params.overrides : undefined,
           alertRules: params.rules
         })
@@ -244,6 +238,9 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       }
       const nextIntel = data.intelligence as UnifiedDailyAnalysisResult;
       setIntelligence(nextIntel);
+      if (nextIntel.domainId) {
+        setSelectedDomain(nextIntel.domainId);
+      }
       setLastRefreshedAt(nextIntel.generatedAt || new Date().toISOString());
     } catch (error) {
       if (seq !== intelSeqRef.current) return;

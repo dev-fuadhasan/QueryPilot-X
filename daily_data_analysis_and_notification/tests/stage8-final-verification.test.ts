@@ -616,3 +616,39 @@ test("Direct dataset-column mode runs all 7 tools on arbitrary custom columns wi
   assert.ok(unified.tools.intelligenceBrief && unified.tools.intelligenceBrief.executiveSummary.length > 10);
   assert.ok(unified.tools.dataHealth && unified.tools.dataHealth.healthScore > 0);
 });
+
+test("Historical dataset-date anchoring automatically uses the dataset's own latest and previous active dates", () => {
+  const rows = [
+    { campaign_date: "2024-03-10", channel: "Search", ad_spend: 200, clicks: 120, conversions: 12 },
+    { campaign_date: "2024-03-17", channel: "Search", ad_spend: 300, clicks: 180, conversions: 18 },
+    { campaign_date: "2024-03-24", channel: "Search", ad_spend: 450, clicks: 260, conversions: 30 }
+  ];
+  const profile = profileRowsSnapshot({
+    name: "Marketing",
+    columns: [
+      { name: "campaign_date", dataType: "date" },
+      { name: "channel", dataType: "text" },
+      { name: "ad_spend", dataType: "numeric" },
+      { name: "clicks", dataType: "integer" },
+      { name: "conversions", dataType: "integer" }
+    ]
+  }, rows);
+
+  // Even when caller passes today's calendar date (2026-11-25), anchorToDatasetDates anchors to 2024-03-24 vs 2024-03-17!
+  const unified = runUnifiedDailyAnalysisFromRows(profile, rows, {
+    domainId: "marketing_campaigns",
+    periodStart: "2026-11-25",
+    periodEnd: "2026-11-25",
+    comparisonPreset: "previous_day",
+    includeAllDatasetColumns: true,
+    anchorToDatasetDates: true
+  });
+
+  assert.equal(unified.reportingPeriod.start, "2024-03-24");
+  assert.equal(unified.reportingPeriod.end, "2024-03-24");
+  assert.equal(unified.comparisonPeriod?.start, "2024-03-17");
+  assert.equal(unified.comparisonPeriod?.end, "2024-03-17");
+  assert.ok(unified.analysis.availableMetrics.length > 0);
+  assert.equal(unified.analysis.comparisonSummary.available, true);
+  assert.ok(unified.tools.smartComparison && unified.tools.smartComparison.metrics.length > 0);
+});

@@ -68,6 +68,10 @@ export async function POST(request: NextRequest) {
 
   const timezone = typeof body.timezone === "string" && body.timezone.trim() ? body.timezone.trim() : "Asia/Dhaka";
   const defaultEnd = addDaysToDate(todayInTimezone(timezone), -1);
+  const hasExplicitPeriod = Boolean(
+    (typeof body.periodStart === "string" && body.periodStart.trim())
+    || (typeof body.periodEnd === "string" && body.periodEnd.trim())
+  );
   const periodStart = typeof body.periodStart === "string" && body.periodStart.trim() ? body.periodStart.trim() : defaultEnd;
   const periodEnd = typeof body.periodEnd === "string" && body.periodEnd.trim() ? body.periodEnd.trim() : periodStart;
 
@@ -114,6 +118,7 @@ export async function POST(request: NextRequest) {
       overrides: Object.keys(overrides).length ? overrides : undefined,
       allowMediumConfidence: typeof body.allowMediumConfidence === "boolean" ? body.allowMediumConfidence : true,
       includeAllDatasetColumns: body.includeAllDatasetColumns !== false,
+      anchorToDatasetDates: typeof body.anchorToDatasetDates === "boolean" ? body.anchorToDatasetDates : !hasExplicitPeriod,
       activationEventName: typeof body.activationEventName === "string" ? body.activationEventName.trim() : undefined,
       expectedCadence,
       enabledTools,

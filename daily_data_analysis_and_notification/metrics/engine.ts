@@ -714,6 +714,102 @@ function assembleAnalysisResult(
   };
 }
 
+function diffDaysInclusive(startIso: string, endIso: string): number {
+  const s = Date.parse(`${startIso}T00:00:00Z`);
+  const e = Date.parse(`${endIso}T00:00:00Z`);
+  if (!Number.isFinite(s) || !Number.isFinite(e) || e < s) return 1;
+  return Math.floor((e - s) / 86_400_000) + 1;
+}
+
+function buildDatasetAnchoredOptions(input: {
+  options: DynamicAnalysisOptions;
+  earliestDate: string | null;
+  latestDate: string | null;
+  previousActiveDate?: string | null;
+}): DynamicAnalysisOptions {
+  const { options, earliestDate, latestDate, previousActiveDate } = input;
+  if (!options.anchorToDatasetDates || !latestDate) return options;
+
+  const preset = options.comparisonPreset ?? "previous_day";
+  const earliest = earliestDate && earliestDate <= latestDate ? earliestDate : latestDate;
+  const totalSpanDays = diffDaysInclusive(earliest, latestDate);
+
+  if (preset === "none") {
+    return {
+      ...options,
+      periodStart: earliest,
+      periodEnd: latestDate,
+      comparisonPreset: "none"
+    };
+  }
+
+  if (preset === "previous_7_days" || preset === "previous_week") {
+    const windowDays = totalSpanDays >= 14 ? 7 : Math.max(1, Math.floor(totalSpanDays / 2));
+    const periodStart = addDaysToDate(latestDate, -(windowDays - 1));
+    const compEnd = addDaysToDate(periodStart, -1);
+    const compStart = addDaysToDate(compEnd, -(windowDays - 1));
+    if (compEnd >= earliest) {
+      return {
+        ...options,
+        periodStart,
+        periodEnd: latestDate,
+        comparisonPreset: "custom",
+        comparisonStart: compStart < earliest ? earliest : compStart,
+        comparisonEnd: compEnd
+      };
+    }
+    return { ...options, periodStart: earliest, periodEnd: latestDate, comparisonPreset: "none" };
+  }
+
+  if (preset === "previous_30_days" || preset === "previous_month") {
+    const windowDays = totalSpanDays >= 60 ? 30 : Math.max(1, Math.floor(totalSpanDays / 2));
+    const periodStart = addDaysToDate(latestDate, -(windowDays - 1));
+    const compEnd = addDaysToDate(periodStart, -1);
+    const compStart = addDaysToDate(compEnd, -(windowDays - 1));
+    if (compEnd >= earliest) {
+      return {
+        ...options,
+        periodStart,
+        periodEnd: latestDate,
+        comparisonPreset: "custom",
+        comparisonStart: compStart < earliest ? earliest : compStart,
+        comparisonEnd: compEnd
+      };
+    }
+    return { ...options, periodStart: earliest, periodEnd: latestDate, comparisonPreset: "none" };
+  }
+
+  if (preset === "same_weekday_previous_weeks") {
+    return {
+      ...options,
+      periodStart: latestDate,
+      periodEnd: latestDate,
+      comparisonPreset: "same_weekday_previous_weeks"
+    };
+  }
+
+  // Default ("previous_day"): anchor to latest available date in dataset and compare against
+  // previous calendar day if populated, otherwise the actual previous active date in the dataset!
+  const prevCalendarDay = addDaysToDate(latestDate, -1);
+  if (previousActiveDate && previousActiveDate < latestDate && previousActiveDate !== prevCalendarDay) {
+    return {
+      ...options,
+      periodStart: latestDate,
+      periodEnd: latestDate,
+      comparisonPreset: "custom",
+      comparisonStart: previousActiveDate,
+      comparisonEnd: previousActiveDate
+    };
+  }
+
+  return {
+    ...options,
+    periodStart: latestDate,
+    periodEnd: latestDate,
+    comparisonPreset: preset
+  };
+}
+
 /**
  * Pure reusable entry point for running the Dynamic Metrics Engine on an in-memory row set
  * with an existing Stage 1 TableProfile (supports unit tests, local SQLite, and previews).
@@ -728,7 +824,33 @@ export function runDynamicAnalysisFromRows(
     isSelectedDomain: Boolean(options.domainId),
     overrides: options.overrides
   });
-  return assembleAnalysisResult(tableProfile, understanding, rows, options, "in_memory");
+
+  let effectiveOptions = options;
+  if (options.anchorToDatasetDates) {
+    const timezone = assertValidTimezone(options.timezone || DEFAULT_TIMEZONE);
+    const primaryDateRole = PRIMARY_DATE_ROLE_BY_DOMAIN[domainId];
+    const fallbackTemporalCol = tableProfile.columns.find(c => c.category === "temporal" && !c.isSensitive)?.name;
+    const dateColumn = understanding.roleAssignments[primaryDateRole]?.columnName || fallbackTemporalCol;
+    const distinctDates = new Set<string>();
+    if (dateColumn) {
+      for (const row of rows) {
+        const key = toDateKeyInTimezone(row[dateColumn], timezone);
+        if (key) distinctDates.add(key);
+      }
+    }
+    const sortedDates = [...distinctDates].sort();
+    const earliestDate = sortedDates[0] || tableProfile.freshness.earliestDate?.slice(0, 10) || null;
+    const latestDate = sortedDates[sortedDates.length - 1] || tableProfile.freshness.latestDate?.slice(0, 10) || null;
+    const previousActiveDate = sortedDates.length >= 2 ? sortedDates[sortedDates.length - 2] : null;
+    effectiveOptions = buildDatasetAnchoredOptions({
+      options,
+      earliestDate,
+      latestDate,
+      previousActiveDate
+    });
+  }
+
+  return assembleAnalysisResult(tableProfile, understanding, rows, effectiveOptions, "in_memory");
 }
 
 function getSafeDatasetColumns(tableProfile: TableProfile): string[] {
@@ -875,6 +997,23 @@ export function buildDatabaseAggregateFallbackSql(
   return `SELECT ${selectParts.join(", ")} FROM ${qualified} WHERE ${whereParts.join(" AND ")} GROUP BY ${dateGroupExpr} ORDER BY ${dateGroupExpr} ASC LIMIT 1000`;
 }
 
+function buildPreviousActiveDateSql(
+  tableProfile: TableProfile,
+  dateColumn: string,
+  beforeDate: string
+): string {
+  const allowedTables = new Set([tableProfile.name]);
+  const allowedCols = new Set(tableProfile.columns.map(c => c.name));
+  const qualified = quoteQualifiedTable(tableProfile.schema, tableProfile.name, allowedTables);
+  const qDate = quoteIdentifier(dateColumn, allowedCols);
+  if (isTextStoredDateColumn(tableProfile, dateColumn)) {
+    const normDateText = `REPLACE(SUBSTRING(TRIM(CAST(${qDate} AS TEXT)) FROM 1 FOR 10), '/', '-')`;
+    const validGuard = `TRIM(CAST(${qDate} AS TEXT)) ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}'`;
+    return `SELECT MAX(${normDateText}) AS prev_date FROM ${qualified} WHERE ${validGuard} AND ${normDateText} < '${beforeDate}'`;
+  }
+  return `SELECT TO_CHAR(MAX(CAST(${qDate} AS DATE)), 'YYYY-MM-DD') AS prev_date FROM ${qualified} WHERE CAST(${qDate} AS DATE) < DATE '${beforeDate}'`;
+}
+
 /**
  * Database-side read-only entry point: profiles the table via Stage 1 (or reuses an existing TableProfile),
  * builds safe read-only scoped queries without SELECT * or sensitive PII columns, and falls back to
@@ -892,13 +1031,6 @@ export async function runDynamicAnalysisWithExecutor(
   scopedRows: Array<Record<string, unknown>>;
 }> {
   const timezone = assertValidTimezone(options.timezone || DEFAULT_TIMEZONE);
-  const period = buildPeriodWindow(options.periodStart, options.periodEnd, timezone);
-  const comparison = resolveComparisonWindow(
-    period,
-    options.comparisonPreset ?? "previous_30_days",
-    options.comparisonStart,
-    options.comparisonEnd
-  );
 
   let tableProfile = precomputedTableProfile;
   let detectedDomain: BusinessDomainId | null = options.domainId || null;
@@ -933,25 +1065,75 @@ export async function runDynamicAnalysisWithExecutor(
     ? getSafeDatasetColumns(tableProfile)
     : getSafeMappedColumns(tableProfile, understanding);
 
-  if (tableProfile.isEmpty || safeColumns.length === 0 || (!dateColumn && !options.includeAllDatasetColumns)) {
-    const analysis = assembleAnalysisResult(tableProfile, understanding, [], options, "scoped_records");
+  // Anchor reporting & comparison windows to the dataset's actual dates when requested
+  let effectiveOptions = options;
+  if (options.anchorToDatasetDates && dateColumn && tableProfile.freshness.latestDate) {
+    const latestDate = tableProfile.freshness.latestDate.slice(0, 10);
+    const earliestDate = tableProfile.freshness.earliestDate?.slice(0, 10) || latestDate;
+    let previousActiveDate: string | null = null;
+    if ((options.comparisonPreset ?? "previous_day") === "previous_day") {
+      try {
+        const prevSql = buildPreviousActiveDateSql(tableProfile, dateColumn, latestDate);
+        const prevRows = await executor(prevSql);
+        const candidate = prevRows[0]?.prev_date;
+        if (typeof candidate === "string" && /^\d{4}-\d{2}-\d{2}/.test(candidate.trim())) {
+          previousActiveDate = candidate.trim().slice(0, 10);
+        }
+      } catch {
+        previousActiveDate = null;
+      }
+    }
+    effectiveOptions = buildDatasetAnchoredOptions({
+      options,
+      earliestDate,
+      latestDate,
+      previousActiveDate
+    });
+  }
+
+  const period = buildPeriodWindow(effectiveOptions.periodStart, effectiveOptions.periodEnd, timezone);
+  const comparison = resolveComparisonWindow(
+    period,
+    effectiveOptions.comparisonPreset ?? "previous_30_days",
+    effectiveOptions.comparisonStart,
+    effectiveOptions.comparisonEnd
+  );
+
+  if (tableProfile.isEmpty || safeColumns.length === 0 || (!dateColumn && !effectiveOptions.includeAllDatasetColumns)) {
+    const analysis = assembleAnalysisResult(tableProfile, understanding, [], effectiveOptions, "scoped_records");
     return { analysis, tableProfile, understanding, scopedRows: [] };
   }
 
-  if (!dateColumn && options.includeAllDatasetColumns) {
-    // Table has no date column: fetch bounded read-only rows across all safe columns directly
+  if ((!dateColumn || (effectiveOptions.anchorToDatasetDates && !tableProfile.freshness.latestDate)) && effectiveOptions.includeAllDatasetColumns) {
+    // Table has no date column or unprofiled text dates: fetch bounded read-only rows across all safe columns directly
     const allowedTables = new Set([tableProfile.name]);
     const allowedCols = new Set(safeColumns);
     const qualified = quoteQualifiedTable(tableProfile.schema, tableProfile.name, allowedTables);
     const quotedCols = safeColumns.map(col => quoteIdentifier(col, allowedCols));
     const boundedSql = `SELECT ${quotedCols.join(", ")} FROM ${qualified} LIMIT ${MAX_SCOPED_ROWS}`;
     const rows = await executor(boundedSql);
-    const analysis = assembleAnalysisResult(tableProfile, understanding, rows, options, "scoped_records");
+    if (dateColumn && effectiveOptions.anchorToDatasetDates && rows.length > 0) {
+      const distinctDates = new Set<string>();
+      for (const row of rows) {
+        const key = toDateKeyInTimezone(row[dateColumn], timezone);
+        if (key) distinctDates.add(key);
+      }
+      const sortedDates = [...distinctDates].sort();
+      if (sortedDates.length > 0) {
+        effectiveOptions = buildDatasetAnchoredOptions({
+          options: effectiveOptions,
+          earliestDate: sortedDates[0],
+          latestDate: sortedDates[sortedDates.length - 1],
+          previousActiveDate: sortedDates.length >= 2 ? sortedDates[sortedDates.length - 2] : null
+        });
+      }
+    }
+    const analysis = assembleAnalysisResult(tableProfile, understanding, rows, effectiveOptions, "scoped_records");
     return { analysis, tableProfile, understanding, scopedRows: rows };
   }
 
   if (!dateColumn) {
-    const analysis = assembleAnalysisResult(tableProfile, understanding, [], options, "scoped_records");
+    const analysis = assembleAnalysisResult(tableProfile, understanding, [], effectiveOptions, "scoped_records");
     return { analysis, tableProfile, understanding, scopedRows: [] };
   }
 
@@ -985,7 +1167,7 @@ export async function runDynamicAnalysisWithExecutor(
     rows = await executor(scopedSql);
   }
 
-  const analysis = assembleAnalysisResult(tableProfile, understanding, rows, options, executionMode, extraWarnings);
+  const analysis = assembleAnalysisResult(tableProfile, understanding, rows, effectiveOptions, executionMode, extraWarnings);
   return { analysis, tableProfile, understanding, scopedRows: rows };
 }
 
