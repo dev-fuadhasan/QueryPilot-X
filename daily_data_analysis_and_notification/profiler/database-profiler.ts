@@ -4,6 +4,7 @@ import { runOAuthReadOnlyQuery } from "../../src/lib/supabase";
 import { analyzeDatabaseSemantics } from "./semantic-detector";
 import {
   classifyPostgresDataType,
+  detectNumericDateOrder,
   isDateLikeColumnName,
   isSafeTokenValue,
   isSensitiveColumnName,
@@ -123,15 +124,26 @@ export function buildTextDateProbeSql(
   const qualified = quoteQualifiedTable(schema, tableName, allowedTables);
   const qCol = quoteIdentifier(columnName, allowedColumns);
   const expr = `TRIM(CAST(${qCol} AS TEXT))`;
+  const slashNorm = `REPLACE(SPLIT_PART(${expr}, ' ', 1), '-', '/')`;
+  const p1 = `CAST(NULLIF(SPLIT_PART(${slashNorm}, '/', 1), '') AS INTEGER)`;
+  const p2 = `CAST(NULLIF(SPLIT_PART(${slashNorm}, '/', 2), '') AS INTEGER)`;
+  const dmyIsoExpr = `CONCAT(SPLIT_PART(${slashNorm}, '/', 3), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 2), 2, '0'), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 1), 2, '0'))`;
+  const mdyIsoExpr = `CONCAT(SPLIT_PART(${slashNorm}, '/', 3), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 1), 2, '0'), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 2), 2, '0'))`;
   return `SELECT
     COUNT(*) FILTER (WHERE ${qCol} IS NOT NULL AND ${expr} <> '') AS non_empty_count,
     COUNT(*) FILTER (WHERE ${expr} ~ '${ISO_DATE_PG_REGEX}') AS iso_count,
     COUNT(*) FILTER (WHERE ${expr} ~ '${YMD_SLASH_PG_REGEX}') AS ymd_slash_count,
     COUNT(*) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}') AS ambiguous_count,
+    COUNT(*) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' AND ${p1} BETWEEN 13 AND 31 AND ${p2} BETWEEN 1 AND 12) AS dmy_proof_count,
+    COUNT(*) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' AND ${p1} BETWEEN 1 AND 12 AND ${p2} BETWEEN 13 AND 31) AS mdy_proof_count,
     MIN(SUBSTRING(${expr} FROM 1 FOR 10)) FILTER (WHERE ${expr} ~ '${ISO_DATE_PG_REGEX}') AS iso_min,
     MAX(SUBSTRING(${expr} FROM 1 FOR 10)) FILTER (WHERE ${expr} ~ '${ISO_DATE_PG_REGEX}') AS iso_max,
     MIN(REPLACE(SUBSTRING(${expr} FROM 1 FOR 10), '/', '-')) FILTER (WHERE ${expr} ~ '${YMD_SLASH_PG_REGEX}') AS ymd_min,
-    MAX(REPLACE(SUBSTRING(${expr} FROM 1 FOR 10), '/', '-')) FILTER (WHERE ${expr} ~ '${YMD_SLASH_PG_REGEX}') AS ymd_max
+    MAX(REPLACE(SUBSTRING(${expr} FROM 1 FOR 10), '/', '-')) FILTER (WHERE ${expr} ~ '${YMD_SLASH_PG_REGEX}') AS ymd_max,
+    MIN(${dmyIsoExpr}) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' AND ${p1} BETWEEN 1 AND 31 AND ${p2} BETWEEN 1 AND 12) AS dmy_min,
+    MAX(${dmyIsoExpr}) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' AND ${p1} BETWEEN 1 AND 31 AND ${p2} BETWEEN 1 AND 12) AS dmy_max,
+    MIN(${mdyIsoExpr}) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' AND ${p1} BETWEEN 1 AND 12 AND ${p2} BETWEEN 1 AND 31) AS mdy_min,
+    MAX(${mdyIsoExpr}) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' AND ${p1} BETWEEN 1 AND 12 AND ${p2} BETWEEN 1 AND 31) AS mdy_max
   FROM ${qualified}`;
 }
 
@@ -163,9 +175,10 @@ function evaluateTextDateSamples(
   let ambiguousCount = 0;
   const validIsos: string[] = [];
   const formats = new Set<string>();
+  const provenOrder = detectNumericDateOrder(values) ?? undefined;
 
   for (const val of values) {
-    const parsed = parseReliableDateString(val);
+    const parsed = parseReliableDateString(val, provenOrder);
     if (parsed.status === "empty") continue;
     if (parsed.status === "valid") {
       validCount += 1;
@@ -712,8 +725,38 @@ export async function profileDatabaseWithExecutor(
           const isoCount = Math.max(0, Math.trunc(toNumber(probe.iso_count) ?? 0));
           const ymdCount = Math.max(0, Math.trunc(toNumber(probe.ymd_slash_count) ?? 0));
           const ambiguousCount = Math.max(0, Math.trunc(toNumber(probe.ambiguous_count) ?? 0));
+          const dmyProofCount = Math.max(0, Math.trunc(toNumber(probe.dmy_proof_count) ?? 0));
+          const mdyProofCount = Math.max(0, Math.trunc(toNumber(probe.mdy_proof_count) ?? 0));
 
           if (nonEmpty > 0 && ambiguousCount > 0 && isoCount + ymdCount === 0) {
+            const provenOrder = dmyProofCount > 0 && mdyProofCount === 0
+              ? "dmy"
+              : mdyProofCount > 0 && dmyProofCount === 0
+                ? "mdy"
+                : null;
+            if (provenOrder && ambiguousCount / nonEmpty >= 0.7) {
+              const rawMin = provenOrder === "dmy" ? probe.dmy_min : probe.mdy_min;
+              const rawMax = provenOrder === "dmy" ? probe.dmy_max : probe.mdy_max;
+              const earliest = toIsoDate(rawMin);
+              const latest = toIsoDate(rawMax);
+              if (earliest && latest) {
+                const invalidDateCount = Math.max(0, nonEmpty - ambiguousCount);
+                const spanDays = Math.max(0, Math.round((Date.parse(latest) - Date.parse(earliest)) / 86_400_000));
+                const freshnessHours = roundTwo(Math.max(0, (now.getTime() - Date.parse(latest)) / 3_600_000));
+                col.category = "temporal";
+                col.temporalStats = {
+                  earliest,
+                  latest,
+                  spanDays,
+                  freshnessHours,
+                  invalidDateCount,
+                  ambiguousDateCount: 0,
+                  inferredFromText: true,
+                  detectedFormat: provenOrder
+                };
+                continue;
+              }
+            }
             col.temporalStats = {
               earliest: null,
               latest: null,

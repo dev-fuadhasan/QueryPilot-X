@@ -1,5 +1,5 @@
 import type { Session } from "../../src/lib/session";
-import { createSessionQueryExecutor, understandTableForDomain } from "../profiler";
+import { createSessionQueryExecutor, detectNumericDateOrder, understandTableForDomain } from "../profiler";
 import type { DomainTableUnderstanding, ReadOnlyQueryExecutor, TableProfile } from "../profiler/types";
 import {
   PRIMARY_DATE_ROLE_BY_DOMAIN,
@@ -63,8 +63,14 @@ function splitRowsByWindow(
     return { periodRows, comparisonRows };
   }
 
+  const colMeta = tableProfile.columns.find(c => c.name === dateColumn);
+  const fmt = colMeta?.temporalStats?.detectedFormat;
+  const dateOrder = fmt === "dmy" || fmt === "mdy"
+    ? fmt
+    : (detectNumericDateOrder(rows.map(r => r[dateColumn])) ?? undefined);
+
   for (const row of rows) {
-    const key = toDateKeyInTimezone(row[dateColumn], analysis.timezone);
+    const key = toDateKeyInTimezone(row[dateColumn], analysis.timezone, dateOrder);
     if (!key) continue;
     if (key >= analysis.reportingPeriod.start && key <= analysis.reportingPeriod.end) {
       periodRows.push(row);
@@ -72,6 +78,9 @@ function splitRowsByWindow(
     if (analysis.comparisonPeriod && isDateInComparison(key, analysis.comparisonPeriod)) {
       comparisonRows.push(row);
     }
+  }
+  if (includeAllDatasetColumns && periodRows.length === 0 && comparisonRows.length === 0 && rows.length > 0) {
+    periodRows.push(...rows);
   }
   return { periodRows, comparisonRows };
 }

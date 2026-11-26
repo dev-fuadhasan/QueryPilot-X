@@ -182,9 +182,9 @@ export function isDateLikeColumnName(columnName: string): boolean {
   const tokens = tokenizeName(columnName);
   if (!tokens.length) return false;
   if (tokens.some(t => DATE_NAME_NEGATIVE_TOKENS.has(t))) return false;
-  if (tokens.includes("date") || tokens.includes("timestamp") || tokens.includes("datetime")) return true;
+  if (tokens.includes("date") || tokens.includes("timestamp") || tokens.includes("datetime") || tokens.includes("dt")) return true;
   const last = tokens[tokens.length - 1];
-  if (last === "at" || last === "on" || last === "dt" || last === "day" || last === "time") {
+  if (last === "at" || last === "on" || last === "day" || last === "time") {
     return tokens.length === 1 || tokens.some(t => DATE_NAME_POSITIVE_TOKENS.has(t));
   }
   return false;
@@ -235,6 +235,8 @@ function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
+export type NumericDateOrder = "dmy" | "mdy";
+
 export type ReliableDateParseResult =
   | { status: "empty" }
   | { status: "ambiguous" }
@@ -243,18 +245,45 @@ export type ReliableDateParseResult =
       status: "valid";
       iso: string;
       dateOnly: string;
-      format: "iso_date" | "iso_timestamp" | "ymd_slash" | "month_name";
+      format: "iso_date" | "iso_timestamp" | "ymd_slash" | "month_name" | "dmy" | "mdy";
     };
 
 /**
+ * Inspects a column's sample/row values to mathematically prove whether numeric DD/MM/YYYY vs MM/DD/YYYY
+ * dates follow DMY or MDY order. Returns null if never disambiguated (all values <= 12) or contradictory.
+ */
+export function detectNumericDateOrder(values: Iterable<unknown>): NumericDateOrder | null {
+  let firstGt12 = 0;
+  let secondGt12 = 0;
+  for (const val of values) {
+    if (typeof val !== "string") continue;
+    const text = val.trim();
+    if (!text || text.length > 32) continue;
+    const m = /^(\d{1,2})([/-])(\d{1,2})\2(\d{4})(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?$/.exec(text);
+    if (!m) continue;
+    const a = Number(m[1]);
+    const b = Number(m[3]);
+    if (a < 1 || b < 1 || a > 31 || b > 31 || (a > 12 && b > 12)) continue;
+    if (a > 12 && b <= 12) firstGt12 += 1;
+    else if (b > 12 && a <= 12) secondGt12 += 1;
+  }
+  if (firstGt12 > 0 && secondGt12 === 0) return "dmy";
+  if (secondGt12 > 0 && firstGt12 === 0) return "mdy";
+  return null;
+}
+
+/**
  * Strictly parses unambiguous date/timestamp strings and validates calendar dates.
- * - Accepts ISO dates (YYYY-MM-DD), ISO timestamps (YYYY-MM-DD[T ]HH:mm...), year-first YYYY/MM/DD,
+ * - Accepts ISO dates (YYYY-MM-DD or YYYY-M-D), ISO timestamps (YYYY-MM-DD[T ]HH:mm...), year-first YYYY/MM/DD,
  *   and unambiguous named-month dates (e.g. "15 Jan 2026", "Jan 15, 2026", "2026-Jan-15").
  * - Explicitly flags ambiguous numeric slash/hyphen dates (DD/MM/YYYY vs MM/DD/YYYY) as "ambiguous"
- *   instead of silently guessing a locale convention.
+ *   unless a column-proven `preferredOrder` ("dmy" or "mdy") is supplied.
  * - Rejects invalid calendar dates (e.g. 2026-02-30, 2026-13-01) and non-date strings.
  */
-export function parseReliableDateString(value: unknown): ReliableDateParseResult {
+export function parseReliableDateString(
+  value: unknown,
+  preferredOrder?: NumericDateOrder
+): ReliableDateParseResult {
   if (value === null || value === undefined) return { status: "empty" };
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) return { status: "invalid" };
@@ -269,15 +298,15 @@ export function parseReliableDateString(value: unknown): ReliableDateParseResult
   if (!text) return { status: "empty" };
   if (text.length > 64) return { status: "invalid" };
 
-  // 1. Strict ISO date: YYYY-MM-DD
-  const isoDateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  // 1. Strict ISO date: YYYY-MM-DD (also accepts unambiguous YYYY-M-D)
+  const isoDateMatch = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text);
   if (isoDateMatch) {
     const [, yStr, mStr, dStr] = isoDateMatch;
     const y = Number(yStr);
     const m = Number(mStr);
     const d = Number(dStr);
     if (!isRealCalendarDate(y, m, d)) return { status: "invalid" };
-    const dateOnly = `${yStr}-${mStr}-${dStr}`;
+    const dateOnly = `${yStr}-${pad2(m)}-${pad2(d)}`;
     return { status: "valid", iso: `${dateOnly}T00:00:00.000Z`, dateOnly, format: "iso_date" };
   }
 
@@ -325,14 +354,27 @@ export function parseReliableDateString(value: unknown): ReliableDateParseResult
     };
   }
 
-  // 4. Ambiguous numeric DD/MM/YYYY vs MM/DD/YYYY (or DD-MM-YYYY vs MM-DD-YYYY)
-  const numericAmbMatch = /^(\d{1,2})([/-])(\d{1,2})\2(\d{4})(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?$/.exec(text);
+  // 4. Numeric DD/MM/YYYY vs MM/DD/YYYY (or DD-MM-YYYY vs MM-DD-YYYY)
+  const numericAmbMatch = /^(\d{1,2})([/-])(\d{1,2})\2(\d{4})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
   if (numericAmbMatch) {
     const a = Number(numericAmbMatch[1]);
     const b = Number(numericAmbMatch[3]);
-    // Both impossible months/days -> clearly invalid; otherwise ambiguous convention (never silently guess DD/MM vs MM/DD)
-    if (a < 1 || b < 1 || a > 31 || b > 31 || (a > 12 && b > 12)) {
+    const y = Number(numericAmbMatch[4]);
+    const hh = numericAmbMatch[5] ? Number(numericAmbMatch[5]) : 0;
+    const mm = numericAmbMatch[6] ? Number(numericAmbMatch[6]) : 0;
+    const ss = numericAmbMatch[7] ? Number(numericAmbMatch[7]) : 0;
+    if (a < 1 || b < 1 || a > 31 || b > 31 || (a > 12 && b > 12) || hh > 23 || mm > 59 || ss > 59) {
       return { status: "invalid" };
+    }
+    if (preferredOrder === "dmy") {
+      if (!isRealCalendarDate(y, b, a)) return { status: "invalid" };
+      const dateOnly = `${y}-${pad2(b)}-${pad2(a)}`;
+      return { status: "valid", iso: `${dateOnly}T${pad2(hh)}:${pad2(mm)}:${pad2(ss)}.000Z`, dateOnly, format: "dmy" };
+    }
+    if (preferredOrder === "mdy") {
+      if (!isRealCalendarDate(y, a, b)) return { status: "invalid" };
+      const dateOnly = `${y}-${pad2(a)}-${pad2(b)}`;
+      return { status: "valid", iso: `${dateOnly}T${pad2(hh)}:${pad2(mm)}:${pad2(ss)}.000Z`, dateOnly, format: "mdy" };
     }
     return { status: "ambiguous" };
   }

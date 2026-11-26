@@ -1,4 +1,4 @@
-import { parseReliableDateString } from "../profiler/sql-safety";
+import { parseReliableDateString, type NumericDateOrder } from "../profiler/sql-safety";
 import type {
   ComparisonPreset,
   ComparisonWindow,
@@ -68,14 +68,24 @@ export function enumerateDates(start: string, end: string): string[] {
   return result;
 }
 
-export function toDateKeyInTimezone(value: unknown, timezone = DEFAULT_TIMEZONE): string | null {
+export function toDateKeyInTimezone(
+  value: unknown,
+  timezone = DEFAULT_TIMEZONE,
+  preferredOrder?: NumericDateOrder
+): string | null {
   if (value === null || value === undefined) return null;
   if (value instanceof Date) {
     return Number.isNaN(value.getTime()) ? null : todayInTimezone(timezone, value);
   }
-  const parsed = parseReliableDateString(value);
+  const parsed = parseReliableDateString(value, preferredOrder);
   if (parsed.status !== "valid") return null;
-  if (parsed.format === "iso_date" || parsed.format === "ymd_slash" || parsed.format === "month_name") {
+  if (
+    parsed.format === "iso_date"
+    || parsed.format === "ymd_slash"
+    || parsed.format === "month_name"
+    || parsed.format === "dmy"
+    || parsed.format === "mdy"
+  ) {
     return parsed.dateOnly;
   }
   const text = String(value).trim();
@@ -86,8 +96,8 @@ export function toDateKeyInTimezone(value: unknown, timezone = DEFAULT_TIMEZONE)
   return Number.isNaN(dt.getTime()) ? null : todayInTimezone(timezone, dt);
 }
 
-export function parseTimestampMs(value: unknown): number | null {
-  const parsed = parseReliableDateString(value);
+export function parseTimestampMs(value: unknown, preferredOrder?: NumericDateOrder): number | null {
+  const parsed = parseReliableDateString(value, preferredOrder);
   if (parsed.status !== "valid") return null;
   const ms = Date.parse(parsed.iso);
   return Number.isFinite(ms) ? ms : null;

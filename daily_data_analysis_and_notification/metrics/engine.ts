@@ -1,11 +1,13 @@
 import type { Session } from "../../src/lib/session";
 import {
   createSessionQueryExecutor,
+  detectNumericDateOrder,
   getDomainProfile,
   profileDatabaseWithExecutor,
   quoteIdentifier,
   quoteQualifiedTable,
-  understandTableForDomain
+  understandTableForDomain,
+  type NumericDateOrder
 } from "../profiler";
 import type {
   BusinessDomainId,
@@ -448,6 +450,21 @@ function buildDirectColumnExtras(input: {
   return { extraMetrics, breakdowns, timeSeries };
 }
 
+function resolveDateColumnOrder(
+  tableProfile: TableProfile,
+  dateColumn: string | null | undefined,
+  rows: Array<Record<string, unknown>>
+): NumericDateOrder | undefined {
+  if (!dateColumn) return undefined;
+  const colMeta = tableProfile.columns.find(c => c.name === dateColumn);
+  const fmt = colMeta?.temporalStats?.detectedFormat;
+  if (fmt === "dmy" || fmt === "mdy") return fmt;
+  if (rows.length > 0) {
+    return detectNumericDateOrder(rows.map(r => r[dateColumn])) ?? undefined;
+  }
+  return undefined;
+}
+
 function assembleAnalysisResult(
   tableProfile: TableProfile,
   understanding: DomainTableUnderstanding,
@@ -466,8 +483,12 @@ function assembleAnalysisResult(
   );
   const allowMedium = options.allowMediumConfidence ?? true;
   const domainProfile = getDomainProfile(understanding.domainId);
-  const accessor = createRoleAccessor(understanding, timezone, allowMedium);
   const primaryDateRole = PRIMARY_DATE_ROLE_BY_DOMAIN[understanding.domainId];
+  const fallbackTemporalCol = tableProfile.columns.find(c => c.category === "temporal" && !c.isSensitive)?.name || null;
+  const mappedDateCol = understanding.roleAssignments[primaryDateRole]?.columnName || null;
+  const activeDateColumn = mappedDateCol || (options.includeAllDatasetColumns ? fallbackTemporalCol : null);
+  const dateOrder = resolveDateColumnOrder(tableProfile, activeDateColumn, rows);
+  const accessor = createRoleAccessor(understanding, timezone, allowMedium, dateOrder);
 
   const dataQualityWarnings: string[] = [...extraWarnings, ...tableProfile.warnings];
   if (tableProfile.isEmpty || rows.length === 0) {
@@ -480,13 +501,11 @@ function assembleAnalysisResult(
   let invalidDateRows = 0;
   const periodRows: Array<Record<string, unknown>> = [];
   const comparisonRows: Array<Record<string, unknown>> = [];
-  const fallbackTemporalCol = tableProfile.columns.find(c => c.category === "temporal" && !c.isSensitive)?.name || null;
-  const activeDateColumn = accessor.column(primaryDateRole) || (options.includeAllDatasetColumns ? fallbackTemporalCol : null);
 
   if (activeDateColumn) {
     for (const row of rows) {
       const rawDate = row[activeDateColumn];
-      const dateKey = toDateKeyInTimezone(rawDate, timezone);
+      const dateKey = toDateKeyInTimezone(rawDate, timezone, dateOrder);
       if (!dateKey) {
         if (rawDate !== null && rawDate !== undefined && String(rawDate).trim() !== "") {
           invalidDateRows += 1;
@@ -499,6 +518,10 @@ function assembleAnalysisResult(
       if (comparison && isDateInComparisonWindow(dateKey, comparison)) {
         comparisonRows.push(row);
       }
+    }
+    if (options.includeAllDatasetColumns && periodRows.length === 0 && comparisonRows.length === 0 && invalidDateRows === rows.length && rows.length > 0) {
+      // Every row in the inferred date column was non-date text -> analyze all rows directly instead of returning 0s
+      periodRows.push(...rows);
     }
   } else if (options.includeAllDatasetColumns) {
     // Table has no date column: evaluate all rows directly across the dataset's actual columns
@@ -833,8 +856,9 @@ export function runDynamicAnalysisFromRows(
     const dateColumn = understanding.roleAssignments[primaryDateRole]?.columnName || fallbackTemporalCol;
     const distinctDates = new Set<string>();
     if (dateColumn) {
+      const colOrder = resolveDateColumnOrder(tableProfile, dateColumn, rows);
       for (const row of rows) {
-        const key = toDateKeyInTimezone(row[dateColumn], timezone);
+        const key = toDateKeyInTimezone(row[dateColumn], timezone, colOrder);
         if (key) distinctDates.add(key);
       }
     }
@@ -904,8 +928,22 @@ function buildSafeDateRangePredicate(
   windowEnd: string
 ): { predicate: string; dateGroupExpr: string } {
   if (isTextStoredDateColumn(tableProfile, dateColumn)) {
-    const normDateText = `REPLACE(SUBSTRING(TRIM(CAST(${qDate} AS TEXT)) FROM 1 FOR 10), '/', '-')`;
-    const validGuard = `TRIM(CAST(${qDate} AS TEXT)) ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}'`;
+    const colMeta = tableProfile.columns.find(c => c.name === dateColumn);
+    const fmt = colMeta?.temporalStats?.detectedFormat;
+    const expr = `TRIM(CAST(${qDate} AS TEXT))`;
+    if (fmt === "dmy" || fmt === "mdy") {
+      const slashNorm = `REPLACE(SPLIT_PART(${expr}, ' ', 1), '-', '/')`;
+      const validGuard = `${expr} ~ '^[0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{4}'`;
+      const normDateText = fmt === "dmy"
+        ? `CONCAT(SPLIT_PART(${slashNorm}, '/', 3), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 2), 2, '0'), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 1), 2, '0'))`
+        : `CONCAT(SPLIT_PART(${slashNorm}, '/', 3), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 1), 2, '0'), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 2), 2, '0'))`;
+      return {
+        predicate: `${validGuard} AND ${normDateText} >= '${windowStart}' AND ${normDateText} <= '${windowEnd}'`,
+        dateGroupExpr: normDateText
+      };
+    }
+    const normDateText = `REPLACE(SUBSTRING(${expr} FROM 1 FOR 10), '/', '-')`;
+    const validGuard = `${expr} ~ '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}'`;
     return {
       predicate: `${validGuard} AND ${normDateText} >= '${windowStart}' AND ${normDateText} <= '${windowEnd}'`,
       dateGroupExpr: normDateText
@@ -1007,8 +1045,19 @@ function buildPreviousActiveDateSql(
   const qualified = quoteQualifiedTable(tableProfile.schema, tableProfile.name, allowedTables);
   const qDate = quoteIdentifier(dateColumn, allowedCols);
   if (isTextStoredDateColumn(tableProfile, dateColumn)) {
-    const normDateText = `REPLACE(SUBSTRING(TRIM(CAST(${qDate} AS TEXT)) FROM 1 FOR 10), '/', '-')`;
-    const validGuard = `TRIM(CAST(${qDate} AS TEXT)) ~ '^[0-9]{4}[-/][0-9]{2}[-/][0-9]{2}'`;
+    const colMeta = tableProfile.columns.find(c => c.name === dateColumn);
+    const fmt = colMeta?.temporalStats?.detectedFormat;
+    const expr = `TRIM(CAST(${qDate} AS TEXT))`;
+    if (fmt === "dmy" || fmt === "mdy") {
+      const slashNorm = `REPLACE(SPLIT_PART(${expr}, ' ', 1), '-', '/')`;
+      const validGuard = `${expr} ~ '^[0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{4}'`;
+      const normDateText = fmt === "dmy"
+        ? `CONCAT(SPLIT_PART(${slashNorm}, '/', 3), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 2), 2, '0'), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 1), 2, '0'))`
+        : `CONCAT(SPLIT_PART(${slashNorm}, '/', 3), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 1), 2, '0'), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 2), 2, '0'))`;
+      return `SELECT MAX(${normDateText}) AS prev_date FROM ${qualified} WHERE ${validGuard} AND ${normDateText} < '${beforeDate}'`;
+    }
+    const normDateText = `REPLACE(SUBSTRING(${expr} FROM 1 FOR 10), '/', '-')`;
+    const validGuard = `${expr} ~ '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}'`;
     return `SELECT MAX(${normDateText}) AS prev_date FROM ${qualified} WHERE ${validGuard} AND ${normDateText} < '${beforeDate}'`;
   }
   return `SELECT TO_CHAR(MAX(CAST(${qDate} AS DATE)), 'YYYY-MM-DD') AS prev_date FROM ${qualified} WHERE CAST(${qDate} AS DATE) < DATE '${beforeDate}'`;
@@ -1106,20 +1155,55 @@ export async function runDynamicAnalysisWithExecutor(
 
   if ((!dateColumn || (effectiveOptions.anchorToDatasetDates && !tableProfile.freshness.latestDate)) && effectiveOptions.includeAllDatasetColumns) {
     // Table has no date column or unprofiled text dates: fetch bounded read-only rows across all safe columns directly
-    const allowedTables = new Set([tableProfile.name]);
+    let resolvedProfile: TableProfile = tableProfile;
+    const allowedTables = new Set([resolvedProfile.name]);
     const allowedCols = new Set(safeColumns);
-    const qualified = quoteQualifiedTable(tableProfile.schema, tableProfile.name, allowedTables);
+    const qualified = quoteQualifiedTable(resolvedProfile.schema, resolvedProfile.name, allowedTables);
     const quotedCols = safeColumns.map(col => quoteIdentifier(col, allowedCols));
     const boundedSql = `SELECT ${quotedCols.join(", ")} FROM ${qualified} LIMIT ${MAX_SCOPED_ROWS}`;
     const rows = await executor(boundedSql);
     if (dateColumn && effectiveOptions.anchorToDatasetDates && rows.length > 0) {
+      const colOrder = resolveDateColumnOrder(resolvedProfile, dateColumn, rows);
       const distinctDates = new Set<string>();
       for (const row of rows) {
-        const key = toDateKeyInTimezone(row[dateColumn], timezone);
+        const key = toDateKeyInTimezone(row[dateColumn], timezone, colOrder);
         if (key) distinctDates.add(key);
       }
       const sortedDates = [...distinctDates].sort();
       if (sortedDates.length > 0) {
+        const earliestIso = `${sortedDates[0]}T00:00:00.000Z`;
+        const latestIso = `${sortedDates[sortedDates.length - 1]}T00:00:00.000Z`;
+        const nowRef = effectiveOptions.now || new Date();
+        const spanDays = Math.max(0, Math.round((Date.parse(latestIso) - Date.parse(earliestIso)) / 86_400_000));
+        const ageHours = safeRound(Math.max(0, (nowRef.getTime() - Date.parse(latestIso)) / 3_600_000), 2);
+        resolvedProfile = {
+          ...resolvedProfile,
+          freshness: {
+            primaryDateColumn: dateColumn,
+            earliestDate: earliestIso,
+            latestDate: latestIso,
+            ageHours,
+            status: ageHours <= 48 ? "fresh" : ageHours <= 168 ? "recent" : "stale"
+          },
+          columns: resolvedProfile.columns.map(c =>
+            c.name === dateColumn
+              ? {
+                  ...c,
+                  category: "temporal",
+                  temporalStats: {
+                    earliest: earliestIso,
+                    latest: latestIso,
+                    spanDays,
+                    freshnessHours: ageHours,
+                    invalidDateCount: 0,
+                    ambiguousDateCount: 0,
+                    inferredFromText: true,
+                    detectedFormat: colOrder || "iso_date"
+                  }
+                }
+              : c
+          )
+        };
         effectiveOptions = buildDatasetAnchoredOptions({
           options: effectiveOptions,
           earliestDate: sortedDates[0],
@@ -1128,8 +1212,8 @@ export async function runDynamicAnalysisWithExecutor(
         });
       }
     }
-    const analysis = assembleAnalysisResult(tableProfile, understanding, rows, effectiveOptions, "scoped_records");
-    return { analysis, tableProfile, understanding, scopedRows: rows };
+    const analysis = assembleAnalysisResult(resolvedProfile, understanding, rows, effectiveOptions, "scoped_records");
+    return { analysis, tableProfile: resolvedProfile, understanding, scopedRows: rows };
   }
 
   if (!dateColumn) {
