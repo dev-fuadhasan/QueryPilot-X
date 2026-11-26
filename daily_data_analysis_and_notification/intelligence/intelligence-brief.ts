@@ -125,15 +125,16 @@ export function buildDailyIntelligenceBrief(
     } else if (evalStatus.performanceLabel === "Declined — Loss Increased") {
       headline = `${metric.name} loss increased by ${absChange.toFixed(1)}%`;
     } else if (evalStatus.performanceLabel === "Turned Profitable") {
-      headline = `${metric.name} turned profitable (+${absChange.toFixed(1)}%)`;
+      headline = `${metric.name} turned profitable (↑ ${absChange.toFixed(1)}%)`;
     } else if (evalStatus.performanceLabel === "Moved Into Loss") {
-      headline = `${metric.name} moved into loss (-${absChange.toFixed(1)}%)`;
+      headline = `${metric.name} moved into loss (↓ ${absChange.toFixed(1)}%)`;
     } else {
       const directionWord = effectiveChangePct >= 0 ? "increased" : "decreased";
       headline = `${metric.name} ${directionWord} by ${absChange.toFixed(1)}%`;
     }
 
-    const whatChanged = `${metric.formattedValue} vs ${metric.formattedComparisonValue} reference (${effectiveChangePct >= 0 ? "+" : ""}${effectiveChangePct.toFixed(1)}%).`;
+    const changeArrow = Math.abs(effectiveChangePct) < 0.05 ? "→" : effectiveChangePct > 0 ? "↑" : "↓";
+    const whatChanged = `${metric.formattedValue} vs ${metric.formattedComparisonValue} reference (${changeArrow} ${absChange.toFixed(1)}%).`;
 
     const investigateNext = topContributor
       ? `Review ${topContributor.dimensionLabel.toLowerCase()} "${topContributor.groupLabel}", which was associated with ${topContributor.evidence}.`

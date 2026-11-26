@@ -854,6 +854,27 @@ function buildDatasetAnchoredOptions(input: {
     return { ...options, periodStart: earliest, periodEnd: latestDate, comparisonPreset: "none" };
   }
 
+  if (preset === "previous_90_days" || preset === "previous_180_days" || preset === "previous_365_days") {
+    const targetDays = preset === "previous_90_days" ? 90 : preset === "previous_180_days" ? 180 : 365;
+    const windowDays = totalSpanDays >= targetDays * 2
+      ? targetDays
+      : Math.max(1, Math.floor(totalSpanDays / 2));
+    const periodStart = addDaysToDate(latestDate, -(windowDays - 1));
+    const compEnd = addDaysToDate(periodStart, -1);
+    const compStart = addDaysToDate(compEnd, -(windowDays - 1));
+    if (compEnd >= earliest) {
+      return {
+        ...options,
+        periodStart,
+        periodEnd: latestDate,
+        comparisonPreset: "custom",
+        comparisonStart: compStart < earliest ? earliest : compStart,
+        comparisonEnd: compEnd
+      };
+    }
+    return { ...options, periodStart: earliest, periodEnd: latestDate, comparisonPreset: "none" };
+  }
+
   if (preset === "same_weekday_previous_weeks") {
     return {
       ...options,

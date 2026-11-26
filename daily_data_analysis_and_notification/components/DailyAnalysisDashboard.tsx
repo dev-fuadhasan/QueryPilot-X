@@ -95,6 +95,8 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   const [selectedDataset, setSelectedDataset] = useState<string>("");
   const [columnOverrides, setColumnOverrides] = useState<Record<string, string>>({});
   const [comparisonPreset, setComparisonPreset] = useState<ComparisonPreset>("previous_day");
+  const [manualPeriodStart, setManualPeriodStart] = useState<string>("");
+  const [manualPeriodEnd, setManualPeriodEnd] = useState<string>("");
 
   const [profile, setProfile] = useState<DatabaseProfile | null>(null);
   const [loadingProfile, setLoadingProfile] = useState<boolean>(true);
@@ -232,6 +234,8 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     tz: string;
     rules: AlertRules;
     latestAvailableDate?: string | null;
+    periodStart?: string;
+    periodEnd?: string;
     fresh?: boolean;
   }) => {
     if (!params.table) return;
@@ -239,6 +243,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     const seq = ++intelSeqRef.current;
     setLoadingIntelligence(true);
     setIntelligenceError(null);
+    const hasManualPeriod = Boolean(params.periodStart && params.periodEnd);
     try {
       const response = await fetch("/api/daily-analysis/intelligence", {
         method: "POST",
@@ -247,8 +252,10 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
           table: params.table,
           timezone: params.tz,
           comparisonPreset: params.preset,
+          periodStart: hasManualPeriod ? params.periodStart : undefined,
+          periodEnd: hasManualPeriod ? params.periodEnd : undefined,
           includeAllDatasetColumns: true,
-          anchorToDatasetDates: true,
+          anchorToDatasetDates: !hasManualPeriod,
           fresh: params.fresh === true,
           overrides: Object.keys(params.overrides).length ? params.overrides : undefined,
           alertRules: params.rules
@@ -427,6 +434,8 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     resetStaleResults();
     setSelectedDataset(nextTable);
     setColumnOverrides({});
+    setManualPeriodStart("");
+    setManualPeriodEnd("");
     const profiledTable = availableTables.find(t => t.name === nextTable) || null;
     const autoDomain = profile?.tableUnderstandings?.[nextTable]?.domainId || selectedDomain;
     if (autoDomain !== selectedDomain) {
@@ -465,11 +474,51 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
 
   async function handleComparisonPresetChange(nextPreset: ComparisonPreset) {
     setComparisonPreset(nextPreset);
+    // Selecting "All Data (Full Dataset)" clears any narrower manual window so all rows are analyzed
+    const useManual = nextPreset !== "none" && Boolean(manualPeriodStart && manualPeriodEnd);
+    if (nextPreset === "none" && (manualPeriodStart || manualPeriodEnd)) {
+      setManualPeriodStart("");
+      setManualPeriodEnd("");
+    }
     if (!selectedDataset) return;
     await loadIntelligence({
       domain: selectedDomain,
       table: selectedDataset,
       preset: nextPreset,
+      overrides: columnOverrides,
+      tz: timezone,
+      rules: alertRules,
+      periodStart: useManual ? manualPeriodStart : undefined,
+      periodEnd: useManual ? manualPeriodEnd : undefined,
+      latestAvailableDate: currentTableProfile?.freshness.latestDate || null
+    });
+  }
+
+  async function handleApplyManualPeriod(start: string, end: string) {
+    setManualPeriodStart(start);
+    setManualPeriodEnd(end);
+    if (!selectedDataset) return;
+    await loadIntelligence({
+      domain: selectedDomain,
+      table: selectedDataset,
+      preset: comparisonPreset,
+      overrides: columnOverrides,
+      tz: timezone,
+      rules: alertRules,
+      periodStart: start,
+      periodEnd: end,
+      latestAvailableDate: currentTableProfile?.freshness.latestDate || null
+    });
+  }
+
+  async function handleClearManualPeriod() {
+    setManualPeriodStart("");
+    setManualPeriodEnd("");
+    if (!selectedDataset) return;
+    await loadIntelligence({
+      domain: selectedDomain,
+      table: selectedDataset,
+      preset: comparisonPreset,
       overrides: columnOverrides,
       tz: timezone,
       rules: alertRules,
@@ -870,6 +919,12 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         intelligenceError={intelligenceError}
         comparisonPreset={comparisonPreset}
         onComparisonPresetChange={preset => void handleComparisonPresetChange(preset)}
+        manualPeriodStart={manualPeriodStart}
+        manualPeriodEnd={manualPeriodEnd}
+        earliestAvailableDate={currentTableProfile?.freshness.earliestDate?.slice(0, 10) || null}
+        latestAvailableDate={currentTableProfile?.freshness.latestDate?.slice(0, 10) || null}
+        onApplyManualPeriod={(start, end) => void handleApplyManualPeriod(start, end)}
+        onClearManualPeriod={() => void handleClearManualPeriod()}
         alerts={displayAlerts}
         alertRules={alertRules}
         savingAlertRules={savingAlertRules}

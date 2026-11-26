@@ -153,7 +153,11 @@ export const COMPARISON_PRESET_OPTIONS: ReadonlyArray<{
   { value: "previous_week", label: "Previous Week" },
   { value: "previous_month", label: "Previous Month" },
   { value: "previous_7_days", label: "Previous 7 Days" },
-  { value: "previous_30_days", label: "Previous 30 Days" }
+  { value: "previous_30_days", label: "Previous 30 Days" },
+  { value: "previous_90_days", label: "Previous 3 Months" },
+  { value: "previous_180_days", label: "Previous 6 Months" },
+  { value: "previous_365_days", label: "Previous 1 Year" },
+  { value: "none", label: "All Data (Full Dataset)" }
 ];
 
 export function isValidIsoDateString(value: string): boolean {
@@ -408,6 +412,19 @@ export function formatSignedPercent(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "N/A";
   const sign = value > 0 ? "+" : "";
   return `${sign}${value.toFixed(1)}%`;
+}
+
+export function formatArrowPercent(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "N/A";
+  if (Math.abs(value) < 0.05) return `→ ${Math.abs(value).toFixed(1)}%`;
+  return `${value > 0 ? "↑" : "↓"} ${Math.abs(value).toFixed(1)}%`;
+}
+
+export function formatArrowNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "N/A";
+  const formatted = Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  if (Math.abs(value) < 0.005) return `→ ${formatted}`;
+  return `${value > 0 ? "↑" : "↓"} ${formatted}`;
 }
 
 export function formatFileSize(bytes: number | null | undefined): string {

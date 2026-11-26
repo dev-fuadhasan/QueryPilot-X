@@ -31,6 +31,7 @@ export type ComparisonPreset =
   | "previous_7_days"
   | "previous_30_days"
   | "previous_90_days"
+  | "previous_180_days"
   | "previous_365_days"
   | "same_weekday_previous_weeks"
   | "custom"
