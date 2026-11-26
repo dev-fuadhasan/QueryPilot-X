@@ -176,4 +176,6 @@ export type DynamicAnalysisOptions = {
   now?: Date;
   /** Analyze all actual numeric & categorical columns of the selected dataset directly without requiring manual column mapping. */
   includeAllDatasetColumns?: boolean;
+  /** Automatically anchor reporting and comparison windows to the dataset's actual available dates instead of today/yesterday. */
+  anchorToDatasetDates?: boolean;
 };
