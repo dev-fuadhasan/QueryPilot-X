@@ -3,9 +3,11 @@ import type {
   ComparisonPreset,
   ComparisonWindow,
   DynamicAnalysisResult,
+  FinancialPosition,
   MetricFormat,
   MetricPolarity,
   MetricUnit,
+  PerformanceDirection,
   PeriodWindow,
   TrendDirection
 } from "../metrics/types";
@@ -196,6 +198,16 @@ export type BriefFinding = {
   metricId: string | null;
   metricValue: string | null;
   changePercent: number | null;
+  /** Canonical Performance Direction from the single-source-of-truth metric evaluator */
+  performanceDirection?: PerformanceDirection;
+  /** Human-readable performance status (e.g. "Improved — Loss Reduced", "Turned Profitable") */
+  performanceLabel?: string | null;
+  /** Current financial position separated from Performance Direction */
+  financialPosition?: FinancialPosition | null;
+  /** Human-readable current financial position (e.g. "Still Negative (Loss)", "Positive Gross Profit") */
+  financialPositionLabel?: string | null;
+  /** True when the metric is currently in a negative/loss position */
+  isLossPosition?: boolean;
   investigation?: FindingInvestigationResult | null;
 };
 
@@ -238,6 +250,14 @@ export type SmartComparisonMetricRow = {
   changePercent: number | null;
   trendDirection: TrendDirection;
   outcome: ComparisonOutcome;
+  /** Human-readable performance status (e.g. "Improved — Loss Reduced", "Declined — Loss Increased", "Turned Profitable", "Moved Into Loss") */
+  performanceLabel: string;
+  /** Current financial position separated from Performance Direction */
+  financialPosition: FinancialPosition | null;
+  /** Human-readable current financial position (e.g. "Still Negative (Loss)", "Positive Gross Profit") */
+  financialPositionLabel: string | null;
+  /** True when current value is negative/in loss (even if loss reduced) */
+  isLossPosition: boolean;
   baselineStatus: ComparisonBaselineStatus;
   note: string | null;
 };

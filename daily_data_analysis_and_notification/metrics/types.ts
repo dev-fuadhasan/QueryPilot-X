@@ -8,6 +8,10 @@ export type MetricPolarity = "higher_is_better" | "lower_is_better" | "neutral";
 
 export type TrendDirection = "up" | "down" | "flat" | "unavailable";
 
+export type FinancialPosition = "positive" | "negative" | "zero";
+
+export type PerformanceDirection = "improved" | "declined" | "flat" | "neutral" | "unavailable";
+
 export type MetricAvailabilityStatus = "available" | "unavailable" | "insufficient_data";
 
 export type MetricAggregationMethod =
@@ -86,8 +90,14 @@ export type MetricResult = {
   comparisonValue: number | null;
   formattedComparisonValue: string | null;
   comparisonPeriod: ComparisonWindow | null;
+  absoluteChange?: number | null;
   changePercent: number | null;
   trendDirection: TrendDirection;
+  performanceDirection?: PerformanceDirection;
+  performanceLabel?: string;
+  financialPosition?: FinancialPosition | null;
+  financialPositionLabel?: string | null;
+  isLossPosition?: boolean;
   availability: MetricAvailabilityStatus;
   confidence: ConfidenceLevel | "unavailable";
   missingRequiredFields: string[];

@@ -65,6 +65,9 @@ function deltaToneClass(metric: MetricResult): string {
     return styles.badgeNeutral;
   }
   if (metric.polarity === "neutral") return styles.badgeInfo;
+  if (metric.isLossPosition && metric.performanceDirection === "improved") {
+    return styles.badgeWarning;
+  }
   const improved =
     (metric.polarity === "higher_is_better" && metric.changePercent > 0)
     || (metric.polarity === "lower_is_better" && metric.changePercent < 0);
@@ -396,8 +399,13 @@ export default function HistoricalDashboardPanel({
                           ? `Ref: ${metric.formattedComparisonValue}`
                           : "No comparison baseline"}
                       </span>
-                      <span>{metric.confidence}</span>
+                      <span>{metric.financialPositionLabel || metric.confidence}</span>
                     </div>
+                    {metric.performanceLabel && metric.isLossPosition && (
+                      <div className={styles.kpiSub}>
+                        <span>Performance: <strong>{metric.performanceLabel}</strong></span>
+                      </div>
+                    )}
                   </article>
                 ))}
               </div>

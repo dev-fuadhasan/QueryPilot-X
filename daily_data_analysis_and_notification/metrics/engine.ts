@@ -23,6 +23,7 @@ import {
   assertValidTimezone,
   buildPeriodWindow,
   determineTrendDirection,
+  evaluateMetricComparisonStatus,
   formatMetricValue,
   resolveComparisonWindow,
   safeChangePercent,
@@ -300,15 +301,26 @@ function buildDirectColumnExtras(input: {
 
     const value = aggregateColumnValues(input.periodRows, col.name, useAvg);
     if (value === null) continue;
-    const comparisonValue = input.comparison && input.comparisonRows.length > 0
+    const rawCompVal = input.comparison && input.comparisonRows.length > 0
       ? aggregateColumnValues(input.comparisonRows, col.name, useAvg)
       : null;
-    const changePercent = comparisonValue !== null ? safeChangePercent(value, comparisonValue) : null;
+    const comparisonValue = rawCompVal !== null && input.comparison && !useAvg && input.period.dayCount !== input.comparison.dayCount
+      ? safeRound((rawCompVal / input.comparison.dayCount) * input.period.dayCount, 2)
+      : rawCompVal;
     const label = humanizeColumnName(col.name);
+    const displayName = useAvg ? `Avg ${label}` : label;
+    const evalStatus = evaluateMetricComparisonStatus({
+      metricId,
+      metricName: displayName,
+      polarity: "higher_is_better",
+      currentValue: value,
+      referenceValue: comparisonValue,
+      available: true
+    });
 
     extraMetrics.push({
       metricId,
-      name: useAvg ? `Avg ${label}` : label,
+      name: displayName,
       description: `${useAvg ? "Average" : "Total"} of column "${col.name}" across active dataset records.`,
       value,
       formattedValue: formatMetricValue(value, "quantity", "units"),
@@ -319,8 +331,14 @@ function buildDirectColumnExtras(input: {
       comparisonValue,
       formattedComparisonValue: formatMetricValue(comparisonValue, "quantity", "units"),
       comparisonPeriod: input.comparison,
-      changePercent,
-      trendDirection: determineTrendDirection(changePercent),
+      absoluteChange: evalStatus.absoluteChange,
+      changePercent: evalStatus.changePercent,
+      trendDirection: evalStatus.trendDirection,
+      performanceDirection: evalStatus.performanceDirection,
+      performanceLabel: evalStatus.performanceLabel,
+      financialPosition: evalStatus.financialPosition,
+      financialPositionLabel: evalStatus.financialPositionLabel,
+      isLossPosition: evalStatus.isLossPosition,
       availability: "available",
       confidence: "high",
       missingRequiredFields: [],
@@ -336,8 +354,18 @@ function buildDirectColumnExtras(input: {
   );
   if (!hasCountMetric && input.periodRows.length > 0) {
     const currCount = input.periodRows.length;
-    const compCount = input.comparison && input.comparisonRows.length > 0 ? input.comparisonRows.length : null;
-    const changePercent = compCount !== null ? safeChangePercent(currCount, compCount) : null;
+    const rawCompCount = input.comparison && input.comparisonRows.length > 0 ? input.comparisonRows.length : null;
+    const compCount = rawCompCount !== null && input.comparison && input.period.dayCount !== input.comparison.dayCount
+      ? safeRound((rawCompCount / input.comparison.dayCount) * input.period.dayCount, 2)
+      : rawCompCount;
+    const countEval = evaluateMetricComparisonStatus({
+      metricId: "col_record_count",
+      metricName: "Total Records",
+      polarity: "higher_is_better",
+      currentValue: currCount,
+      referenceValue: compCount,
+      available: true
+    });
     extraMetrics.unshift({
       metricId: "col_record_count",
       name: "Total Records",
@@ -351,8 +379,14 @@ function buildDirectColumnExtras(input: {
       comparisonValue: compCount,
       formattedComparisonValue: formatMetricValue(compCount, "count", "count"),
       comparisonPeriod: input.comparison,
-      changePercent,
-      trendDirection: determineTrendDirection(changePercent),
+      absoluteChange: countEval.absoluteChange,
+      changePercent: countEval.changePercent,
+      trendDirection: countEval.trendDirection,
+      performanceDirection: countEval.performanceDirection,
+      performanceLabel: countEval.performanceLabel,
+      financialPosition: countEval.financialPosition,
+      financialPositionLabel: countEval.financialPositionLabel,
+      isLossPosition: countEval.isLossPosition,
       availability: "available",
       confidence: "high",
       missingRequiredFields: [],
@@ -643,20 +677,24 @@ function assembleAnalysisResult(
 
     const rawComp = comparison && comparisonRows.length > 0 ? calcOutput.comparisonValues[definition.id] : null;
     let comparisonValue = rawComp !== undefined && rawComp !== null && Number.isFinite(rawComp) ? rawComp : null;
-    let changePercent: number | null = null;
 
-    if (comparison && comparisonValue !== null) {
-      if (definition.normalizeComparisonByDay && period.dayCount !== comparison.dayCount) {
-        const normalizedCurr = value / period.dayCount;
-        const normalizedComp = comparisonValue / comparison.dayCount;
-        comparisonValue = safeRound(normalizedComp * period.dayCount, 2);
-        changePercent = safeChangePercent(normalizedCurr, normalizedComp);
-      } else {
-        changePercent = safeChangePercent(value, comparisonValue);
-      }
-      if (comparisonValue === 0 && changePercent === null) {
-        warnings.push("Comparison baseline is zero; percentage change omitted to avoid invalid or infinite growth rates.");
-      }
+    if (comparison && comparisonValue !== null && definition.normalizeComparisonByDay && period.dayCount !== comparison.dayCount) {
+      // Scale comparison volume to match reportingPeriod.dayCount FIRST, then derive
+      // absoluteChange & changePercent strictly from the exact displayed (value, comparisonValue) pair.
+      comparisonValue = safeRound((comparisonValue / comparison.dayCount) * period.dayCount, 2);
+    }
+
+    const evalStatus = evaluateMetricComparisonStatus({
+      metricId: definition.id,
+      metricName: definition.name,
+      polarity: definition.polarity,
+      currentValue: value,
+      referenceValue: comparison ? comparisonValue : null,
+      available: true
+    });
+
+    if (comparison && comparisonValue === 0 && evalStatus.changePercent === null) {
+      warnings.push("Comparison baseline is zero; percentage change omitted to avoid invalid or infinite growth rates.");
     }
 
     return {
@@ -672,8 +710,14 @@ function assembleAnalysisResult(
       comparisonValue,
       formattedComparisonValue: formatMetricValue(comparisonValue, definition.format, definition.unit),
       comparisonPeriod: comparison,
-      changePercent,
-      trendDirection: determineTrendDirection(changePercent),
+      absoluteChange: evalStatus.absoluteChange,
+      changePercent: evalStatus.changePercent,
+      trendDirection: evalStatus.trendDirection,
+      performanceDirection: evalStatus.performanceDirection,
+      performanceLabel: evalStatus.performanceLabel,
+      financialPosition: evalStatus.financialPosition,
+      financialPositionLabel: evalStatus.financialPositionLabel,
+      isLossPosition: evalStatus.isLossPosition,
       availability: "available",
       confidence: check.confidence,
       missingRequiredFields: [],

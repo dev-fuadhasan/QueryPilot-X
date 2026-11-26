@@ -1,8 +1,7 @@
-import { safeRound } from "../metrics/math-and-periods";
+import { evaluateMetricComparisonStatus } from "../metrics/math-and-periods";
 import type { DynamicAnalysisResult, MetricResult } from "../metrics/types";
 import type {
   ComparisonBaselineStatus,
-  ComparisonOutcome,
   SmartComparisonMetricRow,
   SmartDayComparison
 } from "./types";
@@ -30,16 +29,6 @@ function buildWeekdayNote(analysis: DynamicAnalysisResult): string | null {
   return null;
 }
 
-function determineOutcome(metric: MetricResult): ComparisonOutcome {
-  if (metric.availability !== "available" || metric.changePercent === null) return "unavailable";
-  if (metric.trendDirection === "flat") return "flat";
-  if (metric.polarity === "neutral") return "neutral";
-  if (metric.polarity === "higher_is_better") {
-    return metric.trendDirection === "up" ? "improved" : "declined";
-  }
-  return metric.trendDirection === "down" ? "improved" : "declined";
-}
-
 function determineBaselineStatus(metric: MetricResult, hasComparisonHistory: boolean): ComparisonBaselineStatus {
   if (metric.availability !== "available") return "unavailable";
   if (!hasComparisonHistory || metric.comparisonValue === null) return "no_history";
@@ -65,9 +54,18 @@ export function buildSmartDayComparison(analysis: DynamicAnalysisResult): SmartD
 
   const rows: SmartComparisonMetricRow[] = analysis.metrics.map(metric => {
     const baselineStatus = determineBaselineStatus(metric, hasHistory);
-    const absoluteChange = metric.value !== null && metric.comparisonValue !== null && hasHistory
-      ? safeRound(metric.value - metric.comparisonValue, 2)
-      : null;
+    const effectiveComparisonValue = hasHistory ? metric.comparisonValue : null;
+
+    // Single source of truth: compute absoluteChange, changePercent, trendDirection,
+    // performanceLabel, and financialPosition directly from the exact displayed values.
+    const evalStatus = evaluateMetricComparisonStatus({
+      metricId: metric.metricId,
+      metricName: metric.name,
+      polarity: metric.polarity,
+      currentValue: metric.availability === "available" ? metric.value : null,
+      referenceValue: metric.availability === "available" ? effectiveComparisonValue : null,
+      available: metric.availability === "available"
+    });
 
     let note: string | null = null;
     if (metric.availability !== "available") {
@@ -76,6 +74,12 @@ export function buildSmartDayComparison(analysis: DynamicAnalysisResult): SmartD
       note = "No valid historical comparison value available.";
     } else if (baselineStatus === "zero_baseline") {
       note = "Comparison baseline is zero; percentage change omitted to prevent infinite growth.";
+    } else if (evalStatus.isLossPosition && evalStatus.performanceDirection === "improved") {
+      note = "Loss narrowed compared to reference, but current financial position remains negative.";
+    } else if (evalStatus.performanceLabel === "Moved Into Loss") {
+      note = "Metric transitioned from positive reference into negative (loss) territory.";
+    } else if (evalStatus.performanceLabel === "Turned Profitable") {
+      note = "Metric transitioned from negative reference into positive (profitable) territory.";
     }
 
     return {
@@ -86,12 +90,16 @@ export function buildSmartDayComparison(analysis: DynamicAnalysisResult): SmartD
       polarity: metric.polarity,
       currentValue: metric.value,
       formattedCurrentValue: metric.formattedValue,
-      comparisonValue: hasHistory ? metric.comparisonValue : null,
+      comparisonValue: effectiveComparisonValue,
       formattedComparisonValue: hasHistory ? metric.formattedComparisonValue : null,
-      absoluteChange,
-      changePercent: hasHistory ? metric.changePercent : null,
-      trendDirection: hasHistory ? metric.trendDirection : "unavailable",
-      outcome: hasHistory ? determineOutcome(metric) : "unavailable",
+      absoluteChange: evalStatus.absoluteChange,
+      changePercent: evalStatus.changePercent,
+      trendDirection: evalStatus.trendDirection,
+      outcome: evalStatus.performanceDirection,
+      performanceLabel: evalStatus.performanceLabel,
+      financialPosition: evalStatus.financialPosition,
+      financialPositionLabel: evalStatus.financialPositionLabel,
+      isLossPosition: evalStatus.isLossPosition,
       baselineStatus,
       note
     };
