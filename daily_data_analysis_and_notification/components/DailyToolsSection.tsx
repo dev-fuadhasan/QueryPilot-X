@@ -34,6 +34,8 @@ import {
 import type {
   ActionableRecommendation,
   BriefFinding,
+  FindingInvestigationResult,
+  FindingInvestigationStatus,
   ReportArchiveComparisonResult,
   UnifiedDailyAnalysisResult
 } from "../intelligence/types";
@@ -103,6 +105,282 @@ function healthStatusBadgeClass(status: string): string {
   if (status === "warning") return styles.badgeWarning;
   if (status === "critical") return styles.badgeCritical;
   return styles.badgeInfo;
+}
+
+function investigationStatusBadgeClass(status: FindingInvestigationStatus): string {
+  if (status === "completed") return styles.badgePositive;
+  if (status === "partially_completed") return styles.badgeInfo;
+  if (status === "insufficient_data") return styles.badgeWarning;
+  return styles.badgeNeutral;
+}
+
+function formatInvestigationStatusLabel(status: FindingInvestigationStatus): string {
+  if (status === "completed") return "Completed";
+  if (status === "partially_completed") return "Partially Completed";
+  if (status === "insufficient_data") return "Insufficient Data";
+  return "Unsupported";
+}
+
+function renderFindingInvestigationPanel(investigation: FindingInvestigationResult) {
+  return (
+    <div className={styles.investigationBox}>
+      <div className={styles.investigationHeader}>
+        <span className={styles.investigationHeading}>
+          <SearchCheck size={13} /> Automatic Investigation
+        </span>
+        <span className={`${styles.badge} ${investigationStatusBadgeClass(investigation.status)}`}>
+          {formatInvestigationStatusLabel(investigation.status)}
+        </span>
+      </div>
+
+      <p className={styles.investigationSummary}>{investigation.summary}</p>
+
+      {(investigation.largestChangeDate || investigation.mostRelevantSegment || investigation.duplicateDetails || investigation.missingDataDetails) && (
+        <div className={styles.investigationHighlights}>
+          {investigation.largestChangeDate && (
+            <span className={styles.investigationChip}>
+              <strong>Key Date:</strong> {investigation.largestChangeDate}
+            </span>
+          )}
+          {investigation.mostRelevantSegment && (
+            <span className={styles.investigationChip}>
+              <strong>Top Segment:</strong> {investigation.mostRelevantSegment.dimensionLabel} &ldquo;{investigation.mostRelevantSegment.groupLabel}&rdquo;
+              {investigation.mostRelevantSegment.formattedCurrentValue ? ` (${investigation.mostRelevantSegment.formattedCurrentValue})` : ""}
+            </span>
+          )}
+          {investigation.duplicateDetails && (
+            <span className={styles.investigationChip}>
+              <strong>Duplicate Rows:</strong> {investigation.duplicateDetails.duplicateRowCount}
+            </span>
+          )}
+          {investigation.missingDataDetails && (
+            <span className={styles.investigationChip}>
+              <strong>Unavailable Metrics:</strong> {investigation.missingDataDetails.unavailableMetrics.length}
+            </span>
+          )}
+        </div>
+      )}
+
+      <details className={styles.investigationDetails}>
+        <summary className={styles.investigationDetailsToggle}>
+          Automatic Investigation Details
+        </summary>
+        <div className={styles.investigationDetailsBody}>
+          {/* 1. Daily Trend */}
+          {investigation.dailyTrend && investigation.dailyTrend.points.length > 0 && (
+            <div className={styles.investigationSection}>
+              <strong className={styles.investigationSectionTitle}>Daily Trend</strong>
+              <p className={styles.investigationText}>{investigation.dailyTrend.summary}</p>
+              <div className={styles.investigationMetaRow}>
+                {investigation.dailyTrend.largestDeteriorationDate && (
+                  <span><strong>Largest Decline Date:</strong> {investigation.dailyTrend.largestDeteriorationDate}</span>
+                )}
+                {investigation.dailyTrend.largestImprovementDate && (
+                  <span><strong>Largest Improvement Date:</strong> {investigation.dailyTrend.largestImprovementDate}</span>
+                )}
+                {investigation.dailyTrend.largestDayOverDayChange && (
+                  <span>
+                    <strong>Largest Day-over-Day Shift:</strong> {investigation.dailyTrend.largestDayOverDayChange.date} (
+                    {investigation.dailyTrend.largestDayOverDayChange.changePercent !== null
+                      ? formatSignedPercent(investigation.dailyTrend.largestDayOverDayChange.changePercent)
+                      : investigation.dailyTrend.largestDayOverDayChange.delta})
+                  </span>
+                )}
+              </div>
+              <div className={styles.tableWrap}>
+                <table className={styles.dataTable}>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th className={styles.numCell}>Value</th>
+                      <th className={styles.numCell}>DoD Change</th>
+                      <th className={styles.numCell}>Records</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {investigation.dailyTrend.points.slice(0, 14).map(point => (
+                      <tr key={point.date}>
+                        <td>
+                          {point.date}
+                          {point.anomaly && (
+                            <span className={`${styles.badge} ${point.anomaly === "drop" ? styles.badgeCritical : styles.badgePositive}`} style={{ marginLeft: 6 }}>
+                              {point.anomaly}
+                            </span>
+                          )}
+                        </td>
+                        <td className={styles.numCell}>{point.formattedValue ?? "N/A"}</td>
+                        <td className={styles.numCell}>
+                          {point.dayOverDayChangePercent !== null ? formatSignedPercent(point.dayOverDayChangePercent) : "—"}
+                        </td>
+                        <td className={styles.numCell}>{point.recordCount}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* 2. Segment Breakdown */}
+          {investigation.dimensionBreakdowns.length > 0 && (
+            <div className={styles.investigationSection}>
+              <strong className={styles.investigationSectionTitle}>Segment Breakdown</strong>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {investigation.dimensionBreakdowns.slice(0, 3).map(dim => (
+                  <div key={dim.dimensionId}>
+                    <div className={styles.investigationSubTitle}>
+                      {dim.dimensionLabel} <span>({dim.sourceColumn})</span>
+                    </div>
+                    <div className={styles.tableWrap}>
+                      <table className={styles.dataTable}>
+                        <thead>
+                          <tr>
+                            <th>Segment</th>
+                            <th className={styles.numCell}>Current</th>
+                            <th className={styles.numCell}>Reference</th>
+                            <th className={styles.numCell}>Change</th>
+                            <th>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dim.segments.slice(0, 5).map(seg => (
+                            <tr key={`${dim.dimensionId}-${seg.groupLabel}`}>
+                              <td><strong>{seg.groupLabel}</strong></td>
+                              <td className={styles.numCell}>{seg.formattedCurrentValue ?? "N/A"}</td>
+                              <td className={styles.numCell}>{seg.formattedReferenceValue ?? "No baseline"}</td>
+                              <td className={styles.numCell}>
+                                {seg.changePercent !== null ? formatSignedPercent(seg.changePercent) : "—"}
+                              </td>
+                              <td>
+                                <span
+                                  className={`${styles.badge} ${
+                                    seg.direction === "improved"
+                                      ? styles.badgePositive
+                                      : seg.direction === "deteriorated"
+                                        ? styles.badgeCritical
+                                        : styles.badgeNeutral
+                                  }`}
+                                >
+                                  {seg.direction}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 3. Related Metric Drivers */}
+          {investigation.relatedMetricDrivers.length > 0 && (
+            <div className={styles.investigationSection}>
+              <strong className={styles.investigationSectionTitle}>Related Metric Drivers</strong>
+              <ul className={styles.investigationList}>
+                {investigation.relatedMetricDrivers.map(driver => (
+                  <li key={driver.metricId}>{driver.note}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* 4. Duplicate Data Investigation Details */}
+          {investigation.duplicateDetails && (
+            <div className={styles.investigationSection}>
+              <strong className={styles.investigationSectionTitle}>Duplicate &amp; Key Granularity Analysis</strong>
+              <p className={styles.investigationText}>{investigation.duplicateDetails.assessmentNote}</p>
+              {investigation.duplicateDetails.candidateCompositeKeys.length > 0 && (
+                <p className={styles.investigationText}>
+                  <strong>Candidate composite keys:</strong>{" "}
+                  {investigation.duplicateDetails.candidateCompositeKeys.map(keys => keys.join(" + ")).join(" · ")}
+                </p>
+              )}
+              {investigation.duplicateDetails.topRepeatedGroups.length > 0 && (
+                <ul className={styles.investigationList}>
+                  {investigation.duplicateDetails.topRepeatedGroups.map((grp, idx) => (
+                    <li key={idx}>
+                      <strong>{grp.keyLabel}</strong>: {grp.count} row(s)
+                      {grp.distinctContextCount !== null ? ` across ${grp.distinctContextCount} distinct transaction context(s)` : ""} (
+                      {grp.assessment === "likely_legitimate_transactions" ? "likely legitimate transactions" : "possible duplicate records"})
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* 5. Missing Data / Schema Gap Details */}
+          {investigation.missingDataDetails && (
+            <div className={styles.investigationSection}>
+              <strong className={styles.investigationSectionTitle}>Missing Data &amp; Schema Gaps</strong>
+              {investigation.missingDataDetails.missingRequiredRoles.length > 0 && (
+                <p className={styles.investigationText}>
+                  <strong>Missing roles:</strong> {investigation.missingDataDetails.missingRequiredRoles.join(", ")}
+                </p>
+              )}
+              {investigation.missingDataDetails.highNullColumns.length > 0 && (
+                <ul className={styles.investigationList}>
+                  {investigation.missingDataDetails.highNullColumns.map(col => (
+                    <li key={col.columnName}>
+                      <strong>{col.columnName}</strong>: {col.nullPercent}% null values ({col.nullCount} row(s))
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {investigation.missingDataDetails.unavailableMetrics.length > 0 && (
+                <ul className={styles.investigationList}>
+                  {investigation.missingDataDetails.unavailableMetrics.slice(0, 6).map(um => (
+                    <li key={um.metricId}>
+                      <strong>{um.name}</strong>: {um.reason}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {/* 6. Key Evidence */}
+          {investigation.supportingEvidence.length > 0 && (
+            <div className={styles.investigationSection}>
+              <strong className={styles.investigationSectionTitle}>Key Evidence</strong>
+              <ul className={styles.investigationList}>
+                {investigation.supportingEvidence.map((item, idx) => (
+                  <li key={idx}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* 7. Data Limitations */}
+          {investigation.dataLimitations.length > 0 && (
+            <div className={styles.investigationSection}>
+              <strong className={styles.investigationSectionTitle}>Data Limitations</strong>
+              <ul className={styles.investigationList}>
+                {investigation.dataLimitations.map((item, idx) => (
+                  <li key={idx}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* 8. Suggested Actions */}
+          {investigation.suggestedNextSteps.length > 0 && (
+            <div className={styles.investigationSection}>
+              <strong className={styles.investigationSectionTitle}>Suggested Actions</strong>
+              <ul className={styles.investigationList}>
+                {investigation.suggestedNextSteps.map((step, idx) => (
+                  <li key={idx}>{step}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </details>
+    </div>
+  );
 }
 
 function CardLoadingSkeleton() {
@@ -268,6 +546,7 @@ export default function DailyToolsSection({
                         <span><strong>Why it matters:</strong> {finding.whyItMatters}</span>
                         <span><strong>Next check:</strong> {finding.investigateNext}</span>
                       </div>
+                      {finding.investigation && renderFindingInvestigationPanel(finding.investigation)}
                     </article>
                   ))}
                 </div>
