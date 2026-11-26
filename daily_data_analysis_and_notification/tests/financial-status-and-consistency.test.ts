@@ -311,7 +311,49 @@ test("9. Consistent status interpretation across Smart Comparison, Executive Sum
   assert.match(html, /Still Negative \(Loss\)/);
   assert.match(html, /Current Financial Position:/);
   assert.match(html, /Performance:/);
-  assert.match(html, /\+96\.8%/);
+  assert.match(html, /↑ 96\.8%/);
+
+  // Verify new Reference Period presets & parallel Manual Date Range controls
+  assert.match(html, /Previous 3 Months/);
+  assert.match(html, /Previous 6 Months/);
+  assert.match(html, /Previous 1 Year/);
+  assert.match(html, /All Data \(Full Dataset\)/);
+  assert.match(html, /Manual Start Date/);
+  assert.match(html, /Manual End Date/);
+  assert.match(html, /Apply Dates/);
+});
+
+test("11. New comparison presets (previous_90_days, previous_180_days, previous_365_days, and All Data 'none') work dynamically", () => {
+  const rows: Array<Record<string, unknown>> = [
+    { order_date: "2023-01-10", category: "A", revenue: 1000, cost: 400, quantity: 2, status: "completed" },
+    { order_date: "2023-08-15", category: "A", revenue: 1500, cost: 500, quantity: 3, status: "completed" },
+    { order_date: "2024-03-20", category: "A", revenue: 2000, cost: 600, quantity: 4, status: "completed" }
+  ];
+  const profile = profileFromRows("multi_year_sales", rows);
+
+  // All Data ("none") covers earliest to latest date across entire dataset
+  const allData = runUnifiedDailyAnalysisFromRows(profile, rows, {
+    domainId: "sales_ecommerce",
+    timezone: "UTC",
+    periodStart: "2024-03-20",
+    periodEnd: "2024-03-20",
+    comparisonPreset: "none",
+    anchorToDatasetDates: true
+  });
+  assert.equal(allData.reportingPeriod.start, "2023-01-10");
+  assert.equal(allData.reportingPeriod.end, "2024-03-20");
+  assert.equal(allData.analysis.availableMetrics.find(m => m.metricId === "totalRevenue")?.value, 4500);
+
+  // Previous 6 Months (previous_180_days) resolves 180-day comparison window cleanly
+  const sixMonth = runDynamicAnalysisFromRows(profile, rows, {
+    domainId: "sales_ecommerce",
+    timezone: "UTC",
+    periodStart: "2024-01-01",
+    periodEnd: "2024-03-31",
+    comparisonPreset: "previous_180_days"
+  });
+  assert.equal(sixMonth.comparisonPeriod?.dayCount, 180);
+  assert.match(sixMonth.comparisonPeriod?.label || "", /Previous 6 months/);
 });
 
 test("10. Gross Profit semantic validation: explicit profit, total COGS vs unit cost, no double discount, cancelled excluded", () => {

@@ -45,8 +45,9 @@ import type { PersistentReportSummary } from "../storage/types";
 import {
   COMPARISON_PRESET_OPTIONS,
   filterDomainAlerts,
+  formatArrowNumber,
+  formatArrowPercent,
   formatShortTimestamp,
-  formatSignedPercent,
   getDomainUiMeta,
   isReportPdfDownloadable,
   type AlertFilterMode
@@ -59,6 +60,12 @@ type DailyToolsSectionProps = {
   intelligenceError: string | null;
   comparisonPreset: ComparisonPreset;
   onComparisonPresetChange: (preset: ComparisonPreset) => void;
+  manualPeriodStart?: string;
+  manualPeriodEnd?: string;
+  earliestAvailableDate?: string | null;
+  latestAvailableDate?: string | null;
+  onApplyManualPeriod?: (start: string, end: string) => void;
+  onClearManualPeriod?: () => void;
   alerts: DailyReportAlert[];
   alertRules: AlertRules;
   savingAlertRules: boolean;
@@ -120,6 +127,26 @@ function financialPositionBadgeClass(position: "positive" | "negative" | "zero" 
   if (position === "positive") return styles.badgePositive;
   if (position === "negative") return styles.badgeCritical;
   return styles.badgeNeutral;
+}
+
+function renderDirectionalPercent(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "N/A";
+  const toneClass = Math.abs(value) < 0.05
+    ? styles.dirFlat
+    : value > 0
+      ? styles.dirUp
+      : styles.dirDown;
+  return <span className={`${styles.dirValue} ${toneClass}`}>{formatArrowPercent(value)}</span>;
+}
+
+function renderDirectionalNumber(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "N/A";
+  const toneClass = Math.abs(value) < 0.005
+    ? styles.dirFlat
+    : value > 0
+      ? styles.dirUp
+      : styles.dirDown;
+  return <span className={`${styles.dirValue} ${toneClass}`}>{formatArrowNumber(value)}</span>;
 }
 
 function investigationStatusBadgeClass(status: FindingInvestigationStatus): string {
@@ -197,8 +224,8 @@ function renderFindingInvestigationPanel(investigation: FindingInvestigationResu
                   <span>
                     <strong>Largest Day-over-Day Shift:</strong> {investigation.dailyTrend.largestDayOverDayChange.date} (
                     {investigation.dailyTrend.largestDayOverDayChange.changePercent !== null
-                      ? formatSignedPercent(investigation.dailyTrend.largestDayOverDayChange.changePercent)
-                      : investigation.dailyTrend.largestDayOverDayChange.delta})
+                      ? formatArrowPercent(investigation.dailyTrend.largestDayOverDayChange.changePercent)
+                      : formatArrowNumber(investigation.dailyTrend.largestDayOverDayChange.delta)})
                   </span>
                 )}
               </div>
@@ -225,7 +252,7 @@ function renderFindingInvestigationPanel(investigation: FindingInvestigationResu
                         </td>
                         <td className={styles.numCell}>{point.formattedValue ?? "N/A"}</td>
                         <td className={styles.numCell}>
-                          {point.dayOverDayChangePercent !== null ? formatSignedPercent(point.dayOverDayChangePercent) : "—"}
+                          {point.dayOverDayChangePercent !== null ? renderDirectionalPercent(point.dayOverDayChangePercent) : "—"}
                         </td>
                         <td className={styles.numCell}>{point.recordCount}</td>
                       </tr>
@@ -264,7 +291,7 @@ function renderFindingInvestigationPanel(investigation: FindingInvestigationResu
                               <td className={styles.numCell}>{seg.formattedCurrentValue ?? "N/A"}</td>
                               <td className={styles.numCell}>{seg.formattedReferenceValue ?? "No baseline"}</td>
                               <td className={styles.numCell}>
-                                {seg.changePercent !== null ? formatSignedPercent(seg.changePercent) : "—"}
+                                {seg.changePercent !== null ? renderDirectionalPercent(seg.changePercent) : "—"}
                               </td>
                               <td>
                                 <span
@@ -418,6 +445,12 @@ export default function DailyToolsSection({
   intelligenceError,
   comparisonPreset,
   onComparisonPresetChange,
+  manualPeriodStart = "",
+  manualPeriodEnd = "",
+  earliestAvailableDate = null,
+  latestAvailableDate = null,
+  onApplyManualPeriod,
+  onClearManualPeriod,
   alerts,
   alertRules,
   savingAlertRules,
@@ -439,6 +472,35 @@ export default function DailyToolsSection({
   const [draftRules, setDraftRules] = useState<AlertRules>(alertRules);
   const [leftArchiveId, setLeftArchiveId] = useState<string>("");
   const [rightArchiveId, setRightArchiveId] = useState<string>("");
+  const [draftStartDate, setDraftStartDate] = useState<string>(manualPeriodStart);
+  const [draftEndDate, setDraftEndDate] = useState<string>(manualPeriodEnd);
+  const [manualDateError, setManualDateError] = useState<string | null>(null);
+
+  const effectiveDraftStart = draftStartDate || manualPeriodStart || intelligence?.reportingPeriod.start || earliestAvailableDate || "";
+  const effectiveDraftEnd = draftEndDate || manualPeriodEnd || intelligence?.reportingPeriod.end || latestAvailableDate || "";
+  const isManualPeriodActive = Boolean(manualPeriodStart && manualPeriodEnd);
+
+  function submitManualPeriod() {
+    const start = effectiveDraftStart.trim();
+    const end = effectiveDraftEnd.trim();
+    if (!start || !end) {
+      setManualDateError("Select both a start date and an end date.");
+      return;
+    }
+    if (start > end) {
+      setManualDateError("Start Date cannot be after End Date.");
+      return;
+    }
+    setManualDateError(null);
+    onApplyManualPeriod?.(start, end);
+  }
+
+  function resetManualPeriod() {
+    setDraftStartDate("");
+    setDraftEndDate("");
+    setManualDateError(null);
+    onClearManualPeriod?.();
+  }
 
   const unreadCount = useMemo(() => alerts.filter(a => !a.isRead).length, [alerts]);
   const filteredAlerts = useMemo(() => filterDomainAlerts(alerts, alertFilter), [alerts, alertFilter]);
@@ -554,8 +616,8 @@ export default function DailyToolsSection({
             )}
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-            <div className={styles.fieldGroup} style={{ maxWidth: 280 }}>
+          <div className={styles.comparisonControlsBar}>
+            <div className={styles.fieldGroup} style={{ minWidth: 220, flex: "1 1 240px", maxWidth: 300 }}>
               <label htmlFor="qp-comparison-preset" className={styles.fieldLabel}>
                 Reference Period
               </label>
@@ -571,6 +633,68 @@ export default function DailyToolsSection({
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className={styles.manualPeriodBox} aria-label="Manual Date Range Selection">
+              <div className={styles.manualDateInputs}>
+                <div className={styles.fieldGroup}>
+                  <label htmlFor="qp-manual-start" className={styles.fieldLabel}>
+                    Manual Start Date
+                  </label>
+                  <input
+                    id="qp-manual-start"
+                    type="date"
+                    className={styles.textInput}
+                    value={effectiveDraftStart}
+                    min={earliestAvailableDate || undefined}
+                    max={latestAvailableDate || undefined}
+                    onChange={event => {
+                      setDraftStartDate(event.target.value);
+                      setManualDateError(null);
+                    }}
+                  />
+                </div>
+                <div className={styles.fieldGroup}>
+                  <label htmlFor="qp-manual-end" className={styles.fieldLabel}>
+                    Manual End Date
+                  </label>
+                  <input
+                    id="qp-manual-end"
+                    type="date"
+                    className={styles.textInput}
+                    value={effectiveDraftEnd}
+                    min={earliestAvailableDate || undefined}
+                    max={latestAvailableDate || undefined}
+                    onChange={event => {
+                      setDraftEndDate(event.target.value);
+                      setManualDateError(null);
+                    }}
+                  />
+                </div>
+                <div className={styles.manualDateActions}>
+                  <button
+                    type="button"
+                    className={styles.primaryBtn}
+                    onClick={submitManualPeriod}
+                    disabled={!onApplyManualPeriod || loadingIntelligence}
+                  >
+                    Apply Dates
+                  </button>
+                  {isManualPeriodActive && (
+                    <button
+                      type="button"
+                      className={styles.ghostBtn}
+                      onClick={resetManualPeriod}
+                      disabled={loadingIntelligence}
+                    >
+                      Auto
+                    </button>
+                  )}
+                </div>
+              </div>
+              {manualDateError && (
+                <div className={styles.manualDateError} role="alert">{manualDateError}</div>
+              )}
             </div>
           </div>
 
@@ -625,7 +749,9 @@ export default function DailyToolsSection({
                     </dl>
                   ) : (
                     <p className={styles.comparisonPeriodEmpty}>
-                      No reference comparison period selected.
+                      {comparisonPreset === "none"
+                        ? "Analyzing all available data across the entire dataset (no separate reference split)."
+                        : "No reference comparison period selected."}
                     </p>
                   )}
                 </div>
@@ -662,7 +788,7 @@ export default function DailyToolsSection({
                           <td className={styles.numCell}>{row.formattedComparisonValue ?? "No baseline"}</td>
                           <td className={styles.numCell}>
                             {row.baselineStatus === "valid"
-                              ? formatSignedPercent(row.changePercent)
+                              ? renderDirectionalPercent(row.changePercent)
                               : row.baselineStatus === "zero_baseline"
                                 ? "Zero baseline"
                                 : "N/A"}
@@ -1096,7 +1222,7 @@ export default function DailyToolsSection({
                           <div style={{ fontSize: 11.5, color: "var(--muted, #657c8a)" }}>{analysis.summary}</div>
                         </div>
                         <span className={`${styles.badge} ${analysis.reliability === "reliable" ? styles.badgePositive : styles.badgeWarning}`}>
-                          {analysis.reliability} · Delta: {analysis.totalDelta >= 0 ? "+" : ""}{analysis.totalDelta.toLocaleString(undefined, { maximumFractionDigits: 2 })} ({formatSignedPercent(analysis.changePercent)})
+                          {analysis.reliability} · Delta: {formatArrowNumber(analysis.totalDelta)} ({formatArrowPercent(analysis.changePercent)})
                         </span>
                       </div>
 
@@ -1122,10 +1248,10 @@ export default function DailyToolsSection({
                                   <td className={styles.numCell}>{item.currentValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
                                   <td className={styles.numCell}>{item.comparisonValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
                                   <td className={styles.numCell}>
-                                    {item.absoluteDelta >= 0 ? "+" : ""}{item.absoluteDelta.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                    {renderDirectionalNumber(item.absoluteDelta)}
                                   </td>
                                   <td className={styles.numCell}>
-                                    {item.contributionPercent !== null ? `${item.contributionPercent.toFixed(1)}%` : "N/A"}
+                                    {item.contributionPercent !== null ? renderDirectionalPercent(item.contributionPercent) : "N/A"}
                                   </td>
                                   <td>
                                     <span className={`${styles.badge} ${item.appearance === "both_periods" ? styles.badgeNeutral : styles.badgeInfo}`}>
@@ -1449,7 +1575,7 @@ export default function DailyToolsSection({
                               <td><strong>{m.name}</strong></td>
                               <td className={styles.numCell}>{m.formattedLeftValue ?? "N/A"}</td>
                               <td className={styles.numCell}>{m.formattedRightValue ?? "N/A"}</td>
-                              <td className={styles.numCell}>{formatSignedPercent(m.changePercent)}</td>
+                              <td className={styles.numCell}>{renderDirectionalPercent(m.changePercent)}</td>
                               <td><span className={`${styles.badge} ${styles.badgeNeutral}`}>{m.status.replace("_", " ")}</span></td>
                             </tr>
                           ))}

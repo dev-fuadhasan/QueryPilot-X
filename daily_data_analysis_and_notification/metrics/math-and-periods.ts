@@ -225,13 +225,19 @@ export function resolveComparisonWindow(
     case "previous_90_days": {
       end = addDaysToDate(period.start, -1);
       start = addDaysToDate(period.start, -90);
-      label = `Previous 90 days (${start} to ${end})`;
+      label = `Previous 3 months (${start} to ${end})`;
+      break;
+    }
+    case "previous_180_days": {
+      end = addDaysToDate(period.start, -1);
+      start = addDaysToDate(period.start, -180);
+      label = `Previous 6 months (${start} to ${end})`;
       break;
     }
     case "previous_365_days": {
       end = addDaysToDate(period.start, -1);
       start = addDaysToDate(period.start, -365);
-      label = `Previous 365 days (${start} to ${end})`;
+      label = `Previous 1 year (${start} to ${end})`;
       break;
     }
   }
