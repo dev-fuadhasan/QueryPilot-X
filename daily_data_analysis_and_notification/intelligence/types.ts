@@ -191,6 +191,8 @@ export type BriefFinding = {
   affectedArea: string;
   whyItMatters: string;
   investigateNext: string;
+  /** Strictly evidence-backed possible explanation integrated into a Confirmed Finding (null if no verified evidence exists). */
+  possibleExplanation?: string | null;
   metricId: string | null;
   metricValue: string | null;
   changePercent: number | null;

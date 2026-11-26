@@ -383,6 +383,10 @@ function renderFindingInvestigationPanel(investigation: FindingInvestigationResu
   );
 }
 
+function formatDayDuration(dayCount: number): string {
+  return `${dayCount} ${dayCount === 1 ? "Day" : "Days"}`;
+}
+
 function CardLoadingSkeleton() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -430,6 +434,32 @@ export default function DailyToolsSection({
   const recommendations = intelligence?.tools.recommendations || [];
   const dataHealth = intelligence?.tools.dataHealth || null;
 
+  // Never display standalone "possible_explanation" duplicate cards; Possible Explanations
+  // are integrated directly inside their corresponding Confirmed Finding.
+  const confirmedFindings = useMemo(() => {
+    if (!brief) return [];
+    const confirmedMetricIds = new Set(
+      brief.findings
+        .filter(f => f.certainty === "confirmed" && f.metricId)
+        .map(f => f.metricId as string)
+    );
+    return brief.findings.filter(f => {
+      if (f.certainty === "possible_explanation") {
+        return false;
+      }
+      if (f.metricId && confirmedMetricIds.has(f.metricId)) {
+        return true;
+      }
+      return true;
+    });
+  }, [brief]);
+
+  const safeComparisonNote = useMemo(() => {
+    if (!smartComparison?.weekdayNote) return null;
+    if (/calendar caution/i.test(smartComparison.weekdayNote)) return null;
+    return smartComparison.weekdayNote;
+  }, [smartComparison]);
+
   const domainMeta = intelligence ? getDomainUiMeta(intelligence.domainId) : null;
 
   // Prepare numeric chart rows for Smart Day Comparison (only metrics with valid numbers)
@@ -459,13 +489,7 @@ export default function DailyToolsSection({
               {domainMeta && <span className={`${styles.badge} ${styles.badgeInfo}`}>{domainMeta.name}</span>}
             </h2>
             <p className={styles.cardSub}>
-              {intelligence
-                ? `Period: ${intelligence.reportingPeriod.start} to ${intelligence.reportingPeriod.end}${
-                    intelligence.comparisonPeriod
-                      ? ` · Reference: ${intelligence.comparisonPeriod.label} (${intelligence.comparisonPeriod.start} to ${intelligence.comparisonPeriod.end})`
-                      : ""
-                  } · Source table: ${intelligence.tableName}`
-                : "All 7 live business intelligence tools computed directly from the connected read-only database."}
+              Live business intelligence tools computed directly from the connected read-only database.
             </p>
           </div>
           {intelligence && intelligence.partialFailures.length > 0 && (
@@ -484,102 +508,9 @@ export default function DailyToolsSection({
         )}
       </div>
 
-      {/* All 7 Tools rendered directly as individual cards */}
+      {/* All 7 Tools rendered directly as individual cards: Smart Comparison first, Findings second */}
       <div className={styles.toolsCardsStack}>
-        {/* 1. DAILY INTELLIGENCE BRIEF */}
-        <article className={`${styles.card} ${styles.toolCard}`} aria-label="Daily Intelligence Brief">
-          <div className={styles.toolCardHeader}>
-            <div className={styles.toolCardTitleRow}>
-              <span className={styles.toolCardIcon}><Sparkles size={16} /></span>
-              <div className={styles.cardTitleGroup}>
-                <h3 className={styles.cardTitle}>Daily Intelligence Brief</h3>
-                <p className={styles.cardSub}>Executive summary, confirmed findings, notable shifts, and data caveats for the active period.</p>
-              </div>
-            </div>
-            {brief && (
-              <div className={styles.metaPills}>
-                <span className={`${styles.badge} ${brief.status === "ready" ? styles.badgePositive : styles.badgeWarning}`}>
-                  {brief.status.replace("_", " ")}
-                </span>
-                <span className={`${styles.badge} ${styles.badgeNeutral}`}>
-                  {brief.findings.length} finding(s)
-                </span>
-              </div>
-            )}
-          </div>
-
-          {loadingIntelligence ? (
-            <CardLoadingSkeleton />
-          ) : brief ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div className={styles.infoBanner}>
-                <Sparkles size={16} style={{ flexShrink: 0, marginTop: 1 }} />
-                <div>
-                  <div style={{ marginBottom: 4 }}>
-                    <strong>Executive Summary</strong>
-                  </div>
-                  <div>{brief.executiveSummary}</div>
-                </div>
-              </div>
-
-              {brief.findings.length > 0 ? (
-                <div className={styles.findingsGrid}>
-                  {brief.findings.map(finding => (
-                    <article key={finding.id} className={`${styles.findingCard} ${findingBorderClass(finding.category)}`}>
-                      <div className={styles.findingHead}>
-                        <span className={`${styles.badge} ${finding.certainty === "confirmed" ? styles.badgePositive : styles.badgeWarning}`}>
-                          {finding.certainty === "confirmed" ? "Confirmed Finding" : "Possible Explanation"}
-                        </span>
-                        <span className={`${styles.badge} ${styles.badgeNeutral}`}>
-                          {finding.category.replace("_", " ")}
-                        </span>
-                      </div>
-                      <h4 className={styles.findingTitle}>{finding.headline}</h4>
-                      <p className={styles.findingBody}>{finding.whatHappened}</p>
-                      {finding.whatChanged && (
-                        <p className={styles.findingBody}>
-                          <strong>Change:</strong> {finding.whatChanged}
-                        </p>
-                      )}
-                      <div className={styles.findingFoot}>
-                        <span><strong>Area:</strong> {finding.affectedArea}</span>
-                        <span><strong>Why it matters:</strong> {finding.whyItMatters}</span>
-                        <span><strong>Next check:</strong> {finding.investigateNext}</span>
-                      </div>
-                      {finding.investigation && renderFindingInvestigationPanel(finding.investigation)}
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <div className={styles.emptyBox}>
-                  <strong>No major anomalies or events flagged for this period</strong>
-                  <p>Your metrics are either within normal expectations or required columns were unavailable in this dataset.</p>
-                </div>
-              )}
-
-              {brief.dataCaveats.length > 0 && (
-                <div className={styles.warnBanner}>
-                  <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-                  <div>
-                    <strong>Data gaps &amp; caveats:</strong>
-                    <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
-                      {brief.dataCaveats.map((caveat, idx) => (
-                        <li key={idx}>{caveat}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className={styles.emptyBox}>
-              <strong>Daily Intelligence Brief unavailable</strong>
-              <p>Select a connected dataset with mapped date and domain columns to generate a brief.</p>
-            </div>
-          )}
-        </article>
-
-        {/* 2. SMART COMPARISON */}
+        {/* 1. SMART COMPARISON */}
         <article className={`${styles.card} ${styles.toolCard}`} aria-label="Smart Comparison">
           <div className={styles.toolCardHeader}>
             <div className={styles.toolCardTitleRow}>
@@ -625,12 +556,65 @@ export default function DailyToolsSection({
             <CardLoadingSkeleton />
           ) : smartComparison ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {(smartComparison.statusReason || smartComparison.weekdayNote) && (
+              {/* Highlighted Current vs Reference Period Overview */}
+              <div className={styles.comparisonPeriodsGrid} aria-label="Comparison Period Details">
+                <div className={`${styles.comparisonPeriodCard} ${styles.comparisonPeriodCardCurrent}`}>
+                  <div className={styles.comparisonPeriodHead}>
+                    <span className={styles.comparisonPeriodTitle}>Current Analysis Period</span>
+                    <span className={`${styles.badge} ${styles.badgeInfo}`}>
+                      {formatDayDuration(smartComparison.reportingPeriod.dayCount)}
+                    </span>
+                  </div>
+                  <dl className={styles.comparisonPeriodRows}>
+                    <div className={styles.comparisonPeriodRow}>
+                      <dt>Dataset</dt>
+                      <dd>{smartComparison.tableName}</dd>
+                    </div>
+                    <div className={styles.comparisonPeriodRow}>
+                      <dt>Date Range</dt>
+                      <dd>{smartComparison.reportingPeriod.start} to {smartComparison.reportingPeriod.end}</dd>
+                    </div>
+                    <div className={styles.comparisonPeriodRow}>
+                      <dt>Duration</dt>
+                      <dd>{formatDayDuration(smartComparison.reportingPeriod.dayCount)}</dd>
+                    </div>
+                  </dl>
+                </div>
+
+                <div className={`${styles.comparisonPeriodCard} ${styles.comparisonPeriodCardReference}`}>
+                  <div className={styles.comparisonPeriodHead}>
+                    <span className={styles.comparisonPeriodTitle}>Reference Comparison Period</span>
+                    {smartComparison.comparisonPeriod && (
+                      <span className={`${styles.badge} ${styles.badgeNeutral}`}>
+                        {formatDayDuration(smartComparison.comparisonPeriod.dayCount)}
+                      </span>
+                    )}
+                  </div>
+                  {smartComparison.comparisonPeriod ? (
+                    <dl className={styles.comparisonPeriodRows}>
+                      <div className={styles.comparisonPeriodRow}>
+                        <dt>Date Range</dt>
+                        <dd>{smartComparison.comparisonPeriod.start} to {smartComparison.comparisonPeriod.end}</dd>
+                      </div>
+                      <div className={styles.comparisonPeriodRow}>
+                        <dt>Duration</dt>
+                        <dd>{formatDayDuration(smartComparison.comparisonPeriod.dayCount)}</dd>
+                      </div>
+                    </dl>
+                  ) : (
+                    <p className={styles.comparisonPeriodEmpty}>
+                      No reference comparison period selected.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {(smartComparison.statusReason || safeComparisonNote) && (
                 <div className={styles.infoBanner}>
                   <Info size={15} style={{ flexShrink: 0, marginTop: 1 }} />
                   <div>
                     {smartComparison.statusReason && <div>{smartComparison.statusReason}</div>}
-                    {smartComparison.weekdayNote && <div>{smartComparison.weekdayNote}</div>}
+                    {safeComparisonNote && <div>{safeComparisonNote}</div>}
                   </div>
                 </div>
               )}
@@ -712,6 +696,120 @@ export default function DailyToolsSection({
             <div className={styles.emptyBox}>
               <strong>Smart Comparison unavailable</strong>
               <p>Run analysis on a table with historical date coverage to compare periods.</p>
+            </div>
+          )}
+        </article>
+
+        {/* 2. FINDINGS & DAILY INTELLIGENCE BRIEF */}
+        <article className={`${styles.card} ${styles.toolCard}`} aria-label="Findings and Daily Intelligence Brief">
+          <div className={styles.toolCardHeader}>
+            <div className={styles.toolCardTitleRow}>
+              <span className={styles.toolCardIcon}><Sparkles size={16} /></span>
+              <div className={styles.cardTitleGroup}>
+                <h3 className={styles.cardTitle}>Findings &amp; Daily Intelligence Brief</h3>
+                <p className={styles.cardSub}>Executive summary, confirmed findings with evidence-backed possible explanations, and automatic investigations.</p>
+              </div>
+            </div>
+            {brief && (
+              <div className={styles.metaPills}>
+                <span className={`${styles.badge} ${brief.status === "ready" ? styles.badgePositive : styles.badgeWarning}`}>
+                  {brief.status.replace("_", " ")}
+                </span>
+                <span className={`${styles.badge} ${styles.badgeNeutral}`}>
+                  {confirmedFindings.length} finding(s)
+                </span>
+              </div>
+            )}
+          </div>
+
+          {loadingIntelligence ? (
+            <CardLoadingSkeleton />
+          ) : brief ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div className={styles.infoBanner}>
+                <Sparkles size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+                <div>
+                  <div style={{ marginBottom: 4 }}>
+                    <strong>Executive Summary</strong>
+                  </div>
+                  <div>{brief.executiveSummary}</div>
+                </div>
+              </div>
+
+              {confirmedFindings.length > 0 ? (
+                <div className={styles.findingsGrid}>
+                  {confirmedFindings.map(finding => {
+                    const showArea = Boolean(
+                      finding.affectedArea &&
+                      intelligence?.tableName &&
+                      finding.affectedArea.trim().toLowerCase() !== intelligence.tableName.trim().toLowerCase()
+                    );
+                    const isLargeSwing = finding.changePercent !== null && Math.abs(finding.changePercent) >= 35;
+                    return (
+                      <article key={finding.id} className={`${styles.findingCard} ${findingBorderClass(finding.category)}`}>
+                        <div className={styles.findingHead}>
+                          <div className={styles.metaPills}>
+                            <span className={`${styles.badge} ${styles.badgePositive}`}>
+                              Confirmed Finding
+                            </span>
+                            {isLargeSwing && (
+                              <span className={`${styles.badge} ${styles.badgeWarning}`}>
+                                Unusual Swing
+                              </span>
+                            )}
+                          </div>
+                          <span className={`${styles.badge} ${styles.badgeNeutral}`}>
+                            {finding.category.replace("_", " ")}
+                          </span>
+                        </div>
+                        <h4 className={styles.findingTitle}>Confirmed Finding: {finding.headline}</h4>
+                        <p className={styles.findingBody}>{finding.whatHappened}</p>
+                        {finding.whatChanged && (
+                          <p className={styles.findingBody}>
+                            <strong>Change:</strong> {finding.whatChanged}
+                          </p>
+                        )}
+                        {showArea && (
+                          <p className={styles.findingArea}>
+                            <strong>Area:</strong> {finding.affectedArea}
+                          </p>
+                        )}
+                        {finding.possibleExplanation && (
+                          <div className={styles.possibleExplanationBox}>
+                            <strong className={styles.possibleExplanationLabel}>Possible Explanation:</strong>
+                            <p className={styles.possibleExplanationText}>{finding.possibleExplanation}</p>
+                          </div>
+                        )}
+                        {finding.investigation && renderFindingInvestigationPanel(finding.investigation)}
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className={styles.emptyBox}>
+                  <strong>No major anomalies or events flagged for this period</strong>
+                  <p>Your metrics are either within normal expectations or required columns were unavailable in this dataset.</p>
+                </div>
+              )}
+
+              {brief.dataCaveats.length > 0 && (
+                <div className={styles.warnBanner}>
+                  <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <div>
+                    <strong>Data gaps &amp; caveats:</strong>
+                    <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                      {brief.dataCaveats.map((caveat, idx) => (
+                        <li key={idx}>{caveat}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className={styles.emptyBox}>
+              <strong>Findings unavailable</strong>
+              <p>Select a connected dataset with mapped date and domain columns to generate findings.</p>
             </div>
           )}
         </article>

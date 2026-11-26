@@ -113,43 +113,31 @@ export function buildDailyIntelligenceBrief(
 
     const directionWord = metric.changePercent! >= 0 ? "increased" : "decreased";
     const headline = `${metric.name} ${directionWord} by ${absChange.toFixed(1)}%`;
-    const whatChanged = `${metric.formattedValue} vs ${metric.formattedComparisonValue} in ${analysis.comparisonPeriod?.label || "reference period"} (${metric.changePercent! >= 0 ? "+" : ""}${metric.changePercent!.toFixed(1)}%).`;
+    const whatChanged = `${metric.formattedValue} vs ${metric.formattedComparisonValue} reference (${metric.changePercent! >= 0 ? "+" : ""}${metric.changePercent!.toFixed(1)}%).`;
 
     const investigateNext = topContributor
       ? `Review ${topContributor.dimensionLabel.toLowerCase()} "${topContributor.groupLabel}", which was associated with ${topContributor.evidence}.`
-      : `Inspect daily time-series and segment breakdowns for ${metric.name} during ${analysis.reportingPeriod.label}.`;
+      : `Review ${metric.name} drivers in Automatic Investigation.`;
+
+    const possibleExplanation = topContributor
+      ? `This shift may be associated with ${topContributor.dimensionLabel} "${topContributor.groupLabel}" (${topContributor.evidence}).`
+      : null;
 
     findings.push({
       id: `brief::${category}::${metric.metricId}`,
       category,
       certainty: "confirmed",
       headline,
-      whatHappened: `${metric.name} reached ${metric.formattedValue} in ${analysis.reportingPeriod.label}.`,
+      whatHappened: `${metric.name} reached ${metric.formattedValue}.`,
       whatChanged,
       affectedArea,
       whyItMatters: whyMetricMatters(analysis.domainName, metric),
       investigateNext,
+      possibleExplanation,
       metricId: metric.metricId,
       metricValue: metric.formattedValue,
       changePercent: metric.changePercent
     });
-
-    if (isUnusual && category !== "unusual") {
-      findings.push({
-        id: `brief::unusual::${metric.metricId}`,
-        category: "unusual",
-        certainty: "possible_explanation",
-        headline: `Unusually large swing in ${metric.name} (${metric.changePercent! >= 0 ? "+" : ""}${metric.changePercent!.toFixed(1)}%)`,
-        whatHappened: `A move exceeding 35% was detected for ${metric.name}.`,
-        whatChanged,
-        affectedArea,
-        whyItMatters: "Large single-period shifts may reflect either a major operational/commercial event or a source data anomaly.",
-        investigateNext: "Cross-check Data Health volume checks and top contributing segments before treating this swing as a permanent trend.",
-        metricId: metric.metricId,
-        metricValue: metric.formattedValue,
-        changePercent: metric.changePercent
-      });
-    }
   }
 
   // Domain-specific confirmed events even when comparison history is absent
@@ -197,11 +185,12 @@ export function buildDailyIntelligenceBrief(
         category: "domain_event",
         certainty: "confirmed",
         headline: `${delayed.formattedValue} delayed delivery record(s) observed`,
-        whatHappened: `${delayed.formattedValue} shipment(s) breached SLA or promised delivery dates in ${analysis.reportingPeriod.label}.`,
+        whatHappened: `${delayed.formattedValue} shipment(s) breached SLA or promised delivery dates.`,
         whatChanged: delayed.changePercent !== null ? `${delayed.changePercent >= 0 ? "+" : ""}${delayed.changePercent.toFixed(1)}% vs reference.` : null,
         affectedArea: analysis.breakdowns[0]?.items[0]?.label || "Fulfillment Operations",
         whyItMatters: "Delivery delays directly hurt customer satisfaction and increase return/cancellation risk.",
         investigateNext: "Review region and carrier performance breakdowns to identify bottlenecks.",
+        possibleExplanation: null,
         metricId: "delayedDeliveries",
         metricValue: delayed.formattedValue,
         changePercent: delayed.changePercent
@@ -216,14 +205,15 @@ export function buildDailyIntelligenceBrief(
       id: `brief::domain_event::snapshot_${topMetric.metricId}`,
       category: "domain_event",
       certainty: "confirmed",
-      headline: `${analysis.domainName} snapshot recorded for ${analysis.reportingPeriod.label}`,
+      headline: `${analysis.domainName} snapshot recorded`,
       whatHappened: `${topMetric.name} was ${topMetric.formattedValue} across ${analysis.source.rowCountInPeriod} record(s).`,
       whatChanged: analysis.comparisonSummary.available
-        ? "No metric shifted by more than 5% compared to the reference period."
-        : analysis.comparisonSummary.reason,
-      affectedArea: analysis.tableName,
+        ? "No metric shifted by more than 5% compared to reference."
+        : null,
+      affectedArea: analysis.domainName,
       whyItMatters: "Establishes a verified baseline from live database records.",
       investigateNext: "Monitor multi-day trends or select a wider historical comparison period.",
+      possibleExplanation: null,
       metricId: topMetric.metricId,
       metricValue: topMetric.formattedValue,
       changePercent: topMetric.changePercent
@@ -253,7 +243,9 @@ export function buildDailyIntelligenceBrief(
 
   const positiveHighlights = findings.filter(f => f.category === "positive");
   const negativeHighlights = findings.filter(f => f.category === "negative");
-  const unusualActivities = findings.filter(f => f.category === "unusual");
+  const unusualActivities = findings.filter(
+    f => f.category === "unusual" || (f.changePercent !== null && Math.abs(f.changePercent) >= 35)
+  );
 
   const status: DailyIntelligenceBrief["status"] =
     !analysis.comparisonSummary.available || analysis.unavailableMetrics.length > analysis.availableMetrics.length
@@ -261,7 +253,7 @@ export function buildDailyIntelligenceBrief(
       : "ready";
 
   const summaryParts: string[] = [
-    `${analysis.domainName} brief for ${analysis.reportingPeriod.label} (${analysis.source.rowCountInPeriod} record(s) from "${analysis.tableName}").`
+    `${analysis.domainName} summary across ${analysis.source.rowCountInPeriod.toLocaleString("en-US")} record(s).`
   ];
   if (positiveHighlights.length) summaryParts.push(`Positive: ${positiveHighlights[0].headline}.`);
   if (negativeHighlights.length) summaryParts.push(`Watch: ${negativeHighlights[0].headline}.`);

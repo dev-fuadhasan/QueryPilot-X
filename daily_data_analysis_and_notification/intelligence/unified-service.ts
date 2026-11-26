@@ -10,7 +10,10 @@ import {
 import type { ComparisonWindow, DynamicAnalysisOptions, DynamicAnalysisResult } from "../metrics/types";
 import { evaluateDynamicAnalysisAlerts, type AlertRules, type DailyReportAlert } from "../notifications";
 import { buildDataHealthReport } from "./data-health";
-import { runAutomatedFindingInvestigations } from "./finding-investigation";
+import {
+  buildEvidenceBackedPossibleExplanation,
+  runAutomatedFindingInvestigations
+} from "./finding-investigation";
 import { buildDailyIntelligenceBrief } from "./intelligence-brief";
 import { buildActionableRecommendations } from "./recommendations";
 import { compareArchivedReports, toArchivedReportFromDynamic } from "./report-archive";
@@ -214,16 +217,22 @@ function assembleUnifiedResult(
         useCache: options.useInvestigationCache ?? true
       });
       const investigationByFindingId = new Map(investigations.map(inv => [inv.findingId, inv]));
-      const enrichedFindings = brief.findings.map(finding => ({
-        ...finding,
-        investigation: investigationByFindingId.get(finding.id) ?? null
-      }));
+      const enrichedFindings = brief.findings.map(finding => {
+        const investigation = investigationByFindingId.get(finding.id) ?? null;
+        return {
+          ...finding,
+          possibleExplanation: buildEvidenceBackedPossibleExplanation(finding, investigation, rootCause),
+          investigation
+        };
+      });
       return {
         ...brief,
         findings: enrichedFindings,
         positiveHighlights: enrichedFindings.filter(f => f.category === "positive"),
         negativeHighlights: enrichedFindings.filter(f => f.category === "negative"),
-        unusualActivities: enrichedFindings.filter(f => f.category === "unusual"),
+        unusualActivities: enrichedFindings.filter(
+          f => f.category === "unusual" || (f.changePercent !== null && Math.abs(f.changePercent) >= 35)
+        ),
         investigations
       };
     },
