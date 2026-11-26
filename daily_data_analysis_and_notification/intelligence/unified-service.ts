@@ -10,6 +10,7 @@ import {
 import type { ComparisonWindow, DynamicAnalysisOptions, DynamicAnalysisResult } from "../metrics/types";
 import { evaluateDynamicAnalysisAlerts, type AlertRules, type DailyReportAlert } from "../notifications";
 import { buildDataHealthReport } from "./data-health";
+import { runAutomatedFindingInvestigations } from "./finding-investigation";
 import { buildDailyIntelligenceBrief } from "./intelligence-brief";
 import { buildActionableRecommendations } from "./recommendations";
 import { compareArchivedReports, toArchivedReportFromDynamic } from "./report-archive";
@@ -36,6 +37,10 @@ export type UnifiedDailyAnalysisOptions = DynamicAnalysisOptions & {
   previousArchivedReport?: ArchivedReportRecord | null;
   /** Optional test/fault-injection hooks (strictly for fault-isolation verification). */
   toolOverrides?: Partial<Record<DailyAnalysisToolName, () => never>>;
+  /** Optional per-finding fault-injection hooks (strictly for investigation fault-isolation tests). */
+  investigationOverrides?: Record<string, () => never>;
+  /** Toggle cross-call investigation caching (defaults to true). */
+  useInvestigationCache?: boolean;
 };
 
 function isDateInComparison(dateKey: string, comparison: ComparisonWindow): boolean {
@@ -193,7 +198,35 @@ function assembleUnifiedResult(
     enabledSet,
     partialFailures,
     null,
-    () => buildDailyIntelligenceBrief(analysis, { rootCause, dataHealth }),
+    () => {
+      const brief = buildDailyIntelligenceBrief(analysis, { rootCause, dataHealth });
+      const investigations = runAutomatedFindingInvestigations({
+        findings: brief.findings,
+        tableProfile,
+        understanding,
+        analysis,
+        periodRows,
+        comparisonRows,
+        rootCause,
+        dataHealth,
+        allowMediumConfidence: options.allowMediumConfidence,
+        investigationOverrides: options.investigationOverrides,
+        useCache: options.useInvestigationCache ?? true
+      });
+      const investigationByFindingId = new Map(investigations.map(inv => [inv.findingId, inv]));
+      const enrichedFindings = brief.findings.map(finding => ({
+        ...finding,
+        investigation: investigationByFindingId.get(finding.id) ?? null
+      }));
+      return {
+        ...brief,
+        findings: enrichedFindings,
+        positiveHighlights: enrichedFindings.filter(f => f.category === "positive"),
+        negativeHighlights: enrichedFindings.filter(f => f.category === "negative"),
+        unusualActivities: enrichedFindings.filter(f => f.category === "unusual"),
+        investigations
+      };
+    },
     overrides.intelligenceBrief
   );
 

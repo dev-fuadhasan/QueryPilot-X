@@ -24,6 +24,163 @@ export type BriefFindingCategory =
 
 export type BriefCertainty = "confirmed" | "possible_explanation";
 
+export type FindingInvestigationStatus =
+  | "completed"
+  | "partially_completed"
+  | "insufficient_data"
+  | "unsupported";
+
+export type FindingInvestigationType =
+  | "metric_deterioration"
+  | "metric_improvement"
+  | "unusual_activity"
+  | "duplicate_data"
+  | "missing_data"
+  | "domain_event"
+  | "data_quality";
+
+export type DailyTrendPoint = {
+  date: string;
+  value: number | null;
+  formattedValue: string | null;
+  recordCount: number;
+  dayOverDayDelta: number | null;
+  dayOverDayChangePercent: number | null;
+  anomaly: "spike" | "drop" | null;
+};
+
+export type DailyTrendSummary = {
+  available: boolean;
+  dateColumn: string | null;
+  points: DailyTrendPoint[];
+  largestDeteriorationDate: string | null;
+  largestDeteriorationValue: string | null;
+  largestImprovementDate: string | null;
+  largestImprovementValue: string | null;
+  largestDayOverDayChange: {
+    date: string;
+    previousDate: string;
+    delta: number;
+    changePercent: number | null;
+    formattedCurrent: string | null;
+    formattedPrevious: string | null;
+  } | null;
+  unusualDates: Array<{
+    date: string;
+    kind: "spike" | "drop";
+    formattedValue: string | null;
+    note: string;
+  }>;
+  trendPattern:
+    | "continuous_downward"
+    | "continuous_upward"
+    | "isolated_shift"
+    | "volatile"
+    | "stable"
+    | "single_day"
+    | "unavailable";
+  summary: string;
+};
+
+export type InvestigationSegmentRow = {
+  dimensionId: string;
+  dimensionLabel: string;
+  sourceColumn: string;
+  groupLabel: string;
+  currentValue: number | null;
+  formattedCurrentValue: string | null;
+  referenceValue: number | null;
+  formattedReferenceValue: string | null;
+  absoluteDelta: number | null;
+  changePercent: number | null;
+  contributionPercent: number | null;
+  recordCount: number;
+  referenceRecordCount: number;
+  direction: "improved" | "deteriorated" | "stable" | "new" | "disappeared" | "unknown";
+  evidence: string;
+};
+
+export type DimensionBreakdownInvestigation = {
+  dimensionId: string;
+  dimensionLabel: string;
+  sourceColumn: string;
+  segments: InvestigationSegmentRow[];
+  topAffectedSegment: InvestigationSegmentRow | null;
+  improvedCount: number;
+  deterioratedCount: number;
+  stableCount: number;
+};
+
+export type ComponentMetricDriver = {
+  metricId: string;
+  metricName: string;
+  currentValue: string | null;
+  referenceValue: string | null;
+  changePercent: number | null;
+  note: string;
+};
+
+export type DuplicateInvestigationDetail = {
+  keyColumns: string[];
+  duplicateRowCount: number;
+  duplicateGroupCount: number;
+  candidateCompositeKeys: string[][];
+  repeatedIdentifierAssessment: "likely_legitimate_transactions" | "possible_duplicate_records" | "mixed";
+  assessmentNote: string;
+  topRepeatedGroups: Array<{
+    keyLabel: string;
+    count: number;
+    distinctContextCount: number | null;
+    assessment: "likely_legitimate_transactions" | "possible_duplicate_records";
+  }>;
+};
+
+export type MissingDataInvestigationDetail = {
+  missingRequiredRoles: string[];
+  highNullColumns: Array<{ columnName: string; nullPercent: number; nullCount: number }>;
+  unavailableMetrics: Array<{ metricId: string; name: string; reason: string }>;
+  invalidDateWarning: string | null;
+};
+
+export type FindingInvestigationResult = {
+  findingId: string;
+  findingHeadline: string;
+  findingCategory: BriefFindingCategory;
+  investigationType: FindingInvestigationType;
+  status: FindingInvestigationStatus;
+  statusReason: string | null;
+  investigatedMetric: {
+    metricId: string;
+    name: string;
+    format: MetricFormat;
+    unit: MetricUnit;
+    polarity: MetricPolarity;
+    currentValue: number | null;
+    formattedCurrentValue: string | null;
+    referenceValue: number | null;
+    formattedReferenceValue: string | null;
+    changePercent: number | null;
+  } | null;
+  reportingPeriod: PeriodWindow;
+  referencePeriod: ComparisonWindow | null;
+  summary: string;
+  dailyTrend: DailyTrendSummary | null;
+  largestChangeDate: string | null;
+  relevantDimensions: Array<{ dimensionId: string; label: string; sourceColumn: string }>;
+  dimensionBreakdowns: DimensionBreakdownInvestigation[];
+  topAssociatedSegments: InvestigationSegmentRow[];
+  mostRelevantSegment: InvestigationSegmentRow | null;
+  relatedMetricDrivers: ComponentMetricDriver[];
+  duplicateDetails: DuplicateInvestigationDetail | null;
+  missingDataDetails: MissingDataInvestigationDetail | null;
+  supportingEvidence: string[];
+  dataLimitations: string[];
+  suggestedNextSteps: string[];
+  cacheKey: string;
+  reusedFromCache: boolean;
+  generatedAt: string;
+};
+
 export type BriefFinding = {
   id: string;
   category: BriefFindingCategory;
@@ -37,6 +194,7 @@ export type BriefFinding = {
   metricId: string | null;
   metricValue: string | null;
   changePercent: number | null;
+  investigation?: FindingInvestigationResult | null;
 };
 
 export type DailyIntelligenceBrief = {
@@ -51,6 +209,7 @@ export type DailyIntelligenceBrief = {
   positiveHighlights: BriefFinding[];
   negativeHighlights: BriefFinding[];
   unusualActivities: BriefFinding[];
+  investigations?: FindingInvestigationResult[];
   dataCaveats: string[];
   generatedAt: string;
 };

@@ -808,6 +808,133 @@
   border-top: 1px solid #f0f4f4;
 }
 
+/* Automatic Finding Investigation Panel inside Executive Summary cards */
+.investigationBox {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #f7fbfa;
+  border: 1px solid #d9e8e5;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.investigationHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.investigationHeading {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--qp-slate, #2F4A63);
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
+}
+
+.investigationSummary {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #2c3a48;
+}
+
+.investigationHighlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.investigationChip {
+  font-size: 10.5px;
+  color: var(--qp-navy, #131B2B);
+  background: #ffffff;
+  border: 1px solid #dce8e7;
+  border-radius: 6px;
+  padding: 3px 8px;
+}
+
+.investigationDetails {
+  border-top: 1px solid #e3eeec;
+  padding-top: 7px;
+}
+
+.investigationDetailsToggle {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--qp-blue, #3d7284);
+  user-select: none;
+}
+
+.investigationDetailsToggle:hover {
+  color: var(--qp-navy, #131B2B);
+}
+
+.investigationDetailsBody {
+  margin-top: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.investigationSection {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.investigationSectionTitle {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--qp-navy, #131B2B);
+}
+
+.investigationSubTitle {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--qp-slate, #2F4A63);
+  margin-bottom: 4px;
+}
+
+.investigationSubTitle span {
+  font-weight: 400;
+  color: var(--muted, #657c8a);
+}
+
+.investigationText {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #445363;
+}
+
+.investigationMetaRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 10.5px;
+  color: #3e5263;
+}
+
+.investigationList {
+  margin: 0;
+  padding-left: 17px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #3c4d5d;
+}
+
 /* Tables & charts inside tools */
 .tableWrap {
   width: 100%;

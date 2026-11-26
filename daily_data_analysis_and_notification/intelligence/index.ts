@@ -1,6 +1,7 @@
 export * from "./types";
 export * from "./smart-comparison";
 export * from "./intelligence-brief";
+export * from "./finding-investigation";
 export * from "./root-cause";
 export * from "./recommendations";
 export * from "./data-health";
