@@ -330,7 +330,9 @@ test("React UI components render real multi-domain backend intelligence without 
   }));
   assert.match(barHtml, /Inventory &amp; Supply Chain/);
   assert.match(barHtml, /warehouse_stock/);
-  assert.match(barHtml, /Column Understanding/);
+  assert.match(barHtml, /stock_on_hand/);
+  assert.doesNotMatch(barHtml, /Column Understanding/);
+  assert.doesNotMatch(barHtml, /Connected Table \/ View/);
 
   // Render DailyReportPanel
   const fallback = new VercelHobbyCronFallbackProvider();

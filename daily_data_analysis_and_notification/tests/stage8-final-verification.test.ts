@@ -582,3 +582,37 @@ test("Priority Fix E: Report History distinguishes all 4 storage states and Manu
   assert.match(manualHtml, /PDF download unavailable/);
   assert.match(manualHtml, /PDF Storage Error/);
 });
+
+test("Direct dataset-column mode runs all 7 tools on arbitrary custom columns without any column mapping", () => {
+  const rows = [
+    { recorded_at: "2026-11-21", zone: "North", temperature_c: 24.5, power_watts: 420 },
+    { recorded_at: "2026-11-21", zone: "South", temperature_c: 26.0, power_watts: 380 },
+    { recorded_at: "2026-11-22", zone: "North", temperature_c: 27.5, power_watts: 610 },
+    { recorded_at: "2026-11-22", zone: "South", temperature_c: 25.0, power_watts: 390 }
+  ];
+  const profile = profileRowsSnapshot({
+    name: "iot_sensors",
+    columns: [
+      { name: "recorded_at", dataType: "date" },
+      { name: "zone", dataType: "text" },
+      { name: "temperature_c", dataType: "numeric" },
+      { name: "power_watts", dataType: "numeric" }
+    ]
+  }, rows);
+
+  const unified = runUnifiedDailyAnalysisFromRows(profile, rows, {
+    domainId: "sales_ecommerce",
+    periodStart: "2026-11-22",
+    periodEnd: "2026-11-22",
+    comparisonPreset: "previous_day",
+    includeAllDatasetColumns: true
+  });
+
+  const metricNames = unified.analysis.availableMetrics.map(m => m.name);
+  assert.ok(metricNames.includes("Power Watts"), `Expected Power Watts metric, got: ${metricNames.join(", ")}`);
+  assert.ok(metricNames.includes("Avg Temperature C"), `Expected Avg Temperature C metric, got: ${metricNames.join(", ")}`);
+  assert.ok(unified.tools.smartComparison && unified.tools.smartComparison.metrics.length >= 2);
+  assert.ok(unified.tools.rootCause?.available, "Root Cause should decompose directly by custom categorical column 'zone'");
+  assert.ok(unified.tools.intelligenceBrief && unified.tools.intelligenceBrief.executiveSummary.length > 10);
+  assert.ok(unified.tools.dataHealth && unified.tools.dataHealth.healthScore > 0);
+});

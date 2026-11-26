@@ -30,12 +30,14 @@ import {
 import type {
   ComparisonSummary,
   ComparisonWindow,
+  DimensionBreakdown,
   DynamicAnalysisOptions,
   DynamicAnalysisResult,
   MetricDefinition,
   MetricResult,
   MetricSourceField,
-  PeriodWindow
+  PeriodWindow,
+  TimeSeriesPoint
 } from "./types";
 
 const DEFAULT_TIMEZONE = "Asia/Dhaka";
@@ -208,6 +210,244 @@ function buildComparisonSummary(metrics: MetricResult[], comparison: ComparisonW
   };
 }
 
+function humanizeColumnName(columnName: string): string {
+  return columnName
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_\-.]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, ch => ch.toUpperCase());
+}
+
+function isNonMeasureIdentifierColumn(columnName: string, isPrimaryKey: boolean): boolean {
+  if (isPrimaryKey) return true;
+  const norm = columnName.toLowerCase();
+  if (/^(?:id|row_?id|record_?id|seq|index)$/.test(norm)) return true;
+  if (/(?:_id|id$|uuid|guid|zip|postal|phone|mobile|ssn|latitude|longitude|lat$|lng$|lon$|year$)/.test(norm)) return true;
+  return false;
+}
+
+function shouldAverageDirectColumn(columnName: string): boolean {
+  const norm = columnName.toLowerCase();
+  return /(rate|ratio|percent|pct|margin|avg|average|mean|score|rating|price|cost|temp|temperature|age|duration|latency|bmi|gpa|discount)/.test(norm);
+}
+
+function parseFiniteNum(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const cleaned = value.replace(/[$,%\s,]/g, "");
+    if (!cleaned) return null;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function aggregateColumnValues(rows: Array<Record<string, unknown>>, colName: string, useAvg: boolean): number | null {
+  let sum = 0;
+  let count = 0;
+  for (const row of rows) {
+    const num = parseFiniteNum(row[colName]);
+    if (num !== null) {
+      sum += num;
+      count += 1;
+    }
+  }
+  if (count === 0) return null;
+  return safeRound(useAvg ? sum / count : sum, 2);
+}
+
+function buildDirectColumnExtras(input: {
+  tableProfile: TableProfile;
+  existingMetrics: MetricResult[];
+  periodRows: Array<Record<string, unknown>>;
+  comparisonRows: Array<Record<string, unknown>>;
+  period: PeriodWindow;
+  comparison: ComparisonWindow | null;
+  dateColumn: string | null;
+  timezone: string;
+  existingBreakdowns: DimensionBreakdown[];
+  existingTimeSeries: TimeSeriesPoint[];
+}): {
+  extraMetrics: MetricResult[];
+  breakdowns: DimensionBreakdown[];
+  timeSeries: TimeSeriesPoint[];
+} {
+  const coveredColumns = new Set<string>();
+  for (const m of input.existingMetrics) {
+    if (m.availability === "available") {
+      for (const sf of m.sourceFields) {
+        coveredColumns.add(sf.columnName.toLowerCase());
+      }
+    }
+  }
+
+  const numericCols = input.tableProfile.columns.filter(
+    col => col.category === "numeric" && !col.isSensitive && col.supported && !isNonMeasureIdentifierColumn(col.name, col.isPrimaryKey)
+  );
+
+  const extraMetrics: MetricResult[] = [];
+  const primaryNumericCols: Array<{ name: string; metricId: string; useAvg: boolean }> = [];
+
+  for (const col of numericCols.slice(0, 14)) {
+    const metricId = `col_${col.name.replace(/[^a-zA-Z0-9]+/g, "_")}`;
+    const useAvg = shouldAverageDirectColumn(col.name);
+    primaryNumericCols.push({ name: col.name, metricId, useAvg });
+    if (coveredColumns.has(col.name.toLowerCase())) continue;
+
+    const value = aggregateColumnValues(input.periodRows, col.name, useAvg);
+    if (value === null) continue;
+    const comparisonValue = input.comparison && input.comparisonRows.length > 0
+      ? aggregateColumnValues(input.comparisonRows, col.name, useAvg)
+      : null;
+    const changePercent = comparisonValue !== null ? safeChangePercent(value, comparisonValue) : null;
+    const label = humanizeColumnName(col.name);
+
+    extraMetrics.push({
+      metricId,
+      name: useAvg ? `Avg ${label}` : label,
+      description: `${useAvg ? "Average" : "Total"} of column "${col.name}" across active dataset records.`,
+      value,
+      formattedValue: formatMetricValue(value, "quantity", "units"),
+      format: "quantity",
+      unit: "units",
+      polarity: "higher_is_better",
+      reportingPeriod: input.period,
+      comparisonValue,
+      formattedComparisonValue: formatMetricValue(comparisonValue, "quantity", "units"),
+      comparisonPeriod: input.comparison,
+      changePercent,
+      trendDirection: determineTrendDirection(changePercent),
+      availability: "available",
+      confidence: "high",
+      missingRequiredFields: [],
+      unavailableReason: null,
+      sourceFields: [{ role: col.name, columnName: col.name, confidence: "high" }],
+      warnings: []
+    });
+  }
+
+  // Always include Total Records if no available metric already represents row/order count
+  const hasCountMetric = input.existingMetrics.some(
+    m => m.availability === "available" && m.format === "count"
+  );
+  if (!hasCountMetric && input.periodRows.length > 0) {
+    const currCount = input.periodRows.length;
+    const compCount = input.comparison && input.comparisonRows.length > 0 ? input.comparisonRows.length : null;
+    const changePercent = compCount !== null ? safeChangePercent(currCount, compCount) : null;
+    extraMetrics.unshift({
+      metricId: "col_record_count",
+      name: "Total Records",
+      description: `Total records in "${input.tableProfile.name}" for the active reporting window.`,
+      value: currCount,
+      formattedValue: formatMetricValue(currCount, "count", "count"),
+      format: "count",
+      unit: "count",
+      polarity: "higher_is_better",
+      reportingPeriod: input.period,
+      comparisonValue: compCount,
+      formattedComparisonValue: formatMetricValue(compCount, "count", "count"),
+      comparisonPeriod: input.comparison,
+      changePercent,
+      trendDirection: determineTrendDirection(changePercent),
+      availability: "available",
+      confidence: "high",
+      missingRequiredFields: [],
+      unavailableReason: null,
+      sourceFields: [],
+      warnings: []
+    });
+  }
+
+  // Build direct categorical breakdowns if none were produced by domain calculator
+  let breakdowns = input.existingBreakdowns;
+  if (breakdowns.length === 0 && input.periodRows.length > 0) {
+    const primaryMeasure = primaryNumericCols[0] || null;
+    const catCols = input.tableProfile.columns.filter(
+      col =>
+        col.category === "categorical"
+        && !col.isSensitive
+        && !col.isPrimaryKey
+        && col.supported
+        && col.distinctCount !== null
+        && col.distinctCount >= 2
+        && col.distinctCount <= 60
+    ).slice(0, 3);
+
+    breakdowns = catCols.map(catCol => {
+      const grouped = new Map<string, { value: number; count: number }>();
+      for (const row of input.periodRows) {
+        const raw = row[catCol.name];
+        const label = raw === null || raw === undefined || String(raw).trim() === "" ? "Unspecified" : String(raw).trim();
+        const entry = grouped.get(label) || { value: 0, count: 0 };
+        entry.count += 1;
+        if (primaryMeasure) {
+          const num = parseFiniteNum(row[primaryMeasure.name]);
+          if (num !== null) entry.value += num;
+        } else {
+          entry.value += 1;
+        }
+        grouped.set(label, entry);
+      }
+
+      const itemsRaw = [...grouped.entries()].map(([label, entry]) => {
+        const primaryValue = primaryMeasure?.useAvg && entry.count > 0
+          ? safeRound(entry.value / entry.count, 2)
+          : safeRound(entry.value, 2);
+        return {
+          label,
+          primaryValue,
+          primaryMetricId: primaryMeasure ? primaryMeasure.metricId : "col_record_count",
+          recordCount: entry.count,
+          metrics: { [primaryMeasure ? primaryMeasure.metricId : "col_record_count"]: primaryValue },
+          sharePercent: null as number | null
+        };
+      }).sort((a, b) => b.primaryValue - a.primaryValue);
+
+      const totalVal = itemsRaw.reduce((acc, item) => acc + Math.max(0, item.primaryValue), 0);
+      const items = itemsRaw.slice(0, 10).map(item => ({
+        ...item,
+        sharePercent: totalVal > 0 ? safeRound((Math.max(0, item.primaryValue) / totalVal) * 100, 1) : null
+      }));
+
+      return {
+        dimensionId: `col_${catCol.name.replace(/[^a-zA-Z0-9]+/g, "_")}`,
+        label: humanizeColumnName(catCol.name),
+        sourceColumn: catCol.name,
+        primaryMetricId: primaryMeasure ? primaryMeasure.metricId : "col_record_count",
+        items,
+        totalItems: itemsRaw.length
+      };
+    });
+  }
+
+  // Build direct daily time series if none were produced by domain calculator
+  let timeSeries = input.existingTimeSeries;
+  if (timeSeries.length === 0 && input.dateColumn && input.periodRows.length > 0) {
+    const byDate = new Map<string, Array<Record<string, unknown>>>();
+    for (const row of input.periodRows) {
+      const dateKey = toDateKeyInTimezone(row[input.dateColumn], input.timezone);
+      if (!dateKey) continue;
+      const list = byDate.get(dateKey) || [];
+      list.push(row);
+      byDate.set(dateKey, list);
+    }
+    const trackedCols = primaryNumericCols.slice(0, 4);
+    timeSeries = [...byDate.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, dayRows]) => {
+        const metricsMap: Record<string, number | null> = { col_record_count: dayRows.length };
+        for (const tc of trackedCols) {
+          metricsMap[tc.metricId] = aggregateColumnValues(dayRows, tc.name, tc.useAvg);
+        }
+        return { date, recordCount: dayRows.length, metrics: metricsMap };
+      });
+  }
+
+  return { extraMetrics, breakdowns, timeSeries };
+}
+
 function assembleAnalysisResult(
   tableProfile: TableProfile,
   understanding: DomainTableUnderstanding,
@@ -233,17 +473,19 @@ function assembleAnalysisResult(
   if (tableProfile.isEmpty || rows.length === 0) {
     dataQualityWarnings.push("Dataset contains no records for the inspected window.");
   }
-  if (understanding.ambiguousColumns.length > 0) {
+  if (!options.includeAllDatasetColumns && understanding.ambiguousColumns.length > 0) {
     dataQualityWarnings.push(`Ambiguous column(s) requiring confirmation: ${understanding.ambiguousColumns.join(", ")}.`);
   }
 
   let invalidDateRows = 0;
   const periodRows: Array<Record<string, unknown>> = [];
   const comparisonRows: Array<Record<string, unknown>> = [];
+  const fallbackTemporalCol = tableProfile.columns.find(c => c.category === "temporal" && !c.isSensitive)?.name || null;
+  const activeDateColumn = accessor.column(primaryDateRole) || (options.includeAllDatasetColumns ? fallbackTemporalCol : null);
 
-  if (accessor.has(primaryDateRole)) {
+  if (activeDateColumn) {
     for (const row of rows) {
-      const rawDate = accessor.raw(row, primaryDateRole);
+      const rawDate = row[activeDateColumn];
       const dateKey = toDateKeyInTimezone(rawDate, timezone);
       if (!dateKey) {
         if (rawDate !== null && rawDate !== undefined && String(rawDate).trim() !== "") {
@@ -258,6 +500,9 @@ function assembleAnalysisResult(
         comparisonRows.push(row);
       }
     }
+  } else if (options.includeAllDatasetColumns) {
+    // Table has no date column: evaluate all rows directly across the dataset's actual columns
+    periodRows.push(...rows);
   } else {
     dataQualityWarnings.push(`Primary date role "${primaryDateRole}" is unavailable for ${domainProfile.name}; period filtering cannot be applied.`);
   }
@@ -415,8 +660,30 @@ function assembleAnalysisResult(
     };
   });
 
-  const availableMetrics = metrics.filter(m => m.availability === "available");
-  const unavailableMetrics = metrics.filter(m => m.availability !== "available");
+  let finalMetrics = metrics;
+  let finalBreakdowns = calcOutput.breakdowns;
+  let finalTimeSeries = calcOutput.timeSeries;
+
+  if (options.includeAllDatasetColumns) {
+    const directExtras = buildDirectColumnExtras({
+      tableProfile,
+      existingMetrics: metrics,
+      periodRows,
+      comparisonRows,
+      period,
+      comparison,
+      dateColumn: activeDateColumn,
+      timezone,
+      existingBreakdowns: calcOutput.breakdowns,
+      existingTimeSeries: calcOutput.timeSeries
+    });
+    finalMetrics = [...metrics.filter(m => m.availability === "available"), ...directExtras.extraMetrics];
+    finalBreakdowns = directExtras.breakdowns;
+    finalTimeSeries = directExtras.timeSeries;
+  }
+
+  const availableMetrics = finalMetrics.filter(m => m.availability === "available");
+  const unavailableMetrics = finalMetrics.filter(m => m.availability !== "available");
 
   return {
     domainId: understanding.domainId,
@@ -426,12 +693,12 @@ function assembleAnalysisResult(
     timezone,
     reportingPeriod: period,
     comparisonPeriod: comparison,
-    metrics,
+    metrics: finalMetrics,
     availableMetrics,
     unavailableMetrics,
-    timeSeries: calcOutput.timeSeries,
-    breakdowns: calcOutput.breakdowns,
-    comparisonSummary: buildComparisonSummary(metrics, comparison, comparisonRows.length),
+    timeSeries: finalTimeSeries,
+    breakdowns: finalBreakdowns,
+    comparisonSummary: buildComparisonSummary(finalMetrics, comparison, comparisonRows.length),
     dataQualityWarnings: [...new Set(dataQualityWarnings)],
     source: {
       tableName: tableProfile.name,
@@ -462,6 +729,12 @@ export function runDynamicAnalysisFromRows(
     overrides: options.overrides
   });
   return assembleAnalysisResult(tableProfile, understanding, rows, options, "in_memory");
+}
+
+function getSafeDatasetColumns(tableProfile: TableProfile): string[] {
+  return tableProfile.columns
+    .filter(c => !c.isSensitive && c.supported)
+    .map(c => c.name);
 }
 
 function getSafeMappedColumns(tableProfile: TableProfile, understanding: DomainTableUnderstanding): string[] {
@@ -653,10 +926,31 @@ export async function runDynamicAnalysisWithExecutor(
   });
 
   const primaryDateRole = PRIMARY_DATE_ROLE_BY_DOMAIN[domainId];
-  const dateColumn = understanding.roleAssignments[primaryDateRole]?.columnName;
-  const safeColumns = getSafeMappedColumns(tableProfile, understanding);
+  const fallbackTemporalCol = tableProfile.columns.find(c => c.category === "temporal" && !c.isSensitive)?.name;
+  const dateColumn = understanding.roleAssignments[primaryDateRole]?.columnName
+    || (options.includeAllDatasetColumns ? fallbackTemporalCol : undefined);
+  const safeColumns = options.includeAllDatasetColumns
+    ? getSafeDatasetColumns(tableProfile)
+    : getSafeMappedColumns(tableProfile, understanding);
 
-  if (tableProfile.isEmpty || !dateColumn || safeColumns.length === 0) {
+  if (tableProfile.isEmpty || safeColumns.length === 0 || (!dateColumn && !options.includeAllDatasetColumns)) {
+    const analysis = assembleAnalysisResult(tableProfile, understanding, [], options, "scoped_records");
+    return { analysis, tableProfile, understanding, scopedRows: [] };
+  }
+
+  if (!dateColumn && options.includeAllDatasetColumns) {
+    // Table has no date column: fetch bounded read-only rows across all safe columns directly
+    const allowedTables = new Set([tableProfile.name]);
+    const allowedCols = new Set(safeColumns);
+    const qualified = quoteQualifiedTable(tableProfile.schema, tableProfile.name, allowedTables);
+    const quotedCols = safeColumns.map(col => quoteIdentifier(col, allowedCols));
+    const boundedSql = `SELECT ${quotedCols.join(", ")} FROM ${qualified} LIMIT ${MAX_SCOPED_ROWS}`;
+    const rows = await executor(boundedSql);
+    const analysis = assembleAnalysisResult(tableProfile, understanding, rows, options, "scoped_records");
+    return { analysis, tableProfile, understanding, scopedRows: rows };
+  }
+
+  if (!dateColumn) {
     const analysis = assembleAnalysisResult(tableProfile, understanding, [], options, "scoped_records");
     return { analysis, tableProfile, understanding, scopedRows: [] };
   }

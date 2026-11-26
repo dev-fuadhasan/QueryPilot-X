@@ -108,14 +108,39 @@ function resolveAvailableDimensions(domainId: BusinessDomainId, accessor: RoleAc
 
 function pickTargetMetrics(analysis: DynamicAnalysisResult): MetricResult[] {
   const allowedIds = new Set(DECOMPOSABLE_METRICS_BY_DOMAIN[analysis.domainId]);
-  const candidates = analysis.availableMetrics.filter(
+  let candidates = analysis.availableMetrics.filter(
     m => allowedIds.has(m.metricId) && m.comparisonValue !== null
   );
+  if (candidates.length === 0) {
+    // Support direct dataset-column metrics (`col_*`) when domain-mapped metrics aren't present
+    candidates = analysis.availableMetrics.filter(
+      m => m.metricId.startsWith("col_") && m.comparisonValue !== null
+    );
+  }
   const changed = candidates
     .filter(m => m.changePercent !== null && Math.abs(m.changePercent) >= 3)
     .sort((a, b) => Math.abs(b.changePercent!) - Math.abs(a.changePercent!));
   if (changed.length > 0) return changed.slice(0, 2);
   return candidates.slice(0, 1);
+}
+
+function evaluateDirectMetricValue(metric: MetricResult, rows: Array<Record<string, unknown>>): number {
+  if (metric.metricId === "col_record_count") return rows.length;
+  const colName = metric.sourceFields[0]?.columnName;
+  if (!colName) return rows.length;
+  const isAvg = metric.name.startsWith("Avg ");
+  let sum = 0;
+  let count = 0;
+  for (const row of rows) {
+    const raw = row[colName];
+    const num = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.replace(/[$,%\s,]/g, "")) : NaN;
+    if (Number.isFinite(num)) {
+      sum += num;
+      count += 1;
+    }
+  }
+  if (count === 0) return 0;
+  return safeRound(isAvg ? sum / count : sum, 2);
 }
 
 /**
@@ -574,6 +599,7 @@ function buildContributorsFromGroupMaps(input: {
 export function buildRootCauseAnalysis(input: {
   analysis: DynamicAnalysisResult;
   understanding: DomainTableUnderstanding;
+  tableProfile?: TableProfile;
   periodRows: Array<Record<string, unknown>>;
   comparisonRows: Array<Record<string, unknown>>;
   period: PeriodWindow;
@@ -582,7 +608,7 @@ export function buildRootCauseAnalysis(input: {
   /** Database-side per-dimension GROUP BY rollups used for high-volume (>25,000 row) tables. */
   precomputedRollups?: PrecomputedDimensionRollup[];
 }): RootCauseAnalysisResult {
-  const { analysis, understanding, periodRows, comparisonRows, period, comparison, precomputedRollups } = input;
+  const { analysis, understanding, tableProfile, periodRows, comparisonRows, period, comparison, precomputedRollups } = input;
   const hasPrecomputed = Boolean(precomputedRollups && precomputedRollups.length > 0);
 
   if (!comparison || (!hasPrecomputed && comparisonRows.length === 0)) {
@@ -616,7 +642,27 @@ export function buildRootCauseAnalysis(input: {
   }
 
   const accessor = createRoleAccessor(understanding, period.timezone, input.allowMediumConfidence ?? true);
-  const availableDimensions = resolveAvailableDimensions(analysis.domainId, accessor);
+  const mappedDimensions = resolveAvailableDimensions(analysis.domainId, accessor).map(dim => ({
+    dimensionId: dim.dimensionId,
+    label: dim.label,
+    sourceColumn: accessor.column(dim.role)!,
+    readLabel: (row: Record<string, unknown>) => accessor.str(row, dim.role) || "Unspecified"
+  }));
+  const fallbackDirectDimensions = mappedDimensions.length === 0 && tableProfile
+    ? tableProfile.columns
+        .filter(c => c.category === "categorical" && !c.isSensitive && !c.isPrimaryKey && c.supported && c.distinctCount !== null && c.distinctCount >= 2 && c.distinctCount <= 60)
+        .slice(0, 4)
+        .map(col => ({
+          dimensionId: `col_${col.name.replace(/[^a-zA-Z0-9]+/g, "_")}`,
+          label: col.name.replace(/[_\-.]+/g, " ").replace(/\b\w/g, ch => ch.toUpperCase()),
+          sourceColumn: col.name,
+          readLabel: (row: Record<string, unknown>) => {
+            const raw = row[col.name];
+            return raw === null || raw === undefined || String(raw).trim() === "" ? "Unspecified" : String(raw).trim();
+          }
+        }))
+    : [];
+  const availableDimensions = mappedDimensions.length > 0 ? mappedDimensions : fallbackDirectDimensions;
 
   if (availableDimensions.length === 0 && !hasPrecomputed) {
     return {
@@ -703,18 +749,18 @@ export function buildRootCauseAnalysis(input: {
     } else {
       // Standard scoped-records mode
       for (const dim of availableDimensions) {
-        const sourceColumn = accessor.column(dim.role)!;
+        const sourceColumn = dim.sourceColumn;
         const currGroups = new Map<string, Array<Record<string, unknown>>>();
         const compGroups = new Map<string, Array<Record<string, unknown>>>();
 
         for (const row of periodRows) {
-          const label = accessor.str(row, dim.role) || "Unspecified";
+          const label = dim.readLabel(row);
           const list = currGroups.get(label) || [];
           list.push(row);
           currGroups.set(label, list);
         }
         for (const row of comparisonRows) {
-          const label = accessor.str(row, dim.role) || "Unspecified";
+          const label = dim.readLabel(row);
           const list = compGroups.get(label) || [];
           list.push(row);
           compGroups.set(label, list);
@@ -724,14 +770,20 @@ export function buildRootCauseAnalysis(input: {
         const comparisonMap = new Map<string, { value: number; present: boolean }>();
 
         for (const [label, rows] of currGroups.entries()) {
+          const val = metric.metricId.startsWith("col_")
+            ? evaluateDirectMetricValue(metric, rows)
+            : (evaluateGroupMetricValue(analysis.domainId, metric.metricId, rows, accessor) ?? 0);
           currentMap.set(label, {
-            value: evaluateGroupMetricValue(analysis.domainId, metric.metricId, rows, accessor) ?? 0,
+            value: val,
             present: rows.length > 0
           });
         }
         for (const [label, rows] of compGroups.entries()) {
+          const val = metric.metricId.startsWith("col_")
+            ? evaluateDirectMetricValue(metric, rows)
+            : (evaluateGroupMetricValue(analysis.domainId, metric.metricId, rows, accessor) ?? 0);
           comparisonMap.set(label, {
-            value: evaluateGroupMetricValue(analysis.domainId, metric.metricId, rows, accessor) ?? 0,
+            value: val,
             present: rows.length > 0
           });
         }
