@@ -258,8 +258,8 @@ export function detectNumericDateOrder(values: Iterable<unknown>): NumericDateOr
   for (const val of values) {
     if (typeof val !== "string") continue;
     const text = val.trim();
-    if (!text || text.length > 32) continue;
-    const m = /^(\d{1,2})([/-])(\d{1,2})\2(\d{4})(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?$/.exec(text);
+    if (!text || text.length > 40) continue;
+    const m = /^(\d{1,2})([/.-])(\d{1,2})\2(\d{2}|\d{4})(?:[T ]\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:AM|PM))?)?$/i.exec(text);
     if (!m) continue;
     const a = Number(m[1]);
     const b = Number(m[3]);
@@ -274,8 +274,9 @@ export function detectNumericDateOrder(values: Iterable<unknown>): NumericDateOr
 
 /**
  * Strictly parses unambiguous date/timestamp strings and validates calendar dates.
- * - Accepts ISO dates (YYYY-MM-DD or YYYY-M-D), ISO timestamps (YYYY-MM-DD[T ]HH:mm...), year-first YYYY/MM/DD,
- *   and unambiguous named-month dates (e.g. "15 Jan 2026", "Jan 15, 2026", "2026-Jan-15").
+ * - Accepts ISO dates (YYYY-MM-DD or YYYY-M-D), ISO/PostgreSQL timestamps (including `+00`, `+06:00`,
+ *   `+0600`, `Z`, `UTC`, `GMT`, and fractional seconds), year-first YYYY/MM/DD or YYYY.MM.DD,
+ *   RFC 2822 / JS Date strings, and unambiguous named-month dates (e.g. "15 Jan 2026", "Jan 15, 2026").
  * - Explicitly flags ambiguous numeric slash/hyphen dates (DD/MM/YYYY vs MM/DD/YYYY) as "ambiguous"
  *   unless a column-proven `preferredOrder` ("dmy" or "mdy") is supplied.
  * - Rejects invalid calendar dates (e.g. 2026-02-30, 2026-13-01) and non-date strings.
@@ -296,7 +297,7 @@ export function parseReliableDateString(
 
   const text = String(value).trim();
   if (!text) return { status: "empty" };
-  if (text.length > 64) return { status: "invalid" };
+  if (text.length > 96) return { status: "invalid" };
 
   // 1. Strict ISO date: YYYY-MM-DD (also accepts unambiguous YYYY-M-D)
   const isoDateMatch = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text);
@@ -310,8 +311,9 @@ export function parseReliableDateString(
     return { status: "valid", iso: `${dateOnly}T00:00:00.000Z`, dateOnly, format: "iso_date" };
   }
 
-  // 2. Strict ISO timestamp: YYYY-MM-DD[T ]HH:mm(:ss(.fff)?)?(Z|[+-]HH:?mm)?
-  const isoTsMatch = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?(Z|[+-]\d{2}:?\d{2})?$/i.exec(text);
+  // 2. Strict ISO / PostgreSQL timestamp: YYYY-MM-DD[T ]HH:mm(:ss(.fff)?)?(Z|UTC|GMT|[+-]HH(:?mm)?)?
+  // Supports PostgreSQL short offsets like "+00" returned by Supabase Management API!
+  const isoTsMatch = /^(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(?:\s*(Z|UTC|GMT|[+-]\d{2}(?::?\d{2})?))?$/i.exec(text);
   if (isoTsMatch) {
     const [, yStr, mStr, dStr, hStr, minStr, secStr, fracStr, tzStr] = isoTsMatch;
     const y = Number(yStr);
@@ -324,19 +326,30 @@ export function parseReliableDateString(
       return { status: "invalid" };
     }
     const msPart = fracStr ? `.${fracStr.slice(0, 3).padEnd(3, "0")}` : ".000";
-    const normTz = tzStr
-      ? (tzStr.toUpperCase() === "Z" ? "Z" : tzStr.includes(":") ? tzStr : `${tzStr.slice(0, 3)}:${tzStr.slice(3)}`)
-      : "Z";
-    const canonical = `${yStr}-${mStr}-${dStr}T${hStr}:${minStr}:${pad2(ss)}${msPart}${normTz}`;
+    let normTz = "Z";
+    if (tzStr) {
+      const upper = tzStr.toUpperCase();
+      if (upper === "Z" || upper === "UTC" || upper === "GMT") {
+        normTz = "Z";
+      } else if (/^[+-]\d{2}$/.test(upper)) {
+        normTz = `${upper}:00`;
+      } else if (upper.includes(":")) {
+        normTz = upper;
+      } else {
+        normTz = `${upper.slice(0, 3)}:${upper.slice(3)}`;
+      }
+    }
+    const dateOnly = `${yStr}-${pad2(m)}-${pad2(d)}`;
+    const canonical = `${dateOnly}T${pad2(hh)}:${pad2(mm)}:${pad2(ss)}${msPart}${normTz}`;
     const parsed = new Date(canonical);
     if (Number.isNaN(parsed.getTime())) return { status: "invalid" };
-    return { status: "valid", iso: parsed.toISOString(), dateOnly: `${yStr}-${mStr}-${dStr}`, format: "iso_timestamp" };
+    return { status: "valid", iso: parsed.toISOString(), dateOnly, format: "iso_timestamp" };
   }
 
-  // 3. Unambiguous year-first YYYY/MM/DD (with optional HH:mm[:ss])
-  const ymdSlashMatch = /^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
+  // 3. Unambiguous year-first YYYY/MM/DD or YYYY.MM.DD (with optional HH:mm[:ss])
+  const ymdSlashMatch = /^(\d{4})([/.])(\d{1,2})\2(\d{1,2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
   if (ymdSlashMatch) {
-    const [, yStr, mStr, dStr, hStr, minStr, secStr] = ymdSlashMatch;
+    const [, yStr, , mStr, dStr, hStr, minStr, secStr] = ymdSlashMatch;
     const y = Number(yStr);
     const m = Number(mStr);
     const d = Number(dStr);
@@ -354,15 +367,19 @@ export function parseReliableDateString(
     };
   }
 
-  // 4. Numeric DD/MM/YYYY vs MM/DD/YYYY (or DD-MM-YYYY vs MM-DD-YYYY)
-  const numericAmbMatch = /^(\d{1,2})([/-])(\d{1,2})\2(\d{4})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
+  // 4. Numeric DD/MM/YYYY vs MM/DD/YYYY (supports '/', '-', '.', optional time + AM/PM, and 2-digit year when proven)
+  const numericAmbMatch = /^(\d{1,2})([/.-])(\d{1,2})\2(\d{2}|\d{4})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(AM|PM))?)?$/i.exec(text);
   if (numericAmbMatch) {
     const a = Number(numericAmbMatch[1]);
     const b = Number(numericAmbMatch[3]);
-    const y = Number(numericAmbMatch[4]);
-    const hh = numericAmbMatch[5] ? Number(numericAmbMatch[5]) : 0;
+    const rawYear = Number(numericAmbMatch[4]);
+    const y = numericAmbMatch[4].length === 2 ? (rawYear >= 70 ? 1900 + rawYear : 2000 + rawYear) : rawYear;
+    let hh = numericAmbMatch[5] ? Number(numericAmbMatch[5]) : 0;
     const mm = numericAmbMatch[6] ? Number(numericAmbMatch[6]) : 0;
     const ss = numericAmbMatch[7] ? Number(numericAmbMatch[7]) : 0;
+    const ampm = numericAmbMatch[8]?.toUpperCase();
+    if (ampm === "PM" && hh >= 1 && hh <= 11) hh += 12;
+    if (ampm === "AM" && hh === 12) hh = 0;
     if (a < 1 || b < 1 || a > 31 || b > 31 || (a > 12 && b > 12) || hh > 23 || mm > 59 || ss > 59) {
       return { status: "invalid" };
     }
@@ -379,8 +396,8 @@ export function parseReliableDateString(
     return { status: "ambiguous" };
   }
 
-  // 5. Unambiguous named-month dates: "15 Jan 2026", "Jan 15, 2026", "2026-Jan-15"
-  const dmyNameMatch = /^(\d{1,2})[\s-]([A-Za-z]{3,9})[\s,-]+(\d{4})$/.exec(text);
+  // 5. Unambiguous named-month dates: "15 Jan 2026", "Jan 15, 2026", "2026-Jan-15", RFC 2822 / JS Date strings
+  const dmyNameMatch = /^(?:[A-Za-z]{3,9},?\s+)?(\d{1,2})[\s-]([A-Za-z]{3,9})[\s,-]+(\d{4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*(?:GMT|UTC|[+-]\d{2}:?\d{2})?)?)?$/.exec(text);
   if (dmyNameMatch) {
     const d = Number(dmyNameMatch[1]);
     const m = MONTH_NAME_MAP[dmyNameMatch[2].toLowerCase()];
@@ -390,7 +407,7 @@ export function parseReliableDateString(
     return { status: "valid", iso: `${dateOnly}T00:00:00.000Z`, dateOnly, format: "month_name" };
   }
 
-  const mdyNameMatch = /^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/.exec(text);
+  const mdyNameMatch = /^(?:[A-Za-z]{3,9},?\s+)?([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s+GMT[+-]\d{4}(?:\s*\([^)]*\))?|\s*(?:GMT|UTC|Z))?)?$/.exec(text);
   if (mdyNameMatch) {
     const m = MONTH_NAME_MAP[mdyNameMatch[1].toLowerCase()];
     const d = Number(mdyNameMatch[2]);

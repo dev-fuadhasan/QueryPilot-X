@@ -125,25 +125,25 @@ export function buildTextDateProbeSql(
   const qCol = quoteIdentifier(columnName, allowedColumns);
   const expr = `TRIM(CAST(${qCol} AS TEXT))`;
   const slashNorm = `REPLACE(SPLIT_PART(${expr}, ' ', 1), '-', '/')`;
-  const p1 = `CAST(NULLIF(SPLIT_PART(${slashNorm}, '/', 1), '') AS INTEGER)`;
-  const p2 = `CAST(NULLIF(SPLIT_PART(${slashNorm}, '/', 2), '') AS INTEGER)`;
-  const dmyIsoExpr = `CONCAT(SPLIT_PART(${slashNorm}, '/', 3), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 2), 2, '0'), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 1), 2, '0'))`;
-  const mdyIsoExpr = `CONCAT(SPLIT_PART(${slashNorm}, '/', 3), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 1), 2, '0'), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 2), 2, '0'))`;
+  const safeP1 = `CASE WHEN ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' THEN CAST(NULLIF(SPLIT_PART(${slashNorm}, '/', 1), '') AS INTEGER) END`;
+  const safeP2 = `CASE WHEN ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' THEN CAST(NULLIF(SPLIT_PART(${slashNorm}, '/', 2), '') AS INTEGER) END`;
+  const dmyIsoExpr = `CASE WHEN ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' THEN CONCAT(SPLIT_PART(${slashNorm}, '/', 3), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 2), 2, '0'), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 1), 2, '0')) END`;
+  const mdyIsoExpr = `CASE WHEN ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' THEN CONCAT(SPLIT_PART(${slashNorm}, '/', 3), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 1), 2, '0'), '-', LPAD(SPLIT_PART(${slashNorm}, '/', 2), 2, '0')) END`;
   return `SELECT
     COUNT(*) FILTER (WHERE ${qCol} IS NOT NULL AND ${expr} <> '') AS non_empty_count,
     COUNT(*) FILTER (WHERE ${expr} ~ '${ISO_DATE_PG_REGEX}') AS iso_count,
     COUNT(*) FILTER (WHERE ${expr} ~ '${YMD_SLASH_PG_REGEX}') AS ymd_slash_count,
     COUNT(*) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}') AS ambiguous_count,
-    COUNT(*) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' AND ${p1} BETWEEN 13 AND 31 AND ${p2} BETWEEN 1 AND 12) AS dmy_proof_count,
-    COUNT(*) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' AND ${p1} BETWEEN 1 AND 12 AND ${p2} BETWEEN 13 AND 31) AS mdy_proof_count,
+    COUNT(*) FILTER (WHERE ${safeP1} BETWEEN 13 AND 31 AND ${safeP2} BETWEEN 1 AND 12) AS dmy_proof_count,
+    COUNT(*) FILTER (WHERE ${safeP1} BETWEEN 1 AND 12 AND ${safeP2} BETWEEN 13 AND 31) AS mdy_proof_count,
     MIN(SUBSTRING(${expr} FROM 1 FOR 10)) FILTER (WHERE ${expr} ~ '${ISO_DATE_PG_REGEX}') AS iso_min,
     MAX(SUBSTRING(${expr} FROM 1 FOR 10)) FILTER (WHERE ${expr} ~ '${ISO_DATE_PG_REGEX}') AS iso_max,
     MIN(REPLACE(SUBSTRING(${expr} FROM 1 FOR 10), '/', '-')) FILTER (WHERE ${expr} ~ '${YMD_SLASH_PG_REGEX}') AS ymd_min,
     MAX(REPLACE(SUBSTRING(${expr} FROM 1 FOR 10), '/', '-')) FILTER (WHERE ${expr} ~ '${YMD_SLASH_PG_REGEX}') AS ymd_max,
-    MIN(${dmyIsoExpr}) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' AND ${p1} BETWEEN 1 AND 31 AND ${p2} BETWEEN 1 AND 12) AS dmy_min,
-    MAX(${dmyIsoExpr}) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' AND ${p1} BETWEEN 1 AND 31 AND ${p2} BETWEEN 1 AND 12) AS dmy_max,
-    MIN(${mdyIsoExpr}) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' AND ${p1} BETWEEN 1 AND 12 AND ${p2} BETWEEN 1 AND 31) AS mdy_min,
-    MAX(${mdyIsoExpr}) FILTER (WHERE ${expr} ~ '${AMBIGUOUS_NUMERIC_PG_REGEX}' AND ${p1} BETWEEN 1 AND 12 AND ${p2} BETWEEN 1 AND 31) AS mdy_max
+    MIN(${dmyIsoExpr}) FILTER (WHERE ${safeP1} BETWEEN 1 AND 31 AND ${safeP2} BETWEEN 1 AND 12) AS dmy_min,
+    MAX(${dmyIsoExpr}) FILTER (WHERE ${safeP1} BETWEEN 1 AND 31 AND ${safeP2} BETWEEN 1 AND 12) AS dmy_max,
+    MIN(${mdyIsoExpr}) FILTER (WHERE ${safeP1} BETWEEN 1 AND 12 AND ${safeP2} BETWEEN 1 AND 31) AS mdy_min,
+    MAX(${mdyIsoExpr}) FILTER (WHERE ${safeP1} BETWEEN 1 AND 12 AND ${safeP2} BETWEEN 1 AND 31) AS mdy_max
   FROM ${qualified}`;
 }
 
