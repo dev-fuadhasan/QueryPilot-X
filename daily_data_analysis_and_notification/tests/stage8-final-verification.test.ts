@@ -703,4 +703,11 @@ test("Proven MDY and DMY slash/hyphen text dates parse cleanly across entire dat
   }, dmyRows);
   assert.equal(dmyProfile.freshness.earliestDate?.slice(0, 10), "2024-03-15");
   assert.equal(dmyProfile.freshness.latestDate?.slice(0, 10), "2024-03-29");
+
+  // 3. PostgreSQL / Supabase Management API timestamptz short offset (+00), AM/PM timestamps, and JS Date strings
+  assert.equal(parseReliableDateString("2024-05-14 00:00:00+00").status, "valid");
+  assert.equal(parseReliableDateString("2024-05-14 14:22:09.123456+00").status, "valid");
+  assert.equal(parseReliableDateString("2024-05-14 00:00:00 UTC").status, "valid");
+  assert.equal(parseReliableDateString("1/15/2024 10:30:00 AM", "mdy").status, "valid");
+  assert.equal(parseReliableDateString("Mon May 14 2024 00:00:00 GMT+0000 (Coordinated Universal Time)").status, "valid");
 });
