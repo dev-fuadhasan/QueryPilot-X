@@ -45,15 +45,23 @@ function isDateInComparison(dateKey: string, comparison: ComparisonWindow): bool
 
 function splitRowsByWindow(
   rows: Array<Record<string, unknown>>,
+  tableProfile: TableProfile,
   understanding: DomainTableUnderstanding,
-  analysis: DynamicAnalysisResult
+  analysis: DynamicAnalysisResult,
+  includeAllDatasetColumns?: boolean
 ) {
   const primaryDateRole = PRIMARY_DATE_ROLE_BY_DOMAIN[analysis.domainId];
-  const dateColumn = understanding.roleAssignments[primaryDateRole]?.columnName;
+  const fallbackTemporalCol = includeAllDatasetColumns
+    ? tableProfile.columns.find(c => c.category === "temporal" && !c.isSensitive)?.name
+    : undefined;
+  const dateColumn = understanding.roleAssignments[primaryDateRole]?.columnName || fallbackTemporalCol;
   const periodRows: Array<Record<string, unknown>> = [];
   const comparisonRows: Array<Record<string, unknown>> = [];
 
-  if (!dateColumn) return { periodRows, comparisonRows };
+  if (!dateColumn) {
+    if (includeAllDatasetColumns) periodRows.push(...rows);
+    return { periodRows, comparisonRows };
+  }
 
   for (const row of rows) {
     const key = toDateKeyInTimezone(row[dateColumn], analysis.timezone);
@@ -111,7 +119,13 @@ function assembleUnifiedResult(
   );
   const partialFailures: UnifiedDailyAnalysisResult["partialFailures"] = [];
   const overrides = options.toolOverrides || {};
-  const { periodRows, comparisonRows } = splitRowsByWindow(rows, understanding, analysis);
+  const { periodRows, comparisonRows } = splitRowsByWindow(
+    rows,
+    tableProfile,
+    understanding,
+    analysis,
+    options.includeAllDatasetColumns
+  );
 
   // Order matters so downstream tools (Brief & Recommendations) reuse upstream evidence without re-computing
   const smartComparison: SmartDayComparison | null = runSafely(
@@ -154,6 +168,7 @@ function assembleUnifiedResult(
     () => buildRootCauseAnalysis({
       analysis,
       understanding,
+      tableProfile,
       periodRows,
       comparisonRows,
       period: analysis.reportingPeriod,

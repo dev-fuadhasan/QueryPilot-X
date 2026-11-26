@@ -113,6 +113,7 @@ export async function POST(request: NextRequest) {
       comparisonEnd: typeof body.comparisonEnd === "string" ? body.comparisonEnd.trim() : undefined,
       overrides: Object.keys(overrides).length ? overrides : undefined,
       allowMediumConfidence: typeof body.allowMediumConfidence === "boolean" ? body.allowMediumConfidence : true,
+      includeAllDatasetColumns: body.includeAllDatasetColumns !== false,
       activationEventName: typeof body.activationEventName === "string" ? body.activationEventName.trim() : undefined,
       expectedCadence,
       enabledTools,

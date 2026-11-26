@@ -211,12 +211,17 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     overrides: Record<string, string>;
     tz: string;
     rules: AlertRules;
+    latestAvailableDate?: string | null;
   }) => {
     if (!params.table) return;
     const seq = ++intelSeqRef.current;
     setLoadingIntelligence(true);
     setIntelligenceError(null);
     try {
+      const todayIso = getCurrentClockInTz(params.tz).date;
+      const latestIso = params.latestAvailableDate?.slice(0, 10) || null;
+      const targetDate = latestIso && latestIso < todayIso ? latestIso : undefined;
+
       const response = await fetch("/api/daily-analysis/intelligence", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -224,7 +229,10 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
           table: params.table,
           domain: params.domain,
           timezone: params.tz,
+          periodStart: targetDate,
+          periodEnd: targetDate,
           comparisonPreset: params.preset,
+          includeAllDatasetColumns: true,
           overrides: Object.keys(params.overrides).length ? params.overrides : undefined,
           alertRules: params.rules
         })
@@ -291,14 +299,22 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       ]);
 
       const tableToRun = profileResult?.resolvedTable || initialTable || "";
+      const profiledTable = profileResult?.nextProfile.tables.find(t => t.name === tableToRun) || null;
+      const autoDomain = profileResult?.nextProfile.tableUnderstandings?.[tableToRun]?.domainId
+        || profileResult?.nextProfile.suggestedDomain?.domainId
+        || initialDomain;
+      if (autoDomain !== initialDomain) {
+        setSelectedDomain(autoDomain);
+      }
       if (tableToRun) {
         await loadIntelligence({
-          domain: initialDomain,
+          domain: autoDomain,
           table: tableToRun,
           preset: "previous_day",
           overrides: initialOverrides,
           tz: initialTz,
-          rules: initialRules
+          rules: initialRules,
+          latestAvailableDate: profiledTable?.freshness.latestDate || null
         });
       }
     })();
@@ -363,14 +379,20 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     resetStaleResults();
     setSelectedDataset(nextTable);
     setColumnOverrides({});
+    const profiledTable = availableTables.find(t => t.name === nextTable) || null;
+    const autoDomain = profile?.tableUnderstandings?.[nextTable]?.domainId || selectedDomain;
+    if (autoDomain !== selectedDomain) {
+      setSelectedDomain(autoDomain);
+    }
     if (nextTable) {
       await loadIntelligence({
-        domain: selectedDomain,
+        domain: autoDomain,
         table: nextTable,
         preset: comparisonPreset,
         overrides: {},
         tz: timezone,
-        rules: alertRules
+        rules: alertRules,
+        latestAvailableDate: profiledTable?.freshness.latestDate || null
       });
     }
   }
@@ -385,7 +407,8 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         preset: comparisonPreset,
         overrides: columnOverrides,
         tz: timezone,
-        rules: alertRules
+        rules: alertRules,
+        latestAvailableDate: currentTableProfile?.freshness.latestDate || null
       }),
       loadArchiveReports()
     ]);
@@ -400,7 +423,8 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       preset: nextPreset,
       overrides: columnOverrides,
       tz: timezone,
-      rules: alertRules
+      rules: alertRules,
+      latestAvailableDate: currentTableProfile?.freshness.latestDate || null
     });
   }
 

@@ -174,4 +174,6 @@ export type DynamicAnalysisOptions = {
   activationEventName?: string;
   /** Reference timestamp for overdue / freshness calculations. */
   now?: Date;
+  /** Analyze all actual numeric & categorical columns of the selected dataset directly without requiring manual column mapping. */
+  includeAllDatasetColumns?: boolean;
 };
