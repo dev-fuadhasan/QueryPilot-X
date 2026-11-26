@@ -1,5 +1,5 @@
 import type { Session } from "../../src/lib/session";
-import { createSessionQueryExecutor, detectNumericDateOrder, understandTableForDomain } from "../profiler";
+import { createSessionQueryExecutor, deriveSessionCacheKey, detectNumericDateOrder, understandTableForDomain } from "../profiler";
 import type { DomainTableUnderstanding, ReadOnlyQueryExecutor, TableProfile } from "../profiler/types";
 import {
   PRIMARY_DATE_ROLE_BY_DOMAIN,
@@ -349,5 +349,9 @@ export async function runUnifiedDailyAnalysisForSession(
   options: UnifiedDailyAnalysisOptions
 ): Promise<UnifiedDailyAnalysisResult> {
   const executor = createSessionQueryExecutor(session);
-  return runUnifiedDailyAnalysisWithExecutor(executor, tableName, options);
+  const sessionCacheKey = options.sessionCacheKey ?? deriveSessionCacheKey(session);
+  return runUnifiedDailyAnalysisWithExecutor(executor, tableName, {
+    ...options,
+    sessionCacheKey
+  });
 }

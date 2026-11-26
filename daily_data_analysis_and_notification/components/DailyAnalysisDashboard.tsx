@@ -30,6 +30,23 @@ import styles from "./DailyAnalysisDashboard.module.css";
 type Props = { onBack: () => void };
 
 const READ_ALERTS_KEY = "querypilot.dailyAnalysis.readAlertIds";
+const LAST_DATASET_KEY = "querypilot.dailyAnalysis.lastDataset";
+
+function loadLastDataset(): string {
+  try {
+    return localStorage.getItem(LAST_DATASET_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function saveLastDataset(tableName: string) {
+  try {
+    if (tableName) localStorage.setItem(LAST_DATASET_KEY, tableName);
+  } catch {
+    // ignore storage errors
+  }
+}
 
 function loadReadAlertIds(): Set<string> {
   try {
@@ -167,12 +184,12 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     }
   }, []);
 
-  const loadProfile = useCallback(async (_domain?: BusinessDomainId, preferredTable?: string | null) => {
+  const loadProfile = useCallback(async (_domain?: BusinessDomainId, preferredTable?: string | null, fresh = false) => {
     const seq = ++profileSeqRef.current;
     setLoadingProfile(true);
     setProfileError(null);
     try {
-      const response = await fetch("/api/daily-analysis/profile", { cache: "no-store" });
+      const response = await fetch(fresh ? "/api/daily-analysis/profile?fresh=1" : "/api/daily-analysis/profile", { cache: "no-store" });
       const data = await response.json();
       if (seq !== profileSeqRef.current) return null;
       if (!response.ok) {
@@ -189,8 +206,11 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         || tables[0]?.name
         || "";
 
-      if (resolvedTable && resolvedTable !== selectedDataset) {
-        setSelectedDataset(resolvedTable);
+      if (resolvedTable) {
+        saveLastDataset(resolvedTable);
+        if (resolvedTable !== selectedDataset) {
+          setSelectedDataset(resolvedTable);
+        }
       }
       return { nextProfile, resolvedTable };
     } catch (error) {
@@ -212,8 +232,10 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     tz: string;
     rules: AlertRules;
     latestAvailableDate?: string | null;
+    fresh?: boolean;
   }) => {
     if (!params.table) return;
+    saveLastDataset(params.table);
     const seq = ++intelSeqRef.current;
     setLoadingIntelligence(true);
     setIntelligenceError(null);
@@ -227,6 +249,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
           comparisonPreset: params.preset,
           includeAllDatasetColumns: true,
           anchorToDatasetDates: true,
+          fresh: params.fresh === true,
           overrides: Object.keys(params.overrides).length ? params.overrides : undefined,
           alertRules: params.rules
         })
@@ -244,7 +267,6 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       setLastRefreshedAt(nextIntel.generatedAt || new Date().toISOString());
     } catch (error) {
       if (seq !== intelSeqRef.current) return;
-      setIntelligence(null);
       setIntelligenceError(error instanceof Error ? error.message : "Could not run Daily Analysis intelligence.");
     } finally {
       if (seq === intelSeqRef.current) {
@@ -253,7 +275,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     }
   }, []);
 
-  // Initial load: settings + profile + archive + intelligence for all 7 tool cards
+  // Initial load: launch settings + profile + archive + optimistic intelligence ALL IN PARALLEL (zero waterfall!)
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
@@ -261,39 +283,61 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
 
     void (async () => {
       setLoadingSettings(true);
+      const cachedLastTable = loadLastDataset();
+      if (cachedLastTable) {
+        setSelectedDataset(cachedLastTable);
+      }
+
+      // Start all independent initial requests simultaneously instead of waiting sequentially
+      const settingsPromise = fetch("/api/daily-analysis/settings", { cache: "no-store" })
+        .then(async res => {
+          const data = await res.json();
+          return res.ok && data.settings ? data : null;
+        })
+        .catch(() => null);
+
+      const profilePromise = loadProfile(undefined, cachedLastTable || null, false);
+      const archivePromise = loadArchiveReports();
+
+      // If we already know the last active table from localStorage, load intelligence immediately in parallel!
+      let optimisticTableRan = "";
+      const optimisticIntelPromise = cachedLastTable
+        ? (() => {
+            optimisticTableRan = cachedLastTable;
+            return loadIntelligence({
+              table: cachedLastTable,
+              preset: "previous_day",
+              overrides: {},
+              tz: "Asia/Dhaka",
+              rules: DEFAULT_ALERT_RULES
+            });
+          })()
+        : Promise.resolve();
+
+      const settingsData = await settingsPromise;
       let initialDomain: BusinessDomainId = "sales_ecommerce";
-      let initialTable: string | null = null;
+      let initialTable: string | null = cachedLastTable || null;
       let initialOverrides: Record<string, string> = {};
       let initialTz = "Asia/Dhaka";
       let initialRules: AlertRules = DEFAULT_ALERT_RULES;
 
-      try {
-        const res = await fetch("/api/daily-analysis/settings", { cache: "no-store" });
-        const data = await res.json();
-        if (res.ok && data.settings) {
-          const loaded = data.settings as PersistentDailySettings;
-          setSettings(loaded);
-          setStorageStatus(data.storageStatus || null);
-          setScheduleSummary(data.scheduleSummary || null);
-          initialDomain = loaded.selectedDomain || "sales_ecommerce";
-          initialTable = loaded.selectedDataset || null;
-          initialOverrides = loaded.columnOverrides || {};
-          initialTz = loaded.timezone || "Asia/Dhaka";
-          initialRules = sanitizeAlertRules(loaded.alertRules || DEFAULT_ALERT_RULES);
-          setSelectedDomain(initialDomain);
-          if (initialTable) setSelectedDataset(initialTable);
-          setColumnOverrides(initialOverrides);
-        }
-      } catch {
-        // Keep safe defaults
-      } finally {
-        setLoadingSettings(false);
+      if (settingsData?.settings) {
+        const loaded = settingsData.settings as PersistentDailySettings;
+        setSettings(loaded);
+        setStorageStatus(settingsData.storageStatus || null);
+        setScheduleSummary(settingsData.scheduleSummary || null);
+        initialDomain = loaded.selectedDomain || "sales_ecommerce";
+        initialTable = loaded.selectedDataset || initialTable;
+        initialOverrides = loaded.columnOverrides || {};
+        initialTz = loaded.timezone || "Asia/Dhaka";
+        initialRules = sanitizeAlertRules(loaded.alertRules || DEFAULT_ALERT_RULES);
+        setSelectedDomain(initialDomain);
+        if (initialTable) setSelectedDataset(initialTable);
+        setColumnOverrides(initialOverrides);
       }
+      setLoadingSettings(false);
 
-      const [profileResult] = await Promise.all([
-        loadProfile(initialDomain, initialTable),
-        loadArchiveReports()
-      ]);
+      const [profileResult] = await Promise.all([profilePromise, archivePromise, optimisticIntelPromise]);
 
       const tableToRun = profileResult?.resolvedTable || initialTable || "";
       const profiledTable = profileResult?.nextProfile.tables.find(t => t.name === tableToRun) || null;
@@ -303,7 +347,14 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       if (autoDomain !== initialDomain) {
         setSelectedDomain(autoDomain);
       }
-      if (tableToRun) {
+      const needsFollowUpIntel = Boolean(
+        tableToRun && (
+          tableToRun !== optimisticTableRan
+          || Object.keys(initialOverrides).length > 0
+          || initialTz !== "Asia/Dhaka"
+        )
+      );
+      if (needsFollowUpIntel) {
         await loadIntelligence({
           domain: autoDomain,
           table: tableToRun,
@@ -397,7 +448,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   async function handleRefreshAll() {
     if (!selectedDataset) return;
     await Promise.all([
-      loadProfile(selectedDomain, selectedDataset),
+      loadProfile(selectedDomain, selectedDataset, true),
       loadIntelligence({
         domain: selectedDomain,
         table: selectedDataset,
@@ -405,7 +456,8 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         overrides: columnOverrides,
         tz: timezone,
         rules: alertRules,
-        latestAvailableDate: currentTableProfile?.freshness.latestDate || null
+        latestAvailableDate: currentTableProfile?.freshness.latestDate || null,
+        fresh: true
       }),
       loadArchiveReports()
     ]);
@@ -577,10 +629,12 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       const created = data.report as PersistentReportRecord;
       if (created.pdfStatus === "generated") {
         setPdfGenerateNotice(`PDF saved to cloud archive (${created.periodStart} to ${created.periodEnd}).`);
+        // Immediately reflect the new PDF in Archive without waiting for a full bucket re-list
+        setArchivedReports(prev => [created, ...prev.filter(item => item.id !== created.id)]);
       } else {
         setPdfGenerateError(created.pdfError || "Report metadata saved, but PDF upload did not complete.");
       }
-      await loadArchiveReports();
+      void loadArchiveReports();
     } catch (error) {
       setPdfGenerateError(error instanceof Error ? error.message : "Could not generate and store the PDF report.");
     } finally {

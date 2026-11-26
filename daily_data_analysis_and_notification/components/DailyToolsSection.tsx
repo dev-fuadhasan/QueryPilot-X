@@ -507,11 +507,18 @@ export default function DailyToolsSection({
               Live business intelligence tools computed directly from the connected read-only database.
             </p>
           </div>
-          {intelligence && intelligence.partialFailures.length > 0 && (
-            <span className={`${styles.badge} ${styles.badgeWarning}`}>
-              {intelligence.partialFailures.length} tool warning(s)
-            </span>
-          )}
+          <div className={styles.metaPills}>
+            {loadingIntelligence && intelligence && (
+              <span className={`${styles.badge} ${styles.badgeInfo}`}>
+                Updating…
+              </span>
+            )}
+            {intelligence && intelligence.partialFailures.length > 0 && (
+              <span className={`${styles.badge} ${styles.badgeWarning}`}>
+                {intelligence.partialFailures.length} tool warning(s)
+              </span>
+            )}
+          </div>
         </div>
 
         {intelligenceError && (
@@ -567,7 +574,7 @@ export default function DailyToolsSection({
             </div>
           </div>
 
-          {loadingIntelligence ? (
+          {loadingIntelligence && !intelligence ? (
             <CardLoadingSkeleton />
           ) : smartComparison ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -738,7 +745,7 @@ export default function DailyToolsSection({
             )}
           </div>
 
-          {loadingIntelligence ? (
+          {loadingIntelligence && !intelligence ? (
             <CardLoadingSkeleton />
           ) : brief ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -871,7 +878,7 @@ export default function DailyToolsSection({
             </div>
           </div>
 
-          {loadingIntelligence ? (
+          {loadingIntelligence && !intelligence ? (
             <CardLoadingSkeleton />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1062,7 +1069,7 @@ export default function DailyToolsSection({
             )}
           </div>
 
-          {loadingIntelligence ? (
+          {loadingIntelligence && !intelligence ? (
             <CardLoadingSkeleton />
           ) : rootCause ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1166,7 +1173,7 @@ export default function DailyToolsSection({
             </span>
           </div>
 
-          {loadingIntelligence ? (
+          {loadingIntelligence && !intelligence ? (
             <CardLoadingSkeleton />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -1230,7 +1237,7 @@ export default function DailyToolsSection({
             )}
           </div>
 
-          {loadingIntelligence ? (
+          {loadingIntelligence && !intelligence ? (
             <CardLoadingSkeleton />
           ) : dataHealth ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>

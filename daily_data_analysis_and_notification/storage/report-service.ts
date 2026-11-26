@@ -542,6 +542,7 @@ export async function generateAndPersistManualReport(input: {
   overrides?: Record<string, string>;
   earliestAvailableDate?: string | null;
   latestAvailableDate?: string | null;
+  sessionCacheKey?: string;
   now?: Date;
 }): Promise<{ record: PersistentReportRecord; downloadUrl: string }> {
   const pdfStorage = input.pdfStorage || createDefaultPdfStorage();
@@ -563,6 +564,7 @@ export async function generateAndPersistManualReport(input: {
     timezone: tz,
     comparisonPreset: input.comparisonPreset ?? (input.quickRange === "all_history" ? "none" : "previous_30_days"),
     overrides: input.overrides,
+    sessionCacheKey: input.sessionCacheKey,
     now: input.now
   });
 

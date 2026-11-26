@@ -1,11 +1,19 @@
 import type { Session } from "../../src/lib/session";
 import {
+  clearSessionPerformanceCaches,
   createSessionQueryExecutor,
+  deriveSessionCacheKey,
   detectNumericDateOrder,
+  getCachedPreviousActiveDate,
+  getCachedTableProfile,
+  getCachedTableRows,
   getDomainProfile,
   profileDatabaseWithExecutor,
   quoteIdentifier,
   quoteQualifiedTable,
+  setCachedPreviousActiveDate,
+  setCachedTableProfile,
+  setCachedTableRows,
   understandTableForDomain,
   type NumericDateOrder
 } from "../profiler";
@@ -1125,7 +1133,13 @@ export async function runDynamicAnalysisWithExecutor(
 }> {
   const timezone = assertValidTimezone(options.timezone || DEFAULT_TIMEZONE);
 
-  let tableProfile = precomputedTableProfile;
+  const cacheKey = options.sessionCacheKey;
+  if (cacheKey && options.forceRefresh) {
+    clearSessionPerformanceCaches(cacheKey);
+  }
+
+  let tableProfile = precomputedTableProfile
+    || (cacheKey && !options.forceRefresh ? getCachedTableProfile(cacheKey, tableName) || undefined : undefined);
   let detectedDomain: BusinessDomainId | null = options.domainId || null;
 
   if (!tableProfile) {
@@ -1138,6 +1152,9 @@ export async function runDynamicAnalysisWithExecutor(
     tableProfile = dbProfile.tables.find(t => t.name === tableName);
     if (!tableProfile) {
       throw new Error(`Table "${tableName}" was not found in the connected database.`);
+    }
+    if (cacheKey && !options.overrides) {
+      setCachedTableProfile(cacheKey, tableProfile);
     }
     if (!detectedDomain) {
       detectedDomain = dbProfile.tableUnderstandings[tableName]?.domainId || dbProfile.suggestedDomain?.domainId || "sales_ecommerce";
@@ -1165,15 +1182,25 @@ export async function runDynamicAnalysisWithExecutor(
     const earliestDate = tableProfile.freshness.earliestDate?.slice(0, 10) || latestDate;
     let previousActiveDate: string | null = null;
     if ((options.comparisonPreset ?? "previous_day") === "previous_day") {
-      try {
-        const prevSql = buildPreviousActiveDateSql(tableProfile, dateColumn, latestDate);
-        const prevRows = await executor(prevSql);
-        const candidate = prevRows[0]?.prev_date;
-        if (typeof candidate === "string" && /^\d{4}-\d{2}-\d{2}/.test(candidate.trim())) {
-          previousActiveDate = candidate.trim().slice(0, 10);
+      const cachedPrev = cacheKey && !options.forceRefresh
+        ? getCachedPreviousActiveDate(cacheKey, tableName, dateColumn, latestDate)
+        : { hit: false as const };
+      if (cachedPrev.hit) {
+        previousActiveDate = cachedPrev.value;
+      } else {
+        try {
+          const prevSql = buildPreviousActiveDateSql(tableProfile, dateColumn, latestDate);
+          const prevRows = await executor(prevSql);
+          const candidate = prevRows[0]?.prev_date;
+          if (typeof candidate === "string" && /^\d{4}-\d{2}-\d{2}/.test(candidate.trim())) {
+            previousActiveDate = candidate.trim().slice(0, 10);
+          }
+          if (cacheKey) {
+            setCachedPreviousActiveDate(cacheKey, tableName, dateColumn, latestDate, previousActiveDate);
+          }
+        } catch {
+          previousActiveDate = null;
         }
-      } catch {
-        previousActiveDate = null;
       }
     }
     effectiveOptions = buildDatasetAnchoredOptions({
@@ -1269,30 +1296,77 @@ export async function runDynamicAnalysisWithExecutor(
   const windowEnd = period.end;
   const extraWarnings: string[] = [];
 
-  // Check scoped row count first to avoid loading huge tables into memory
-  let windowRowCount = tableProfile.rowCount;
-  try {
-    const countSql = buildWindowCountSql(tableProfile, dateColumn, windowStart, windowEnd);
-    const countRows = await executor(countSql);
-    const parsedCount = Number(countRows[0]?.row_count);
-    if (Number.isFinite(parsedCount) && parsedCount >= 0) {
-      windowRowCount = parsedCount;
-    }
-  } catch {
-    extraWarnings.push("Window row-count precheck could not be executed; applying bounded read-only limit.");
-  }
+  // Fast path: reuse cached scoped/full rows for this session so switching Reference Period
+  // or generating PDFs completes in milliseconds with zero redundant DB round-trips!
+  const cachedRows = cacheKey && !options.forceRefresh
+    ? getCachedTableRows({
+        sessionKey: cacheKey,
+        tableName: tableProfile.name,
+        requiredColumns: safeColumns,
+        windowStart,
+        windowEnd
+      })
+    : null;
 
   let rows: Array<Record<string, unknown>> = [];
   let executionMode: "database_aggregate" | "scoped_records" = "scoped_records";
 
-  if (windowRowCount > MAX_SCOPED_ROWS) {
-    executionMode = "database_aggregate";
-    extraWarnings.push(`Window contains ${windowRowCount.toLocaleString("en-US")} rows (above ${MAX_SCOPED_ROWS.toLocaleString("en-US")} detail cap); used database-side daily aggregation for safety and performance.`);
-    const aggSql = buildDatabaseAggregateFallbackSql(tableProfile, understanding, dateColumn, windowStart, windowEnd);
-    rows = await executor(aggSql);
-  } else if (windowRowCount > 0) {
-    const scopedSql = buildScopedColumnsQuerySql(tableProfile, safeColumns, dateColumn, windowStart, windowEnd, MAX_SCOPED_ROWS);
-    rows = await executor(scopedSql);
+  if (cachedRows) {
+    rows = cachedRows;
+  } else if (cacheKey && tableProfile.rowCount > 0 && tableProfile.rowCount <= MAX_SCOPED_ROWS) {
+    // Table safely fits within MAX_SCOPED_ROWS: fetch all safe columns in 1 single query
+    // (skipping the extra COUNT(*) precheck!) and cache for instant Reference Period & PDF reuse.
+    const allSafeCols = getSafeDatasetColumns(tableProfile);
+    const colsToFetch = allSafeCols.length > 0 ? allSafeCols : safeColumns;
+    const allowedTables = new Set([tableProfile.name]);
+    const allowedCols = new Set(colsToFetch);
+    const qualified = quoteQualifiedTable(tableProfile.schema, tableProfile.name, allowedTables);
+    const quotedCols = colsToFetch.map(col => quoteIdentifier(col, allowedCols));
+    const singlePassSql = `SELECT ${quotedCols.join(", ")} FROM ${qualified} LIMIT ${MAX_SCOPED_ROWS}`;
+    rows = await executor(singlePassSql);
+    setCachedTableRows({
+      sessionKey: cacheKey,
+      tableName: tableProfile.name,
+      columns: colsToFetch,
+      windowStart: null,
+      windowEnd: null,
+      isFullTable: true,
+      rows
+    });
+  } else {
+    // Check scoped row count first to avoid loading huge tables (>25,000 rows) into memory
+    let windowRowCount = tableProfile.rowCount;
+    try {
+      const countSql = buildWindowCountSql(tableProfile, dateColumn, windowStart, windowEnd);
+      const countRows = await executor(countSql);
+      const parsedCount = Number(countRows[0]?.row_count);
+      if (Number.isFinite(parsedCount) && parsedCount >= 0) {
+        windowRowCount = parsedCount;
+      }
+    } catch {
+      extraWarnings.push("Window row-count precheck could not be executed; applying bounded read-only limit.");
+    }
+
+    if (windowRowCount > MAX_SCOPED_ROWS) {
+      executionMode = "database_aggregate";
+      extraWarnings.push(`Window contains ${windowRowCount.toLocaleString("en-US")} rows (above ${MAX_SCOPED_ROWS.toLocaleString("en-US")} detail cap); used database-side daily aggregation for safety and performance.`);
+      const aggSql = buildDatabaseAggregateFallbackSql(tableProfile, understanding, dateColumn, windowStart, windowEnd);
+      rows = await executor(aggSql);
+    } else if (windowRowCount > 0) {
+      const scopedSql = buildScopedColumnsQuerySql(tableProfile, safeColumns, dateColumn, windowStart, windowEnd, MAX_SCOPED_ROWS);
+      rows = await executor(scopedSql);
+      if (cacheKey) {
+        setCachedTableRows({
+          sessionKey: cacheKey,
+          tableName: tableProfile.name,
+          columns: safeColumns,
+          windowStart,
+          windowEnd,
+          isFullTable: false,
+          rows
+        });
+      }
+    }
   }
 
   const analysis = assembleAnalysisResult(tableProfile, understanding, rows, effectiveOptions, executionMode, extraWarnings);
@@ -1305,5 +1379,9 @@ export async function runDynamicAnalysisForSession(
   options: DynamicAnalysisOptions
 ) {
   const executor = createSessionQueryExecutor(session);
-  return runDynamicAnalysisWithExecutor(executor, tableName, options);
+  const sessionCacheKey = options.sessionCacheKey ?? deriveSessionCacheKey(session);
+  return runDynamicAnalysisWithExecutor(executor, tableName, {
+    ...options,
+    sessionCacheKey
+  });
 }

@@ -38,10 +38,14 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  const forceRefresh = request.nextUrl.searchParams.get("fresh") === "1"
+    || request.nextUrl.searchParams.get("fresh") === "true";
+
   try {
     const profile = await profileConnectedDatabase(access.session, {
       selectedDomain: domainParam,
-      tableNames: rawTables.length ? rawTables : undefined
+      tableNames: rawTables.length ? rawTables : undefined,
+      forceRefresh
     });
 
     return access.applyCookie(NextResponse.json(
