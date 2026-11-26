@@ -1,5 +1,5 @@
 import type { BusinessDomainId, ConfidenceLevel, DomainTableUnderstanding, RoleAssignment } from "../profiler/types";
-import { normalizeName } from "../profiler/sql-safety";
+import { normalizeName, type NumericDateOrder } from "../profiler/sql-safety";
 import {
   addDaysToDate,
   enumerateDates,
@@ -61,7 +61,8 @@ export type DomainCalculationOutput = {
 export function createRoleAccessor(
   understanding: DomainTableUnderstanding,
   timezone: string,
-  allowMediumConfidence = true
+  allowMediumConfidence = true,
+  preferredDateOrder?: NumericDateOrder
 ): RoleAccessor {
   const usable = new Map<string, RoleAssignment>();
   for (const [role, assignment] of Object.entries(understanding.roleAssignments)) {
@@ -95,11 +96,11 @@ export function createRoleAccessor(
     },
     dateKey: (row, role) => {
       const col = usable.get(role)?.columnName;
-      return col ? toDateKeyInTimezone(row[col], timezone) : null;
+      return col ? toDateKeyInTimezone(row[col], timezone, preferredDateOrder) : null;
     },
     tsMs: (row, role) => {
       const col = usable.get(role)?.columnName;
-      return col ? parseTimestampMs(row[col]) : null;
+      return col ? parseTimestampMs(row[col], preferredDateOrder) : null;
     }
   };
 }

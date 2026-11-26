@@ -652,3 +652,55 @@ test("Historical dataset-date anchoring automatically uses the dataset's own lat
   assert.equal(unified.analysis.comparisonSummary.available, true);
   assert.ok(unified.tools.smartComparison && unified.tools.smartComparison.metrics.length > 0);
 });
+
+test("Proven MDY and DMY slash/hyphen text dates parse cleanly across entire dataset while truly ambiguous samples stay protected", () => {
+  // 1. Proven MM/DD/YYYY (e.g. Marketing dataset with days > 12 in 2nd position)
+  const mdyRows = [
+    { Date: "1/15/2024", Channel: "Email", Spend: 150, Clicks: 90 },
+    { Date: "2/4/2024", Channel: "Email", Spend: 220, Clicks: 140 },
+    { Date: "2/28/2024", Channel: "Social", Spend: 410, Clicks: 290 }
+  ];
+  const mdyProfile = profileRowsSnapshot({
+    name: "Marketing",
+    columns: [
+      { name: "Date", dataType: "text" },
+      { name: "Channel", dataType: "text" },
+      { name: "Spend", dataType: "numeric" },
+      { name: "Clicks", dataType: "integer" }
+    ]
+  }, mdyRows);
+
+  assert.equal(mdyProfile.freshness.earliestDate?.slice(0, 10), "2024-01-15");
+  assert.equal(mdyProfile.freshness.latestDate?.slice(0, 10), "2024-02-28");
+
+  const mdyUnified = runUnifiedDailyAnalysisFromRows(mdyProfile, mdyRows, {
+    domainId: "marketing_campaigns",
+    periodStart: "2026-11-25",
+    periodEnd: "2026-11-25",
+    comparisonPreset: "previous_day",
+    includeAllDatasetColumns: true,
+    anchorToDatasetDates: true
+  });
+  assert.equal(mdyUnified.reportingPeriod.start, "2024-02-28");
+  assert.equal(mdyUnified.comparisonPeriod?.start, "2024-02-04");
+  assert.equal(mdyUnified.analysis.source.rowCountInPeriod, 1);
+  assert.equal(mdyUnified.analysis.source.rowCountInComparison, 1);
+  assert.equal(mdyUnified.analysis.comparisonSummary.available, true);
+  assert.ok(!mdyUnified.analysis.dataQualityWarnings.some(w => w.includes("unparseable or invalid dates")));
+
+  // 2. Proven DD-MM-YYYY (e.g. 15-03-2024, 29-03-2024)
+  const dmyRows = [
+    { Dt_Customer: "15-03-2024", Segment: "VIP", Income: 50000 },
+    { Dt_Customer: "29-03-2024", Segment: "VIP", Income: 62000 }
+  ];
+  const dmyProfile = profileRowsSnapshot({
+    name: "Marketing_DMY",
+    columns: [
+      { name: "Dt_Customer", dataType: "text" },
+      { name: "Segment", dataType: "text" },
+      { name: "Income", dataType: "numeric" }
+    ]
+  }, dmyRows);
+  assert.equal(dmyProfile.freshness.earliestDate?.slice(0, 10), "2024-03-15");
+  assert.equal(dmyProfile.freshness.latestDate?.slice(0, 10), "2024-03-29");
+});
