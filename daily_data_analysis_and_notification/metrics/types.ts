@@ -188,4 +188,8 @@ export type DynamicAnalysisOptions = {
   includeAllDatasetColumns?: boolean;
   /** Automatically anchor reporting and comparison windows to the dataset's actual available dates instead of today/yesterday. */
   anchorToDatasetDates?: boolean;
+  /** Optional session-isolated cache namespace for reusing recent profiles & scoped rows. */
+  sessionCacheKey?: string;
+  /** Bypass short-TTL caches when the user explicitly requests a live refresh. */
+  forceRefresh?: boolean;
 };

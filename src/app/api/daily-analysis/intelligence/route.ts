@@ -119,6 +119,7 @@ export async function POST(request: NextRequest) {
       allowMediumConfidence: typeof body.allowMediumConfidence === "boolean" ? body.allowMediumConfidence : true,
       includeAllDatasetColumns: body.includeAllDatasetColumns !== false,
       anchorToDatasetDates: typeof body.anchorToDatasetDates === "boolean" ? body.anchorToDatasetDates : !hasExplicitPeriod,
+      forceRefresh: body.fresh === true,
       activationEventName: typeof body.activationEventName === "string" ? body.activationEventName.trim() : undefined,
       expectedCadence,
       enabledTools,

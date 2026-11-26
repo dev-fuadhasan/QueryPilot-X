@@ -7,6 +7,7 @@ import { createSupabaseSalesRepository, type DatasetSelection } from "@/../daily
 import {
   BUSINESS_DOMAIN_IDS,
   createSessionQueryExecutor,
+  deriveSessionCacheKey,
   isValidIdentifier,
   profileConnectedDatabase,
   type BusinessDomainId
@@ -129,26 +130,29 @@ export async function GET(request: NextRequest) {
   const storageUserId = deriveUserIdFromSession(access.session);
   const storageStatus = getStorageCapabilityStatus(organizationId);
 
-  // Always list PDFs stored in the team's shared Supabase Storage bucket (`querypilotx-storage`)
-  const cloudReports = await listDailyPdfsFromSharedStorage(storageUserId, organizationId).catch(() => [] as PersistentReportSummary[]);
+  // Fetch shared cloud storage PDFs and local/Postgres repository metadata in parallel
+  const cloudReportsPromise = listDailyPdfsFromSharedStorage(storageUserId, organizationId).catch(() => [] as PersistentReportSummary[]);
 
   try {
     const repository = getPersistentReportRepository();
-    const result = await repository.listReports({
-      organizationId,
-      startDate,
-      endDate,
-      defaultDays: includeAllDates ? 0 : 30,
-      domainId: domainParam as BusinessDomainId | undefined,
-      datasetTable: tableParam,
-      generationType: generationTypeParam as ReportGenerationType | undefined,
-      frequency: frequencyParam as ReportFrequencyOrManual | undefined,
-      status: statusParam as PersistentReportStatusFilter | undefined,
-      pdfStatus: pdfStatusParam as PersistentReportPdfStatus | undefined,
-      search,
-      page,
-      pageSize
-    });
+    const [cloudReports, result] = await Promise.all([
+      cloudReportsPromise,
+      repository.listReports({
+        organizationId,
+        startDate,
+        endDate,
+        defaultDays: includeAllDates ? 0 : 30,
+        domainId: domainParam as BusinessDomainId | undefined,
+        datasetTable: tableParam,
+        generationType: generationTypeParam as ReportGenerationType | undefined,
+        frequency: frequencyParam as ReportFrequencyOrManual | undefined,
+        status: statusParam as PersistentReportStatusFilter | undefined,
+        pdfStatus: pdfStatusParam as PersistentReportPdfStatus | undefined,
+        search,
+        page,
+        pageSize
+      })
+    ]);
 
     const combined = mergeCloudReports(result.items, cloudReports);
     let storageState: ReportHistoryStorageState = "ready";
@@ -180,6 +184,7 @@ export async function GET(request: NextRequest) {
     ));
   } catch {
     // Fallback cleanly to shared Supabase Storage report listing (no Postgres/SQLite required!)
+    const cloudReports = await cloudReportsPromise;
     const filteredCloud = cloudReports.filter(item => {
       if (domainParam && item.domainId !== domainParam) return false;
       if (generationTypeParam && item.generationType !== generationTypeParam) return false;
@@ -263,6 +268,7 @@ export async function POST(request: NextRequest) {
 
     const organizationId = deriveOrganizationId(access.session);
     const storageUserId = deriveUserIdFromSession(access.session);
+    const sessionCacheKey = deriveSessionCacheKey(access.session);
     const executor = createSessionQueryExecutor(access.session);
 
     let earliestAvailableDate = typeof body.earliestAvailableDate === "string" && isValidIsoDate(body.earliestAvailableDate.trim())
@@ -308,7 +314,8 @@ export async function POST(request: NextRequest) {
         comparisonPreset: typeof body.comparisonPreset === "string" ? body.comparisonPreset as ComparisonPreset : undefined,
         overrides: Object.keys(overrides).length ? overrides : undefined,
         earliestAvailableDate,
-        latestAvailableDate
+        latestAvailableDate,
+        sessionCacheKey
       });
 
       return access.applyCookie(NextResponse.json(
@@ -347,7 +354,8 @@ export async function POST(request: NextRequest) {
             : quickRange === "all_history"
               ? "none"
               : "previous_30_days",
-          overrides: Object.keys(overrides).length ? overrides : undefined
+          overrides: Object.keys(overrides).length ? overrides : undefined,
+          sessionCacheKey
         });
 
         const reportId = randomUUID();

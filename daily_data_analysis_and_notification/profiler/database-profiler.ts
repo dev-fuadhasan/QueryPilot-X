@@ -1,7 +1,14 @@
 import type { Session } from "../../src/lib/session";
-import { queryPostgres } from "../../src/lib/database";
 import { runOAuthReadOnlyQuery } from "../../src/lib/supabase";
 import { analyzeDatabaseSemantics } from "./semantic-detector";
+import {
+  clearSessionPerformanceCaches,
+  deriveSessionCacheKey,
+  getCachedDatabaseProfile,
+  mapWithConcurrency,
+  queryPostgresPooled,
+  setCachedDatabaseProfile
+} from "./session-cache";
 import {
   classifyPostgresDataType,
   detectNumericDateOrder,
@@ -27,7 +34,9 @@ import type {
 } from "./types";
 
 const MAX_TABLES_TO_PROFILE = 25;
-const COLUMN_BATCH_SIZE = 10;
+const COLUMN_BATCH_SIZE = 25;
+const TABLE_PROFILE_CONCURRENCY = 5;
+const QUERY_PROFILE_CONCURRENCY = 5;
 const LOW_CARDINALITY_TOKEN_LIMIT = 12;
 
 export const SCHEMA_DISCOVERY_SQL = `
@@ -89,6 +98,8 @@ export type ProfileOptions = {
   maxTables?: number;
   now?: Date;
   tableOverrides?: Record<string, Record<string, string>>;
+  /** Bypass short-TTL profile cache when explicitly refreshing live DB metadata. */
+  forceRefresh?: boolean;
 };
 
 function toNumber(value: unknown): number | null {
@@ -456,7 +467,7 @@ export function createSessionQueryExecutor(session: Session): ReadOnlyQueryExecu
     if (!session.dbUrl) {
       throw new Error("Database connection is missing.");
     }
-    return queryPostgres(session.dbUrl, sql);
+    return queryPostgresPooled(session.dbUrl, sql);
   };
 }
 
@@ -467,7 +478,11 @@ export async function profileDatabaseWithExecutor(
   const now = options.now || new Date();
   const warnings: string[] = [];
 
-  const schemaRows = await executor(SCHEMA_DISCOVERY_SQL);
+  // Run schema discovery and PK/FK constraints discovery in parallel (saves 1 full network round-trip)
+  const [schemaRows, constraintRowsResult] = await Promise.all([
+    executor(SCHEMA_DISCOVERY_SQL),
+    executor(CONSTRAINTS_DISCOVERY_SQL).catch(() => null)
+  ]);
   const rawColumnsByTable = new Map<string, RawSchemaColumn[]>();
 
   for (const row of schemaRows) {
@@ -501,14 +516,13 @@ export async function profileDatabaseWithExecutor(
     warnings.push(`Profiled the first ${maxTables} of ${rawColumnsByTable.size} discovered tables.`);
   }
 
-  // Discover PKs & FKs
+  // Parse PKs & FKs from the parallel discovery query
   const primaryKeysByTable = new Map<string, string[]>();
   const foreignKeysByTable = new Map<string, DatabaseRelation[]>();
   const allRelationships: DatabaseRelation[] = [];
 
-  try {
-    const constraintRows = await executor(CONSTRAINTS_DISCOVERY_SQL);
-    for (const row of constraintRows) {
+  if (constraintRowsResult) {
+    for (const row of constraintRowsResult) {
       const tableName = typeof row.table_name === "string" ? row.table_name : "";
       const columnName = typeof row.column_name === "string" ? row.column_name : "";
       const constraintType = String(row.constraint_type || "");
@@ -537,153 +551,51 @@ export async function profileDatabaseWithExecutor(
         }
       }
     }
-  } catch {
+  } else {
     warnings.push("Primary/foreign key metadata could not be queried; continuing with column-level profiling.");
   }
 
-  const profiledTables: TableProfile[] = [];
+  // Profile tables concurrently (bounded concurrency) instead of sequentially
+  const profiledMaybe = await mapWithConcurrency(
+    targetTableNames,
+    TABLE_PROFILE_CONCURRENCY,
+    async (tableName): Promise<TableProfile | null> => {
+      const rawCols = rawColumnsByTable.get(tableName) || [];
+      if (!rawCols.length) return null;
 
-  for (const tableName of targetTableNames) {
-    const rawCols = rawColumnsByTable.get(tableName) || [];
-    if (!rawCols.length) continue;
+      const schema = rawCols[0].schema;
+      const tableType = rawCols[0].tableType;
+      const allowedColumns = new Set(rawCols.map(c => c.columnName));
+      const tableWarnings: string[] = [];
+      const primaryKeys = primaryKeysByTable.get(tableName) || [];
+      const foreignKeys = foreignKeysByTable.get(tableName) || [];
+      const fkByColumn = new Map(foreignKeys.map(fk => [fk.fromColumn, fk]));
 
-    const schema = rawCols[0].schema;
-    const tableType = rawCols[0].tableType;
-    const allowedColumns = new Set(rawCols.map(c => c.columnName));
-    const tableWarnings: string[] = [];
-    const primaryKeys = primaryKeysByTable.get(tableName) || [];
-    const foreignKeys = foreignKeysByTable.get(tableName) || [];
-    const fkByColumn = new Map(foreignKeys.map(fk => [fk.fromColumn, fk]));
-
-    // 1. Row count query
-    let rowCount = 0;
-    try {
-      const countSql = `SELECT COUNT(*) AS row_count FROM ${quoteQualifiedTable(schema, tableName, allDiscoveredTables)}`;
-      const countRows = await executor(countSql);
-      rowCount = Math.max(0, Math.trunc(toNumber(countRows[0]?.row_count) || 0));
-    } catch {
-      tableWarnings.push(`Could not count rows in "${tableName}"; treating row count as 0.`);
-    }
-
-    const classifiedCols = rawCols.map(raw => {
-      const classified = classifyPostgresDataType(raw.dataType, raw.udtName, raw.columnName);
-      return {
-        raw,
-        ...classified,
-        isSensitive: isSensitiveColumnName(raw.columnName)
-      };
-    });
-
-    const columnProfiles: ColumnProfile[] = [];
-
-    if (rowCount === 0) {
-      // Empty table: preserve full schema metadata without unnecessary aggregate scans
-      for (const item of classifiedCols) {
-        const fk = fkByColumn.get(item.raw.columnName);
-        columnProfiles.push({
-          name: item.raw.columnName,
-          rawDataType: item.raw.dataType,
-          udtName: item.raw.udtName || undefined,
-          category: item.category,
-          supported: item.supported,
-          nullable: item.raw.nullable,
-          isPrimaryKey: primaryKeys.includes(item.raw.columnName),
-          isForeignKey: Boolean(fk),
-          references: fk ? { table: fk.toTable, column: fk.toColumn } : undefined,
-          isSensitive: item.isSensitive,
-          rowCount: 0,
-          nonNullCount: 0,
-          nullCount: 0,
-          nullPercent: 0,
-          distinctCount: 0,
-          cardinalityRatio: null,
-          numericStats: null,
-          temporalStats: null,
-          valueHints: {}
-        });
+      // 1. Row count query
+      let rowCount = 0;
+      try {
+        const countSql = `SELECT COUNT(*) AS row_count FROM ${quoteQualifiedTable(schema, tableName, allDiscoveredTables)}`;
+        const countRows = await executor(countSql);
+        rowCount = Math.max(0, Math.trunc(toNumber(countRows[0]?.row_count) || 0));
+      } catch {
+        tableWarnings.push(`Could not count rows in "${tableName}"; treating row count as 0.`);
       }
-    } else {
-      // 2. Batched aggregate profiling queries (never SELECT *)
-      for (let offset = 0; offset < classifiedCols.length; offset += COLUMN_BATCH_SIZE) {
-        const batch = classifiedCols.slice(offset, offset + COLUMN_BATCH_SIZE);
-        let statsRow: Record<string, unknown> = {};
 
-        try {
-          const aggSql = buildColumnBatchAggregateSql(
-            schema,
-            tableName,
-            batch.map(b => ({
-              name: b.raw.columnName,
-              category: b.category,
-              supported: b.supported,
-              rawDataType: b.raw.dataType,
-              isIntegerType: b.isIntegerType
-            })),
-            allDiscoveredTables,
-            allowedColumns
-          );
-          const rows = await executor(aggSql);
-          statsRow = rows[0] || {};
-        } catch {
-          tableWarnings.push(`Aggregate statistics failed for a column batch in "${tableName}"; falling back to schema metadata for those columns.`);
-        }
+      const classifiedCols = rawCols.map(raw => {
+        const classified = classifyPostgresDataType(raw.dataType, raw.udtName, raw.columnName);
+        return {
+          raw,
+          ...classified,
+          isSensitive: isSensitiveColumnName(raw.columnName)
+        };
+      });
 
-        batch.forEach((item, index) => {
-          const prefix = `c${index}`;
-          const nonNullCount = Math.max(0, Math.trunc(toNumber(statsRow[`${prefix}_non_null`]) ?? 0));
-          const nullCount = Math.max(0, rowCount - nonNullCount);
-          const nullPercent = rowCount > 0 ? roundTwo((nullCount / rowCount) * 100) : 0;
-          const distinctCount = item.supported ? toNumber(statsRow[`${prefix}_distinct`]) : null;
-          const cardinalityRatio = distinctCount !== null && nonNullCount > 0 ? roundTwo(distinctCount / nonNullCount) : null;
+      const columnProfiles: ColumnProfile[] = [];
 
-          let numericStats: NumericColumnStats | null = null;
-          let temporalStats: TemporalColumnStats | null = null;
-          const valueHints: ColumnProfile["valueHints"] = {};
-
-          if (item.supported && item.category === "numeric") {
-            const min = toNumber(statsRow[`${prefix}_min`]);
-            const max = toNumber(statsRow[`${prefix}_max`]);
-            const avg = toNumber(statsRow[`${prefix}_avg`]);
-            const negativeCount = Math.max(0, Math.trunc(toNumber(statsRow[`${prefix}_neg`]) || 0));
-            const zeroCount = Math.max(0, Math.trunc(toNumber(statsRow[`${prefix}_zero`]) || 0));
-            const intOnlyRaw = statsRow[`${prefix}_int_only`];
-            const isIntegerOnly = item.isIntegerType
-              ? true
-              : typeof intOnlyRaw === "boolean"
-                ? intOnlyRaw
-                : null;
-
-            numericStats = {
-              min,
-              max,
-              avg: avg !== null ? roundTwo(avg) : null,
-              negativeCount,
-              zeroCount,
-              isIntegerOnly
-            };
-            if (min !== null && max !== null) {
-              valueHints.isBetweenZeroAndFive = min >= 0 && max <= 5;
-              valueHints.isBetweenZeroAndHundred = min >= 0 && max <= 100;
-            }
-          } else if (item.supported && item.category === "temporal") {
-            const earliest = toIsoDate(statsRow[`${prefix}_min`]);
-            const latest = toIsoDate(statsRow[`${prefix}_max`]);
-            const spanDays = earliest && latest
-              ? Math.max(0, Math.round((Date.parse(latest) - Date.parse(earliest)) / 86_400_000))
-              : null;
-            const freshnessHours = latest
-              ? roundTwo(Math.max(0, (now.getTime() - Date.parse(latest)) / 3_600_000))
-              : null;
-            temporalStats = { earliest, latest, spanDays, freshnessHours };
-          } else if (item.supported && item.category === "boolean") {
-            const trueCount = toNumber(statsRow[`${prefix}_true_count`]);
-            valueHints.booleanTrueRatio = trueCount !== null && nonNullCount > 0
-              ? roundTwo(trueCount / nonNullCount)
-              : null;
-          }
-
+      if (rowCount === 0) {
+        for (const item of classifiedCols) {
           const fk = fkByColumn.get(item.raw.columnName);
-          columnProfiles.push(finalizeColumnCategory({
+          columnProfiles.push({
             name: item.raw.columnName,
             rawDataType: item.raw.dataType,
             udtName: item.raw.udtName || undefined,
@@ -694,201 +606,346 @@ export async function profileDatabaseWithExecutor(
             isForeignKey: Boolean(fk),
             references: fk ? { table: fk.toTable, column: fk.toColumn } : undefined,
             isSensitive: item.isSensitive,
-            rowCount,
-            nonNullCount,
-            nullCount,
-            nullPercent,
-            distinctCount: distinctCount !== null ? Math.trunc(distinctCount) : null,
-            cardinalityRatio,
-            numericStats,
-            temporalStats,
-            valueHints
-          }));
-        });
-      }
+            rowCount: 0,
+            nonNullCount: 0,
+            nullCount: 0,
+            nullPercent: 0,
+            distinctCount: 0,
+            cardinalityRatio: null,
+            numericStats: null,
+            temporalStats: null,
+            valueHints: {}
+          });
+        }
+      } else {
+        // 2. Batched aggregate profiling queries run in parallel (COLUMN_BATCH_SIZE = 25)
+        const batches: Array<typeof classifiedCols> = [];
+        for (let offset = 0; offset < classifiedCols.length; offset += COLUMN_BATCH_SIZE) {
+          batches.push(classifiedCols.slice(offset, offset + COLUMN_BATCH_SIZE));
+        }
 
-      // 2b. Reliable text-based date detection for date-like non-sensitive text/categorical columns
-      const textDateCandidates = columnProfiles.filter(col =>
-        col.supported
-        && !col.isSensitive
-        && (col.category === "text" || col.category === "categorical")
-        && col.nonNullCount > 0
-        && isDateLikeColumnName(col.name)
-      ).slice(0, 6);
-
-      for (const col of textDateCandidates) {
-        try {
-          const probeSql = buildTextDateProbeSql(schema, tableName, col.name, allDiscoveredTables, allowedColumns);
-          const probeRows = await executor(probeSql);
-          const probe = probeRows[0] || {};
-          const nonEmpty = Math.max(0, Math.trunc(toNumber(probe.non_empty_count) ?? 0));
-          const isoCount = Math.max(0, Math.trunc(toNumber(probe.iso_count) ?? 0));
-          const ymdCount = Math.max(0, Math.trunc(toNumber(probe.ymd_slash_count) ?? 0));
-          const ambiguousCount = Math.max(0, Math.trunc(toNumber(probe.ambiguous_count) ?? 0));
-          const dmyProofCount = Math.max(0, Math.trunc(toNumber(probe.dmy_proof_count) ?? 0));
-          const mdyProofCount = Math.max(0, Math.trunc(toNumber(probe.mdy_proof_count) ?? 0));
-
-          if (nonEmpty > 0 && ambiguousCount > 0 && isoCount + ymdCount === 0) {
-            const provenOrder = dmyProofCount > 0 && mdyProofCount === 0
-              ? "dmy"
-              : mdyProofCount > 0 && dmyProofCount === 0
-                ? "mdy"
-                : null;
-            if (provenOrder && ambiguousCount / nonEmpty >= 0.7) {
-              const rawMin = provenOrder === "dmy" ? probe.dmy_min : probe.mdy_min;
-              const rawMax = provenOrder === "dmy" ? probe.dmy_max : probe.mdy_max;
-              const earliest = toIsoDate(rawMin);
-              const latest = toIsoDate(rawMax);
-              if (earliest && latest) {
-                const invalidDateCount = Math.max(0, nonEmpty - ambiguousCount);
-                const spanDays = Math.max(0, Math.round((Date.parse(latest) - Date.parse(earliest)) / 86_400_000));
-                const freshnessHours = roundTwo(Math.max(0, (now.getTime() - Date.parse(latest)) / 3_600_000));
-                col.category = "temporal";
-                col.temporalStats = {
-                  earliest,
-                  latest,
-                  spanDays,
-                  freshnessHours,
-                  invalidDateCount,
-                  ambiguousDateCount: 0,
-                  inferredFromText: true,
-                  detectedFormat: provenOrder
-                };
-                continue;
-              }
+        const batchStatsRows = await Promise.all(
+          batches.map(async batch => {
+            try {
+              const aggSql = buildColumnBatchAggregateSql(
+                schema,
+                tableName,
+                batch.map(b => ({
+                  name: b.raw.columnName,
+                  category: b.category,
+                  supported: b.supported,
+                  rawDataType: b.raw.dataType,
+                  isIntegerType: b.isIntegerType
+                })),
+                allDiscoveredTables,
+                allowedColumns
+              );
+              const rows = await executor(aggSql);
+              return rows[0] || {};
+            } catch {
+              tableWarnings.push(`Aggregate statistics failed for a column batch in "${tableName}"; falling back to schema metadata for those columns.`);
+              return {} as Record<string, unknown>;
             }
-            col.temporalStats = {
-              earliest: null,
-              latest: null,
-              spanDays: null,
-              freshnessHours: null,
-              invalidDateCount: Math.max(0, nonEmpty - ambiguousCount),
-              ambiguousDateCount: ambiguousCount,
-              inferredFromText: false,
-              detectedFormat: "ambiguous_numeric"
-            };
-            tableWarnings.push(`Column "${col.name}" contains ${ambiguousCount} ambiguous numeric date value(s) (DD/MM/YYYY vs MM/DD/YYYY); date range cannot be inferred safely.`);
-            continue;
-          }
+          })
+        );
 
-          if (nonEmpty > 0 && (isoCount + ymdCount) / nonEmpty >= 0.7 && ambiguousCount === 0) {
-            const candidateMins = [probe.iso_min, probe.ymd_min].map(toIsoDate).filter((v): v is string => Boolean(v)).sort();
-            const candidateMaxs = [probe.iso_max, probe.ymd_max].map(toIsoDate).filter((v): v is string => Boolean(v)).sort();
-            const earliest = candidateMins[0] || null;
-            const latest = candidateMaxs[candidateMaxs.length - 1] || null;
+        batches.forEach((batch, batchIndex) => {
+          const statsRow = batchStatsRows[batchIndex] || {};
+          batch.forEach((item, index) => {
+            const prefix = `c${index}`;
+            const nonNullCount = Math.max(0, Math.trunc(toNumber(statsRow[`${prefix}_non_null`]) ?? 0));
+            const nullCount = Math.max(0, rowCount - nonNullCount);
+            const nullPercent = rowCount > 0 ? roundTwo((nullCount / rowCount) * 100) : 0;
+            const distinctCount = item.supported ? toNumber(statsRow[`${prefix}_distinct`]) : null;
+            const cardinalityRatio = distinctCount !== null && nonNullCount > 0 ? roundTwo(distinctCount / nonNullCount) : null;
 
-            if (earliest && latest) {
-              const invalidDateCount = Math.max(0, nonEmpty - (isoCount + ymdCount));
-              const spanDays = Math.max(0, Math.round((Date.parse(latest) - Date.parse(earliest)) / 86_400_000));
-              const freshnessHours = roundTwo(Math.max(0, (now.getTime() - Date.parse(latest)) / 3_600_000));
-              col.category = "temporal";
-              col.temporalStats = {
-                earliest,
-                latest,
-                spanDays,
-                freshnessHours,
-                invalidDateCount,
-                ambiguousDateCount: 0,
-                inferredFromText: true,
-                detectedFormat: isoCount >= ymdCount ? "iso_date" : "ymd_slash"
+            let numericStats: NumericColumnStats | null = null;
+            let temporalStats: TemporalColumnStats | null = null;
+            const valueHints: ColumnProfile["valueHints"] = {};
+
+            if (item.supported && item.category === "numeric") {
+              const min = toNumber(statsRow[`${prefix}_min`]);
+              const max = toNumber(statsRow[`${prefix}_max`]);
+              const avg = toNumber(statsRow[`${prefix}_avg`]);
+              const negativeCount = Math.max(0, Math.trunc(toNumber(statsRow[`${prefix}_neg`]) || 0));
+              const zeroCount = Math.max(0, Math.trunc(toNumber(statsRow[`${prefix}_zero`]) || 0));
+              const intOnlyRaw = statsRow[`${prefix}_int_only`];
+              const isIntegerOnly = item.isIntegerType
+                ? true
+                : typeof intOnlyRaw === "boolean"
+                  ? intOnlyRaw
+                  : null;
+
+              numericStats = {
+                min,
+                max,
+                avg: avg !== null ? roundTwo(avg) : null,
+                negativeCount,
+                zeroCount,
+                isIntegerOnly
               };
-              if (invalidDateCount > 0) {
-                tableWarnings.push(`Column "${col.name}" had ${invalidDateCount} unparseable value(s) excluded from date range calculation.`);
+              if (min !== null && max !== null) {
+                valueHints.isBetweenZeroAndFive = min >= 0 && max <= 5;
+                valueHints.isBetweenZeroAndHundred = min >= 0 && max <= 100;
               }
-              continue;
+            } else if (item.supported && item.category === "temporal") {
+              const earliest = toIsoDate(statsRow[`${prefix}_min`]);
+              const latest = toIsoDate(statsRow[`${prefix}_max`]);
+              const spanDays = earliest && latest
+                ? Math.max(0, Math.round((Date.parse(latest) - Date.parse(earliest)) / 86_400_000))
+                : null;
+              const freshnessHours = latest
+                ? roundTwo(Math.max(0, (now.getTime() - Date.parse(latest)) / 3_600_000))
+                : null;
+              temporalStats = { earliest, latest, spanDays, freshnessHours };
+            } else if (item.supported && item.category === "boolean") {
+              const trueCount = toNumber(statsRow[`${prefix}_true_count`]);
+              valueHints.booleanTrueRatio = trueCount !== null && nonNullCount > 0
+                ? roundTwo(trueCount / nonNullCount)
+                : null;
             }
-          }
 
-          // Fallback bounded distinct sample check (e.g. named-month dates like "15 Jan 2026" or invalid calendar check)
-          const sampleSql = buildTextDateSampleSql(schema, tableName, col.name, allDiscoveredTables, allowedColumns);
-          const sampleRows = await executor(sampleSql);
-          const sampleValues = sampleRows.map(r => r.date_val);
-          const sampleEval = evaluateTextDateSamples(sampleValues, now);
-          if (sampleEval.temporalStats) {
-            col.temporalStats = sampleEval.temporalStats;
-          }
-          if (sampleEval.isReliableDateColumn) {
-            col.category = "temporal";
-          }
-          if (sampleEval.warning) {
-            tableWarnings.push(`Column "${col.name}": ${sampleEval.warning}`);
-          }
-        } catch {
-          // Non-fatal: keep column as text if database probe is unsupported by a mock/driver
-        }
-      }
+            const fk = fkByColumn.get(item.raw.columnName);
+            columnProfiles.push(finalizeColumnCategory({
+              name: item.raw.columnName,
+              rawDataType: item.raw.dataType,
+              udtName: item.raw.udtName || undefined,
+              category: item.category,
+              supported: item.supported,
+              nullable: item.raw.nullable,
+              isPrimaryKey: primaryKeys.includes(item.raw.columnName),
+              isForeignKey: Boolean(fk),
+              references: fk ? { table: fk.toTable, column: fk.toColumn } : undefined,
+              isSensitive: item.isSensitive,
+              rowCount,
+              nonNullCount,
+              nullCount,
+              nullPercent,
+              distinctCount: distinctCount !== null ? Math.trunc(distinctCount) : null,
+              cardinalityRatio,
+              numericStats,
+              temporalStats,
+              valueHints
+            }));
+          });
+        });
 
-      // 3. Safe low-cardinality status/category token hints (STRICTLY skips sensitive columns)
-      const tokenCandidates = columnProfiles.filter(col =>
-        col.supported
-        && !col.isSensitive
-        && (col.category === "categorical" || col.category === "text")
-        && col.distinctCount !== null
-        && col.distinctCount >= 1
-        && col.distinctCount <= LOW_CARDINALITY_TOKEN_LIMIT
-      ).slice(0, 6);
+        // 2b, 3, and 4: Run text-date probes, low-cardinality token hints, and duplicate check IN PARALLEL!
+        const textDateCandidates = columnProfiles.filter(col =>
+          col.supported
+          && !col.isSensitive
+          && (col.category === "text" || col.category === "categorical")
+          && col.nonNullCount > 0
+          && isDateLikeColumnName(col.name)
+        ).slice(0, 6);
 
-      for (const col of tokenCandidates) {
-        try {
-          const tokenSql = buildSafeTokenQuerySql(schema, tableName, col.name, allDiscoveredTables, allowedColumns);
-          const tokenRows = await executor(tokenSql);
-          const safeTokens = tokenRows
-            .map(row => isSafeTokenValue(row.token))
-            .filter((token): token is string => Boolean(token));
-          if (safeTokens.length) {
-            col.valueHints.safeLowCardinalityTokens = safeTokens;
-          }
-        } catch {
-          // Non-fatal: token hints are optional
-        }
-      }
-    }
+        const tokenCandidates = columnProfiles.filter(col =>
+          col.supported
+          && !col.isSensitive
+          && (col.category === "categorical" || col.category === "text")
+          && !isDateLikeColumnName(col.name)
+          && col.distinctCount !== null
+          && col.distinctCount >= 1
+          && col.distinctCount <= LOW_CARDINALITY_TOKEN_LIMIT
+        ).slice(0, 6);
 
-    // 4. Duplicate indicator check using primary key or reliable detected key
-    const dupKey = chooseDuplicateKeyColumns(primaryKeys, columnProfiles);
-    let duplicates: DuplicateCheckResult = {
-      keyColumns: dupKey.keyColumns,
-      source: dupKey.source,
-      duplicateRowCount: rowCount === 0 ? 0 : null,
-      duplicateGroupCount: rowCount === 0 ? 0 : null,
-      hasDuplicates: rowCount === 0 ? false : null
-    };
+        const dupKey = chooseDuplicateKeyColumns(primaryKeys, columnProfiles);
 
-    if (rowCount > 0 && dupKey.keyColumns.length > 0) {
-      try {
-        const dupSql = buildDuplicateCheckSql(schema, tableName, dupKey.keyColumns, allDiscoveredTables, allowedColumns);
-        const dupRows = await executor(dupSql);
-        const dupGroups = Math.max(0, Math.trunc(toNumber(dupRows[0]?.duplicate_groups) || 0));
-        const dupRowCount = Math.max(0, Math.trunc(toNumber(dupRows[0]?.duplicate_rows) || 0));
-        duplicates = {
-          keyColumns: dupKey.keyColumns,
-          source: dupKey.source,
-          duplicateGroupCount: dupGroups,
-          duplicateRowCount: dupRowCount,
-          hasDuplicates: dupRowCount > 0
+        const [, , dupCheckOutcome] = await Promise.all([
+          // Text-date probes in parallel
+          mapWithConcurrency(textDateCandidates, QUERY_PROFILE_CONCURRENCY, async col => {
+            try {
+              const probeSql = buildTextDateProbeSql(schema, tableName, col.name, allDiscoveredTables, allowedColumns);
+              const probeRows = await executor(probeSql);
+              const probe = probeRows[0] || {};
+              const nonEmpty = Math.max(0, Math.trunc(toNumber(probe.non_empty_count) ?? 0));
+              const isoCount = Math.max(0, Math.trunc(toNumber(probe.iso_count) ?? 0));
+              const ymdCount = Math.max(0, Math.trunc(toNumber(probe.ymd_slash_count) ?? 0));
+              const ambiguousCount = Math.max(0, Math.trunc(toNumber(probe.ambiguous_count) ?? 0));
+              const dmyProofCount = Math.max(0, Math.trunc(toNumber(probe.dmy_proof_count) ?? 0));
+              const mdyProofCount = Math.max(0, Math.trunc(toNumber(probe.mdy_proof_count) ?? 0));
+
+              if (nonEmpty > 0 && ambiguousCount > 0 && isoCount + ymdCount === 0) {
+                const provenOrder = dmyProofCount > 0 && mdyProofCount === 0
+                  ? "dmy"
+                  : mdyProofCount > 0 && dmyProofCount === 0
+                    ? "mdy"
+                    : null;
+                if (provenOrder && ambiguousCount / nonEmpty >= 0.7) {
+                  const rawMin = provenOrder === "dmy" ? probe.dmy_min : probe.mdy_min;
+                  const rawMax = provenOrder === "dmy" ? probe.dmy_max : probe.mdy_max;
+                  const earliest = toIsoDate(rawMin);
+                  const latest = toIsoDate(rawMax);
+                  if (earliest && latest) {
+                    const invalidDateCount = Math.max(0, nonEmpty - ambiguousCount);
+                    const spanDays = Math.max(0, Math.round((Date.parse(latest) - Date.parse(earliest)) / 86_400_000));
+                    const freshnessHours = roundTwo(Math.max(0, (now.getTime() - Date.parse(latest)) / 3_600_000));
+                    col.category = "temporal";
+                    col.temporalStats = {
+                      earliest,
+                      latest,
+                      spanDays,
+                      freshnessHours,
+                      invalidDateCount,
+                      ambiguousDateCount: 0,
+                      inferredFromText: true,
+                      detectedFormat: provenOrder
+                    };
+                    return;
+                  }
+                }
+                col.temporalStats = {
+                  earliest: null,
+                  latest: null,
+                  spanDays: null,
+                  freshnessHours: null,
+                  invalidDateCount: Math.max(0, nonEmpty - ambiguousCount),
+                  ambiguousDateCount: ambiguousCount,
+                  inferredFromText: false,
+                  detectedFormat: "ambiguous_numeric"
+                };
+                tableWarnings.push(`Column "${col.name}" contains ${ambiguousCount} ambiguous numeric date value(s) (DD/MM/YYYY vs MM/DD/YYYY); date range cannot be inferred safely.`);
+                return;
+              }
+
+              if (nonEmpty > 0 && (isoCount + ymdCount) / nonEmpty >= 0.7 && ambiguousCount === 0) {
+                const candidateMins = [probe.iso_min, probe.ymd_min].map(toIsoDate).filter((v): v is string => Boolean(v)).sort();
+                const candidateMaxs = [probe.iso_max, probe.ymd_max].map(toIsoDate).filter((v): v is string => Boolean(v)).sort();
+                const earliest = candidateMins[0] || null;
+                const latest = candidateMaxs[candidateMaxs.length - 1] || null;
+
+                if (earliest && latest) {
+                  const invalidDateCount = Math.max(0, nonEmpty - (isoCount + ymdCount));
+                  const spanDays = Math.max(0, Math.round((Date.parse(latest) - Date.parse(earliest)) / 86_400_000));
+                  const freshnessHours = roundTwo(Math.max(0, (now.getTime() - Date.parse(latest)) / 3_600_000));
+                  col.category = "temporal";
+                  col.temporalStats = {
+                    earliest,
+                    latest,
+                    spanDays,
+                    freshnessHours,
+                    invalidDateCount,
+                    ambiguousDateCount: 0,
+                    inferredFromText: true,
+                    detectedFormat: isoCount >= ymdCount ? "iso_date" : "ymd_slash"
+                  };
+                  if (invalidDateCount > 0) {
+                    tableWarnings.push(`Column "${col.name}" had ${invalidDateCount} unparseable value(s) excluded from date range calculation.`);
+                  }
+                  return;
+                }
+              }
+
+              // Fallback bounded distinct sample check
+              const sampleSql = buildTextDateSampleSql(schema, tableName, col.name, allDiscoveredTables, allowedColumns);
+              const sampleRows = await executor(sampleSql);
+              const sampleValues = sampleRows.map(r => r.date_val);
+              const sampleEval = evaluateTextDateSamples(sampleValues, now);
+              if (sampleEval.temporalStats) col.temporalStats = sampleEval.temporalStats;
+              if (sampleEval.isReliableDateColumn) col.category = "temporal";
+              if (sampleEval.warning) tableWarnings.push(`Column "${col.name}": ${sampleEval.warning}`);
+            } catch {
+              // Non-fatal
+            }
+          }),
+
+          // Low-cardinality token hints in parallel
+          mapWithConcurrency(tokenCandidates, QUERY_PROFILE_CONCURRENCY, async col => {
+            try {
+              const tokenSql = buildSafeTokenQuerySql(schema, tableName, col.name, allDiscoveredTables, allowedColumns);
+              const tokenRows = await executor(tokenSql);
+              const safeTokens = tokenRows
+                .map(row => isSafeTokenValue(row.token))
+                .filter((token): token is string => Boolean(token));
+              if (safeTokens.length) {
+                col.valueHints.safeLowCardinalityTokens = safeTokens;
+              }
+            } catch {
+              // Non-fatal
+            }
+          }),
+
+          // Duplicate check in parallel
+          (async (): Promise<DuplicateCheckResult> => {
+            if (dupKey.keyColumns.length === 0) {
+              return {
+                keyColumns: dupKey.keyColumns,
+                source: dupKey.source,
+                duplicateRowCount: null,
+                duplicateGroupCount: null,
+                hasDuplicates: null
+              };
+            }
+            try {
+              const dupSql = buildDuplicateCheckSql(schema, tableName, dupKey.keyColumns, allDiscoveredTables, allowedColumns);
+              const dupRows = await executor(dupSql);
+              const dupGroups = Math.max(0, Math.trunc(toNumber(dupRows[0]?.duplicate_groups) || 0));
+              const dupRowCount = Math.max(0, Math.trunc(toNumber(dupRows[0]?.duplicate_rows) || 0));
+              return {
+                keyColumns: dupKey.keyColumns,
+                source: dupKey.source,
+                duplicateGroupCount: dupGroups,
+                duplicateRowCount: dupRowCount,
+                hasDuplicates: dupRowCount > 0
+              };
+            } catch {
+              tableWarnings.push(`Duplicate check skipped for "${tableName}".`);
+              return {
+                keyColumns: dupKey.keyColumns,
+                source: dupKey.source,
+                duplicateRowCount: null,
+                duplicateGroupCount: null,
+                hasDuplicates: null
+              };
+            }
+          })()
+        ]);
+
+        const summaryLists = buildTableSummaryLists(columnProfiles);
+        return {
+          schema,
+          name: tableName,
+          tableType,
+          rowCount,
+          isEmpty: false,
+          primaryKeys,
+          foreignKeys,
+          columns: columnProfiles,
+          ...summaryLists,
+          duplicates: dupCheckOutcome,
+          freshness: computeFreshness(columnProfiles, rowCount, now),
+          profiledAt: now.toISOString(),
+          warnings: tableWarnings
         };
-      } catch {
-        tableWarnings.push(`Duplicate check skipped for "${tableName}".`);
       }
-    }
 
-    const summaryLists = buildTableSummaryLists(columnProfiles);
-    profiledTables.push({
-      schema,
-      name: tableName,
-      tableType,
-      rowCount,
-      isEmpty: rowCount === 0,
-      primaryKeys,
-      foreignKeys,
-      columns: columnProfiles,
-      ...summaryLists,
-      duplicates,
-      freshness: computeFreshness(columnProfiles, rowCount, now),
-      profiledAt: now.toISOString(),
-      warnings: tableWarnings
-    });
-  }
+      const dupKeyEmpty = chooseDuplicateKeyColumns(primaryKeys, columnProfiles);
+      const summaryLists = buildTableSummaryLists(columnProfiles);
+      return {
+        schema,
+        name: tableName,
+        tableType,
+        rowCount: 0,
+        isEmpty: true,
+        primaryKeys,
+        foreignKeys,
+        columns: columnProfiles,
+        ...summaryLists,
+        duplicates: {
+          keyColumns: dupKeyEmpty.keyColumns,
+          source: dupKeyEmpty.source,
+          duplicateRowCount: 0,
+          duplicateGroupCount: 0,
+          hasDuplicates: false
+        },
+        freshness: computeFreshness(columnProfiles, 0, now),
+        profiledAt: now.toISOString(),
+        warnings: tableWarnings
+      };
+    }
+  );
+
+  const profiledTables = profiledMaybe.filter((t): t is TableProfile => Boolean(t));
 
   return analyzeDatabaseSemantics(profiledTables, allRelationships, {
     selectedDomain: options.selectedDomain,
@@ -901,8 +958,24 @@ export async function profileConnectedDatabase(
   session: Session,
   options: ProfileOptions = {}
 ): Promise<DatabaseProfile> {
+  const sessionKey = deriveSessionCacheKey(session);
+  const tableKey = options.tableNames?.length ? [...options.tableNames].sort().join(",") : "*";
+  const cacheKey = `${sessionKey}::${options.selectedDomain || "auto"}::${tableKey}::${options.maxTables || MAX_TABLES_TO_PROFILE}`;
+
+  if (options.forceRefresh) {
+    clearSessionPerformanceCaches(sessionKey);
+  } else if (!options.tableOverrides) {
+    const cached = getCachedDatabaseProfile(cacheKey);
+    if (cached) return cached;
+  }
+
   const executor = createSessionQueryExecutor(session);
-  return profileDatabaseWithExecutor(executor, options);
+  const profile = await profileDatabaseWithExecutor(executor, options);
+
+  if (!options.tableOverrides) {
+    setCachedDatabaseProfile(sessionKey, cacheKey, profile);
+  }
+  return profile;
 }
 
 export type InMemoryColumnSpec = {
