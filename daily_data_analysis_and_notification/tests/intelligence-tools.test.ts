@@ -55,7 +55,14 @@ test("Daily Intelligence Brief: produces verified findings, distinguishes certai
   assert.equal(brief.status, "ready");
   const revFinding = brief.negativeHighlights.find(f => f.metricId === "totalRevenue" && f.certainty === "confirmed");
   assert.ok(revFinding);
-  assert.ok(brief.unusualActivities.some(f => f.metricId === "totalRevenue" && f.certainty === "possible_explanation"));
+  // Unusual swings (>35%) are tracked in unusualActivities WITHOUT emitting a duplicate Possible Explanation card
+  assert.ok(brief.unusualActivities.some(f => f.metricId === "totalRevenue" && f.certainty === "confirmed"));
+  assert.equal(
+    brief.findings.filter(f => f.metricId === "totalRevenue").length,
+    1,
+    "Must not create a separate duplicate Possible Explanation finding for the same metric"
+  );
+  assert.ok(revFinding.possibleExplanation && revFinding.possibleExplanation.length > 0, "Integrated evidence-backed Possible Explanation should be populated");
   assert.ok(revFinding.whatHappened.includes("500"));
   assert.ok(revFinding.investigateNext.length > 0);
 

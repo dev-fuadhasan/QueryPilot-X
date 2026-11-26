@@ -508,7 +508,7 @@ function runDailyTimeSeriesInvestigation(input: {
   }
 
   const refDailyNote = referenceByDate.size > 0 && metric.formattedComparisonValue
-    ? ` Compared against ${comparison?.label || "reference period"} (${metric.formattedComparisonValue}).`
+    ? ` Compared against reference baseline (${metric.formattedComparisonValue}).`
     : "";
 
   let summary: string;
@@ -1544,14 +1544,11 @@ export function runAutomatedFindingInvestigations(input: InvestigateFindingsInpu
       const suggestedNextSteps: string[] = [];
       if (mostRelevantSegment) {
         suggestedNextSteps.push(
-          `Audit ${mostRelevantSegment.dimensionLabel.toLowerCase()} "${mostRelevantSegment.groupLabel}" records around ${largestChangeDate || analysis.reportingPeriod.label} to verify the underlying operational cause.`
+          `Audit ${mostRelevantSegment.dimensionLabel.toLowerCase()} "${mostRelevantSegment.groupLabel}" records${largestChangeDate ? ` around ${largestChangeDate}` : ""} to verify the underlying operational cause.`
         );
       }
       if (relatedDrivers[0]) {
         suggestedNextSteps.push(`Cross-check related driver "${relatedDrivers[0].metricName}" (${relatedDrivers[0].currentValue ?? "N/A"}) for joint movement with ${metric.name}.`);
-      }
-      if (suggestedNextSteps.length === 0) {
-        suggestedNextSteps.push(finding.investigateNext);
       }
 
       const invResult: FindingInvestigationResult = {
@@ -1633,4 +1630,95 @@ export function runAutomatedFindingInvestigations(input: InvestigateFindingsInpu
   }
 
   return results;
+}
+
+/**
+ * Builds a concise, strictly evidence-backed Possible Explanation to display directly
+ * inside a Confirmed Finding. Uses only verified results from Automatic Investigation
+ * or Root Cause Analysis; returns null when no reliable supporting evidence exists
+ * (never fabricates generic guesses or assumptions).
+ */
+export function buildEvidenceBackedPossibleExplanation(
+  finding: BriefFinding,
+  investigation: FindingInvestigationResult | null,
+  rootCause?: RootCauseAnalysisResult | null
+): string | null {
+  if (!investigation) {
+    return finding.possibleExplanation || null;
+  }
+
+  // 1. Duplicate data findings: explain key granularity using verified row checks
+  if (investigation.duplicateDetails) {
+    return investigation.duplicateDetails.assessmentNote || null;
+  }
+
+  // 2. Missing data / schema gap findings: cite concrete missing roles, high nulls, or invalid dates only
+  if (investigation.missingDataDetails) {
+    const parts: string[] = [];
+    if (investigation.missingDataDetails.missingRequiredRoles.length > 0) {
+      parts.push(
+        `Missing required column mapping(s): ${investigation.missingDataDetails.missingRequiredRoles.join(", ")}.`
+      );
+    }
+    if (investigation.missingDataDetails.highNullColumns.length > 0) {
+      const top = investigation.missingDataDetails.highNullColumns[0];
+      parts.push(
+        `Elevated missing values in "${top.columnName}" (${top.nullPercent.toFixed(1)}% null across ${top.nullCount} row(s)).`
+      );
+    }
+    if (investigation.missingDataDetails.invalidDateWarning) {
+      parts.push(investigation.missingDataDetails.invalidDateWarning);
+    }
+    return parts.length > 0 ? parts.join(" ") : null;
+  }
+
+  // 3. Metric & domain-event findings: synthesize only verified segment, daily-shift, and component-driver evidence
+  const parts: string[] = [];
+  const topSeg = investigation.mostRelevantSegment;
+  if (topSeg) {
+    const deltaPart = topSeg.changePercent !== null
+      ? `${topSeg.changePercent >= 0 ? "+" : ""}${topSeg.changePercent.toFixed(1)}% vs reference`
+      : topSeg.formattedCurrentValue
+        ? `at ${topSeg.formattedCurrentValue}`
+        : "";
+    parts.push(
+      `May be associated with ${topSeg.dimensionLabel} "${topSeg.groupLabel}"${deltaPart ? ` (${deltaPart})` : ""}.`
+    );
+  } else if (finding.metricId && rootCause) {
+    const rc = rootCause.analyses.find(a => a.metricId === finding.metricId);
+    const contributor = finding.changePercent !== null && finding.changePercent < 0
+      ? rc?.negativeContributors[0]
+      : rc?.positiveContributors[0];
+    if (contributor) {
+      parts.push(
+        `May be associated with ${contributor.dimensionLabel} "${contributor.groupLabel}" (${contributor.evidence}).`
+      );
+    }
+  }
+
+  if (investigation.dailyTrend?.available && investigation.largestChangeDate) {
+    if (investigation.dailyTrend.trendPattern === "isolated_shift") {
+      parts.push(`The shift appears concentrated around ${investigation.largestChangeDate}.`);
+    } else if (investigation.dailyTrend.trendPattern === "continuous_downward") {
+      parts.push(`Decline persisted across multiple days, with the sharpest drop on ${investigation.largestChangeDate}.`);
+    } else if (investigation.dailyTrend.trendPattern === "continuous_upward") {
+      parts.push(`Improvement built across multiple days, peaking on ${investigation.largestChangeDate}.`);
+    } else if (investigation.dailyTrend.points.length > 1) {
+      parts.push(`Largest daily movement occurred on ${investigation.largestChangeDate}.`);
+    }
+  }
+
+  const topDriver = investigation.relatedMetricDrivers[0];
+  if (topDriver && topDriver.changePercent !== null) {
+    const signed = `${topDriver.changePercent >= 0 ? "+" : ""}${topDriver.changePercent.toFixed(1)}%`;
+    parts.push(
+      `Coincided with ${topDriver.metricName} shifting ${signed}${topDriver.currentValue ? ` (${topDriver.currentValue})` : ""}.`
+    );
+  }
+
+  if (finding.changePercent !== null && Math.abs(finding.changePercent) >= 35 && parts.length > 0) {
+    parts.push("Because this swing exceeds 35%, it may reflect either a major operational event or an unusual single-day spike/drop.");
+  }
+
+  return parts.length > 0 ? parts.join(" ") : null;
 }

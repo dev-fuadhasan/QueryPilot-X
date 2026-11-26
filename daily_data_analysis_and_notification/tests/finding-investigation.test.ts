@@ -266,13 +266,18 @@ test("3. Investigation of unusual findings (>35% extreme shift)", () => {
     comparisonEnd: "2024-07-03"
   });
 
-  const unusualFinding = result.tools.intelligenceBrief?.findings.find(f => f.category === "unusual");
-  assert.ok(unusualFinding, "Expected an unusual finding for >35% swing");
+  const unusualFinding = result.tools.intelligenceBrief?.unusualActivities.find(f => f.metricId === "totalRevenue");
+  assert.ok(unusualFinding, "Expected totalRevenue (>35% swing) to be tracked in unusualActivities");
+  assert.equal(
+    result.tools.intelligenceBrief?.findings.filter(f => f.metricId === "totalRevenue").length,
+    1,
+    "Should not emit a duplicate Possible Explanation finding card for the same metric"
+  );
   assert.ok(unusualFinding.investigation);
-  assert.equal(unusualFinding.investigation.investigationType, "unusual_activity");
   assert.equal(unusualFinding.investigation.status, "completed");
   assert.ok(unusualFinding.investigation.dailyTrend);
   assert.ok(unusualFinding.investigation.dailyTrend.unusualDates.some(u => u.date === "2024-07-05"));
+  assert.ok(unusualFinding.possibleExplanation && /35%/.test(unusualFinding.possibleExplanation));
 });
 
 test("4. Daily time-series analysis detects continuous downward trend & exact largest shift", () => {
@@ -712,6 +717,85 @@ test("16. Executive Summary UI integration renders automatic investigation & col
   assert.match(html, /Key Evidence/);
   assert.match(html, /Suggested Actions/);
   assert.doesNotMatch(html, /2023-12-18|33\.1%/, "UI must never render hardcoded example values");
+
+  // Dashboard layout & Findings presentation requirements:
+  // 1. Smart Comparison appears BEFORE Findings
+  const smartComparisonIdx = html.indexOf('aria-label="Smart Comparison"');
+  const findingsIdx = html.indexOf('aria-label="Findings and Daily Intelligence Brief"');
+  assert.ok(smartComparisonIdx !== -1 && findingsIdx !== -1);
+  assert.ok(smartComparisonIdx < findingsIdx, "Smart Comparison must render before Findings");
+
+  // 2. Highlighted Current & Reference period cards show dataset, dynamic date ranges, and day counts
+  assert.match(html, /Current Analysis Period/);
+  assert.match(html, /Reference Comparison Period/);
+  assert.match(html, /ui_sales_orders/);
+  assert.match(html, /2024-05-08 to 2024-05-14/);
+  assert.match(html, /2024-05-01 to 2024-05-07/);
+  assert.match(html, /7 Days/);
+
+  // 3. No Calendar caution message
+  assert.doesNotMatch(html, /Calendar caution/i);
+
+  // 4 & 5. Integrated Possible Explanation inside Confirmed Findings; no "Why it matters" or "Next check"
+  assert.match(html, /Confirmed Finding:/);
+  assert.match(html, /Possible Explanation:/);
+  assert.doesNotMatch(html, /Why it matters/i);
+  assert.doesNotMatch(html, /Next check:/i);
+
+  // 6. General comparison period range is NOT repeated inside individual Finding cards
+  const findingsSectionHtml = html.slice(findingsIdx, html.indexOf('aria-label="Daily Alerts and Notifications"'));
+  assert.doesNotMatch(findingsSectionHtml, /2024-05-08 to 2024-05-14/, "Current period date range must not repeat inside individual Findings");
+  assert.doesNotMatch(findingsSectionHtml, /2024-05-01 to 2024-05-07/, "Reference period date range must not repeat inside individual Findings");
+});
+
+test("18. Weekday vs weekend Smart Comparison never emits Calendar caution and shows 1 Day duration dynamically", async () => {
+  clearFindingInvestigationCache();
+  // 2024-01-01 is Monday (weekday), 2023-12-31 is Sunday (weekend)
+  const rows: Array<Record<string, unknown>> = [
+    { order_date: "2023-12-31", category: "Retail", revenue: 1000, cost: 500, quantity: 10, status: "completed" },
+    { order_date: "2024-01-01", category: "Retail", revenue: 700, cost: 450, quantity: 8, status: "completed" }
+  ];
+  const profile = profileTestRows("monday_vs_sunday", rows);
+  const unified = runUnifiedDailyAnalysisFromRows(profile, rows, {
+    domainId: "sales_ecommerce",
+    timezone: "UTC",
+    periodStart: "2024-01-01",
+    periodEnd: "2024-01-01",
+    comparisonPreset: "previous_day"
+  });
+
+  assert.equal(unified.tools.smartComparison?.weekdayNote, null, "Weekday vs weekend must not generate Calendar caution");
+  const { default: DailyToolsSection } = await import("../components/DailyToolsSection");
+  const html = renderToStaticMarkup(
+    React.createElement(DailyToolsSection, {
+      intelligence: unified,
+      loadingIntelligence: false,
+      intelligenceError: null,
+      comparisonPreset: "previous_day",
+      onComparisonPresetChange: () => {},
+      alerts: unified.tools.alerts,
+      alertRules: DEFAULT_ALERT_RULES,
+      savingAlertRules: false,
+      onToggleAlertRead: () => {},
+      onMarkAllAlertsRead: () => {},
+      onSaveAlertRules: async () => {},
+      archivedReports: [],
+      loadingArchive: false,
+      archiveComparison: null,
+      comparingArchive: false,
+      archiveCompareError: null,
+      downloadingReportId: null,
+      timezone: "UTC",
+      onCompareArchivedReports: async () => {},
+      onDownloadReportPdf: async () => {}
+    })
+  );
+
+  assert.doesNotMatch(html, /Calendar caution/i);
+  assert.match(html, /monday_vs_sunday/);
+  assert.match(html, /2024-01-01 to 2024-01-01/);
+  assert.match(html, /2023-12-31 to 2023-12-31/);
+  assert.match(html, /1 Day/);
 });
 
 test("17. Caching & memoization prevent unnecessary repeated calculations across and within runs", () => {

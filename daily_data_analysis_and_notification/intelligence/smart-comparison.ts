@@ -11,11 +11,6 @@ function dayOfWeek(isoDate: string): number {
   return new Date(`${isoDate}T00:00:00.000Z`).getUTCDay();
 }
 
-function isWeekend(isoDate: string): boolean {
-  const dow = dayOfWeek(isoDate);
-  return dow === 0 || dow === 6;
-}
-
 function weekdayLabel(isoDate: string): string {
   return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][dayOfWeek(isoDate)] || "Day";
 }
@@ -26,14 +21,6 @@ function buildWeekdayNote(analysis: DynamicAnalysisResult): string | null {
 
   if (comp.preset === "same_weekday_previous_weeks" && analysis.reportingPeriod.dayCount === 1) {
     return `Aligned by weekday: comparing ${weekdayLabel(analysis.reportingPeriod.start)} (${analysis.reportingPeriod.start}) against the previous ${comp.matchingDates?.length || 4} matching ${weekdayLabel(analysis.reportingPeriod.start)}s.`;
-  }
-
-  if (analysis.reportingPeriod.dayCount === 1 && comp.dayCount === 1) {
-    const currWeekend = isWeekend(analysis.reportingPeriod.start);
-    const compWeekend = isWeekend(comp.start);
-    if (currWeekend !== compWeekend) {
-      return `Calendar caution: ${analysis.reportingPeriod.start} (${weekdayLabel(analysis.reportingPeriod.start)}) is a ${currWeekend ? "weekend" : "weekday"}, while ${comp.start} (${weekdayLabel(comp.start)}) is a ${compWeekend ? "weekend" : "weekday"}. Consider using Same Weekday comparison for cleaner seasonality.`;
-    }
   }
 
   if (analysis.reportingPeriod.dayCount !== comp.dayCount && comp.preset !== "same_weekday_previous_weeks") {
