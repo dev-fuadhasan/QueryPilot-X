@@ -16,9 +16,11 @@ import {
   Calendar,
   UserCheck,
   Mail,
-  Send
+  Send,
+  RotateCcw
 } from "lucide-react";
 import type { ChangeNotification } from "../types";
+import { generateSafeSqlRollback } from "../risk-engine";
 
 interface IncidentForensicModalProps {
   incident: ChangeNotification | null;
@@ -27,6 +29,7 @@ interface IncidentForensicModalProps {
 
 export default function IncidentForensicModal({ incident, onClose }: IncidentForensicModalProps) {
   const [copied, setCopied] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
   const [emailing, setEmailing] = useState(false);
   const [emailSuccess, setEmailSuccess] = useState<string | null>(null);
 
@@ -39,10 +42,25 @@ export default function IncidentForensicModal({ incident, onClose }: IncidentFor
     recommendation: "Routine database modification. Standard operational monitoring applies."
   };
 
+  const rollbackPlan = generateSafeSqlRollback(
+    incident.tableName,
+    incident.recordId,
+    incident.columnName,
+    incident.oldValue,
+    incident.newValue,
+    incident.changeType || "UPDATE"
+  );
+
   const copyJson = () => {
     navigator.clipboard.writeText(JSON.stringify(incident, null, 2));
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
+  };
+
+  const handleCopySql = () => {
+    navigator.clipboard.writeText(rollbackPlan.sql);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 2500);
   };
 
   const handleEmailIncident = async () => {
@@ -345,6 +363,66 @@ export default function IncidentForensicModal({ incident, onClose }: IncidentFor
             <div>
               <strong>Timestamp:</strong> {incident.timestamp}
             </div>
+          </div>
+
+          {/* 1-CLICK SAFE SQL ROLLBACK PLAYBOOK */}
+          <div
+            style={{
+              background: "#0f172a",
+              color: "#f8fafc",
+              borderRadius: "10px",
+              padding: "16px 20px",
+              boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", flexWrap: "wrap", gap: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <RotateCcw size={15} color="#38bdf8" />
+                <strong style={{ fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.05em", color: "#38bdf8" }}>
+                  1-Click Safe SQL Rollback Playbook
+                </strong>
+              </div>
+              <button
+                type="button"
+                onClick={handleCopySql}
+                style={{
+                  background: copiedSql ? "#16a34a" : "#1e293b",
+                  border: "1px solid #334155",
+                  borderRadius: "6px",
+                  padding: "4px 10px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  color: "#ffffff",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "4px",
+                }}
+              >
+                {copiedSql ? <Check size={12} /> : <Copy size={12} />}
+                {copiedSql ? "Rollback SQL Copied!" : "Copy Rollback SQL"}
+              </button>
+            </div>
+
+            <pre
+              style={{
+                background: "#020617",
+                padding: "10px 14px",
+                borderRadius: "6px",
+                fontFamily: "ui-monospace, monospace",
+                fontSize: "12px",
+                color: "#7dd3fc",
+                margin: "0 0 8px",
+                overflowX: "auto",
+                whiteSpace: "pre-wrap",
+                border: "1px solid #1e293b",
+              }}
+            >
+              {rollbackPlan.sql}
+            </pre>
+            <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+              {rollbackPlan.summary}
+            </span>
           </div>
         </div>
 

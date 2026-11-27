@@ -242,3 +242,52 @@ export function evaluateChangeRisk(
     recommendation,
   };
 }
+
+/**
+ * Generates an automated, safe, deterministic SQL Rollback statement for any audited mutation.
+ * Enables 1-click remediation without manual SQL drafting.
+ */
+export function generateSafeSqlRollback(
+  tableName: string,
+  recordId: string,
+  columnName: string,
+  oldValue: unknown,
+  newValue: unknown,
+  eventType = "UPDATE",
+  pkColumn = "id"
+): {
+  sql: string;
+  isDestructive: boolean;
+  summary: string;
+} {
+  const safeTable = tableName.replace(/[^a-zA-Z0-9_]/g, "");
+  const safeCol = columnName.replace(/[^a-zA-Z0-9_]/g, "");
+  const safePk = pkColumn.replace(/[^a-zA-Z0-9_]/g, "");
+  const safeId = String(recordId).replace(/'/g, "''");
+
+  if (eventType === "INSERT") {
+    return {
+      sql: `DELETE FROM "${safeTable}" WHERE "${safePk}" = '${safeId}';`,
+      isDestructive: true,
+      summary: `Removes inserted record #${recordId} from table '${tableName}'.`,
+    };
+  }
+
+  // UPDATE rollback: Revert current column back to oldValue
+  let formattedOldVal: string;
+  if (oldValue === null || oldValue === undefined || String(oldValue).toUpperCase() === "NULL") {
+    formattedOldVal = "NULL";
+  } else if (typeof oldValue === "number") {
+    formattedOldVal = String(oldValue);
+  } else if (typeof oldValue === "boolean") {
+    formattedOldVal = oldValue ? "TRUE" : "FALSE";
+  } else {
+    formattedOldVal = `'${String(oldValue).replace(/'/g, "''")}'`;
+  }
+
+  return {
+    sql: `UPDATE "${safeTable}"\nSET "${safeCol}" = ${formattedOldVal}\nWHERE "${safePk}" = '${safeId}';`,
+    isDestructive: false,
+    summary: `Reverts column '${columnName}' from '${String(newValue)}' back to previous value: ${formattedOldVal}.`,
+  };
+}

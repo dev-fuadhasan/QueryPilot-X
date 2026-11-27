@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { evaluateChangeRisk } from "./risk-engine";
+import { evaluateChangeRisk, generateSafeSqlRollback } from "./risk-engine";
 
 test("Risk Engine: assesses baseline low-risk mutation", () => {
   const result = evaluateChangeRisk("products", "description", "Red shoes", "Blue shoes");
@@ -44,4 +44,18 @@ test("Risk Engine: adjusts severity threshold with aggressive high sensitivity",
   const normalResult = evaluateChangeRisk("orders", "discount", 10, 20, new Date(), "universal", "medium");
   const aggressiveResult = evaluateChangeRisk("orders", "discount", 10, 20, new Date(), "universal", "high");
   assert.ok(aggressiveResult.severity === "HIGH" || aggressiveResult.severity === "CRITICAL");
+});
+
+test("Rollback Engine: generates safe UPDATE rollback SQL for modified column", () => {
+  const plan = generateSafeSqlRollback("users", "usr_100", "role", "member", "admin", "UPDATE", "id");
+  assert.equal(plan.isDestructive, false);
+  assert.ok(plan.sql.includes('UPDATE "users"'));
+  assert.ok(plan.sql.includes('SET "role" = \'member\''));
+  assert.ok(plan.sql.includes('WHERE "id" = \'usr_100\''));
+});
+
+test("Rollback Engine: generates safe DELETE rollback SQL for unauthorized insert", () => {
+  const plan = generateSafeSqlRollback("wallets", "wlt_999", "New Record", null, { balance: 5000 }, "INSERT", "wallet_id");
+  assert.equal(plan.isDestructive, true);
+  assert.equal(plan.sql, 'DELETE FROM "wallets" WHERE "wallet_id" = \'wlt_999\';');
 });
