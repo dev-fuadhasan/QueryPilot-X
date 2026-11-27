@@ -535,7 +535,7 @@ export default function ReportHistoryPanel({
           <div className={styles.emptyBox}>
             <strong>No reports have been generated yet</strong>
             <p>
-              Persistent report storage is ready, and no reports exist for your organisation yet. Generate one from <strong>Manual Report</strong> or configure <strong>Daily Report</strong> automation.
+              Persistent report storage is ready, and no reports exist for your organisation yet. Generate one from <strong>Manual Report</strong> or configure <strong>Report Automation</strong>.
             </p>
           </div>
         )}

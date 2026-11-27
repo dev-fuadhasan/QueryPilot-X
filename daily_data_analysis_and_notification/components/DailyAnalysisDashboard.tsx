@@ -283,7 +283,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       const data = await response.json();
       if (seq !== intelSeqRef.current) return;
       if (!response.ok) {
-        throw new Error(data.error || "Could not run Daily Analysis intelligence.");
+        throw new Error(data.error || "Could not run Smart Data Understanding analysis.");
       }
       const nextIntel = data.intelligence as UnifiedDailyAnalysisResult;
       setIntelligence(nextIntel);
@@ -293,7 +293,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       setLastRefreshedAt(nextIntel.generatedAt || new Date().toISOString());
     } catch (error) {
       if (seq !== intelSeqRef.current) return;
-      setIntelligenceError(error instanceof Error ? error.message : "Could not run Daily Analysis intelligence.");
+      setIntelligenceError(error instanceof Error ? error.message : "Could not run Smart Data Understanding analysis.");
     } finally {
       if (seq === intelSeqRef.current) {
         setLoadingIntelligence(false);
@@ -851,9 +851,9 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
             <ArrowLeft size={13} /> Back to Smart Dashboard
           </button>
           <span className={styles.eyebrow}>REPORT AUTOMATION &amp; LIVE INTELLIGENCE</span>
-          <h1 className={styles.pageTitle}>Daily Analysis</h1>
+          <h1 className={styles.pageTitle}>Smart Data Understanding</h1>
           <p className={styles.pageSubtitle}>
-            Automated Daily/Weekly/Monthly PDF reporting and all 7 live Daily Analysis tools displayed directly in one unified view.
+            Automated PDF reporting and all 7 live Smart Analysis tools displayed directly in one unified view.
           </p>
         </div>
 

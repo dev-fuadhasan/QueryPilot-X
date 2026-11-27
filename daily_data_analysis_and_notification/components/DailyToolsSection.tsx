@@ -556,13 +556,13 @@ export default function DailyToolsSection({
   const selectedRightReport = archivedReports.find(r => r.id === rightArchiveId) || archivedReports[0] || null;
 
   return (
-    <section className={styles.toolsSection} aria-label="Seven Daily Analysis Tools">
+    <section className={styles.toolsSection} aria-label="Seven Smart Analysis Tools">
       {/* Section Header */}
       <div className={styles.toolsIntroCard}>
         <div className={styles.cardHeader} style={{ marginBottom: 0 }}>
           <div className={styles.cardTitleGroup}>
             <h2 className={styles.cardTitle}>
-              <Activity size={17} /> Daily Analysis Tools
+              <Activity size={17} /> Smart Analysis Tools
               {domainMeta && <span className={`${styles.badge} ${styles.badgeInfo}`}>{domainMeta.name}</span>}
             </h2>
             <p className={styles.cardSub}>
@@ -845,13 +845,13 @@ export default function DailyToolsSection({
           )}
         </article>
 
-        {/* 2. FINDINGS & DAILY INTELLIGENCE BRIEF */}
-        <article className={`${styles.card} ${styles.toolCard}`} aria-label="Findings and Daily Intelligence Brief">
+        {/* 2. FINDINGS & INTELLIGENCE BRIEF */}
+        <article className={`${styles.card} ${styles.toolCard}`} aria-label="Findings and Intelligence Brief">
           <div className={styles.toolCardHeader}>
             <div className={styles.toolCardTitleRow}>
               <span className={styles.toolCardIcon}><Sparkles size={16} /></span>
               <div className={styles.cardTitleGroup}>
-                <h3 className={styles.cardTitle}>Findings &amp; Daily Intelligence Brief</h3>
+                <h3 className={styles.cardTitle}>Findings &amp; Intelligence Brief</h3>
                 <p className={styles.cardSub}>Executive summary, confirmed findings with evidence-backed possible explanations, and automatic investigations.</p>
               </div>
             </div>
@@ -983,13 +983,13 @@ export default function DailyToolsSection({
           )}
         </article>
 
-        {/* 3. DAILY ALERTS & NOTIFICATIONS */}
-        <article className={`${styles.card} ${styles.toolCard}`} aria-label="Daily Alerts and Notifications">
+        {/* 3. ALERTS & NOTIFICATIONS */}
+        <article className={`${styles.card} ${styles.toolCard}`} aria-label="Alerts and Notifications">
           <div className={styles.toolCardHeader}>
             <div className={styles.toolCardTitleRow}>
               <span className={styles.toolCardIcon}><Bell size={16} /></span>
               <div className={styles.cardTitleGroup}>
-                <h3 className={styles.cardTitle}>Daily Alerts &amp; Notifications</h3>
+                <h3 className={styles.cardTitle}>Alerts &amp; Notifications</h3>
                 <p className={styles.cardSub}>Threshold violations, unusual domain shifts, and customizable alert rules.</p>
               </div>
             </div>
@@ -1653,7 +1653,7 @@ export default function DailyToolsSection({
           ) : (
             <div className={styles.emptyBox}>
               <strong>No persisted reports in archive yet</strong>
-              <p>Enable Daily Report automation to populate your persisted report archive for comparison and PDF download.</p>
+              <p>Enable Report Automation to populate your persisted report archive for comparison and PDF download.</p>
             </div>
           )}
         </article>

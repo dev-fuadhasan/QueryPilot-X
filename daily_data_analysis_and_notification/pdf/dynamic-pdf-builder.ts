@@ -303,7 +303,7 @@ function renderIntelligenceBrief(cursor: PdfLayoutCursor, unified: DynamicPdfRep
   if (!brief) return;
 
   cursor.drawSectionHeading(
-    "Executive Summary — Daily Intelligence Brief",
+    "Executive Summary — Findings & Intelligence Brief",
     `Status: ${brief.status.replace(/_/g, " ")} · Derived strictly from verified database metrics`
   );
 
@@ -608,7 +608,7 @@ function renderSmartComparison(cursor: PdfLayoutCursor, comparison: SmartDayComp
 function renderAlertsSection(cursor: PdfLayoutCursor, alerts: DailyReportAlert[]): void {
   if (!alerts.length) return;
 
-  cursor.drawSectionHeading("Daily Alerts & Notifications", `${alerts.length} domain-aware alert(s) evaluated for this reporting period`);
+  cursor.drawSectionHeading("Alerts & Notifications", `${alerts.length} domain-aware alert(s) evaluated for this reporting period`);
 
   for (const alert of alerts.slice(0, 12)) {
     const sevColor = alert.severity === "critical"

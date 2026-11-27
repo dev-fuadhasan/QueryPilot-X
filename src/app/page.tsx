@@ -235,7 +235,7 @@ export default function Home() {
             <nav className="header-modules" aria-label="Workspace modules">
               <span className="header-workspace-label">WORKSPACE</span>
               <button type="button" className={"header-module " + (screen === "dashboard" ? "selected" : "")} aria-current={screen === "dashboard" ? "page" : undefined} onClick={() => setScreen("dashboard")}><BarChart3 size={16}/> Smart Dashboard and Analysis</button>
-              <button type="button" className={"header-module " + (screen === "daily-analysis" ? "selected" : "")} aria-current={screen === "daily-analysis" ? "page" : undefined} onClick={() => setScreen("daily-analysis")}><Bell size={16}/> Daily analysis</button>
+              <button type="button" className={"header-module " + (screen === "daily-analysis" ? "selected" : "")} aria-current={screen === "daily-analysis" ? "page" : undefined} onClick={() => setScreen("daily-analysis")}><Bell size={16}/> Smart Data Understanding</button>
               <button type="button" className={"header-module " + (screen === "fraud-detection" ? "selected" : "")} aria-current={screen === "fraud-detection" ? "page" : undefined} onClick={() => setScreen("fraud-detection")}><ShieldAlert size={16}/> Fraud detection</button>
             </nav>
             <div className="header-actions"><span className="connection-status"><i/>{session.projectName || "Supabase project"}</span>

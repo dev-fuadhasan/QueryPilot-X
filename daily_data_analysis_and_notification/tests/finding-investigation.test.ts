@@ -721,7 +721,7 @@ test("16. Executive Summary UI integration renders automatic investigation & col
   // Dashboard layout & Findings presentation requirements:
   // 1. Smart Comparison appears BEFORE Findings
   const smartComparisonIdx = html.indexOf('aria-label="Smart Comparison"');
-  const findingsIdx = html.indexOf('aria-label="Findings and Daily Intelligence Brief"');
+  const findingsIdx = html.indexOf('aria-label="Findings and Intelligence Brief"');
   assert.ok(smartComparisonIdx !== -1 && findingsIdx !== -1);
   assert.ok(smartComparisonIdx < findingsIdx, "Smart Comparison must render before Findings");
 
@@ -743,7 +743,7 @@ test("16. Executive Summary UI integration renders automatic investigation & col
   assert.doesNotMatch(html, /Next check:/i);
 
   // 6. General comparison period range is NOT repeated inside individual Finding cards
-  const findingsSectionHtml = html.slice(findingsIdx, html.indexOf('aria-label="Daily Alerts and Notifications"'));
+  const findingsSectionHtml = html.slice(findingsIdx, html.indexOf('aria-label="Alerts and Notifications"'));
   assert.doesNotMatch(findingsSectionHtml, /2024-05-08 to 2024-05-14/, "Current period date range must not repeat inside individual Findings");
   assert.doesNotMatch(findingsSectionHtml, /2024-05-01 to 2024-05-07/, "Reference period date range must not repeat inside individual Findings");
 });
