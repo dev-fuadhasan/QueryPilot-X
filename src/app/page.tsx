@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, BarChart3, Bell, Check, LockKeyhole, LogOut, ShieldCheck, ShieldAlert } from "lucide-react";
+import { ArrowLeft, ArrowRight, BarChart3, Bell, Check, LockKeyhole, LogOut, ShieldCheck, ShieldAlert, User } from "lucide-react";
 import type { Table } from "@features/smart_data_analysis_and_visualization/components/DatasetsPanel";
 import DailyAnalysisDashboard from "@features/daily_data_analysis_and_notification/components/DailyAnalysisDashboard";
 import FraudDetectionDashboard from "@features/fraud_detection_and_notification/components/FraudDetectionDashboard";
+import ProfileSettingsPanel from "@features/fraud_detection_and_notification/components/ProfileSettingsPanel";
 import SmartWorkspace from "@features/smart_data_analysis_and_visualization/components/SmartWorkspace";
 import LandingPage from "@/components/LandingPage";
 
@@ -20,7 +21,7 @@ type Session = {
   mode: "oauth" | "postgres" | null;
 };
 
-type Screen = "home" | "setup" | "dashboard" | "daily-analysis" | "fraud-detection";
+type Screen = "home" | "setup" | "dashboard" | "daily-analysis" | "fraud-detection" | "profile";
 
 function SupabaseMark({ size = 22 }: { size?: number }) {
   return (
@@ -228,7 +229,7 @@ export default function Home() {
 
       {session && screen === "home" && <LandingPage onStart={beginSetup} />}
 
-      {session && (screen === "dashboard" || screen === "daily-analysis" || screen === "fraud-detection") && (
+      {session && (screen === "dashboard" || screen === "daily-analysis" || screen === "fraud-detection" || screen === "profile") && (
         <div className="workspace">
           <header className="workspace-header">
             <div className="brand-inline"><img className="brand-logo" src="/querypilot-logo.svg" alt="QueryPilot logo" width={36} height={36}/>Query<strong>Pilot</strong></div>
@@ -239,6 +240,14 @@ export default function Home() {
               <button type="button" className={"header-module " + (screen === "fraud-detection" ? "selected" : "")} aria-current={screen === "fraud-detection" ? "page" : undefined} onClick={() => setScreen("fraud-detection")}><ShieldAlert size={16}/> Fraud detection</button>
             </nav>
             <div className="header-actions"><span className="connection-status"><i/>{session.projectName || "Supabase project"}</span>
+              <button
+                className={"small-button " + (screen === "profile" ? "active" : "")}
+                style={screen === "profile" ? { background: "#0f172a", color: "#fff", borderColor: "#0f172a" } : undefined}
+                onClick={() => setScreen("profile")}
+                title="View Profile and Notification Settings"
+              >
+                <User size={13}/> Profile
+              </button>
               <button className="small-button" onClick={() => { setScreen("setup"); }}>Switch</button>
               <button className="icon-button" title="Disconnect" aria-label="Disconnect" disabled={busy} onClick={disconnect}><LogOut size={18}/></button>
             </div>
@@ -249,6 +258,7 @@ export default function Home() {
             </main>
             {screen === "daily-analysis" && <main className="main-panel"><DailyAnalysisDashboard onBack={() => setScreen("dashboard")}/></main>}
             {screen === "fraud-detection" && <main className="main-panel"><FraudDetectionDashboard/></main>}
+            {screen === "profile" && <main className="main-panel"><ProfileSettingsPanel onBack={() => setScreen("dashboard")} onNavigate={(s) => setScreen(s as Screen)}/></main>}
           </div>
         </div>
       )}
