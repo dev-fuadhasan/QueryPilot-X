@@ -543,6 +543,7 @@ export async function generateAndPersistManualReport(input: {
   overrides?: Record<string, string>;
   earliestAvailableDate?: string | null;
   latestAvailableDate?: string | null;
+  anchorToDatasetDates?: boolean;
   sessionCacheKey?: string;
   now?: Date;
 }): Promise<{ record: PersistentReportRecord; downloadUrl: string }> {
@@ -565,13 +566,20 @@ export async function generateAndPersistManualReport(input: {
     timezone: tz,
     comparisonPreset: input.comparisonPreset ?? (input.quickRange === "all_history" ? "none" : "previous_30_days"),
     overrides: input.overrides,
+    allowMediumConfidence: true,
+    includeAllDatasetColumns: true,
+    anchorToDatasetDates: input.anchorToDatasetDates === true,
     sessionCacheKey: input.sessionCacheKey,
     now: input.now
   });
 
+  const resolvedStart = input.anchorToDatasetDates ? unified.analysis.reportingPeriod.start : periodStart;
+  const resolvedEnd = input.anchorToDatasetDates ? unified.analysis.reportingPeriod.end : periodEnd;
+  const resolvedReportingDate = input.anchorToDatasetDates ? resolvedEnd : reportingDate;
+
   const reportId = randomUUID();
   const summaryText = unified.tools.intelligenceBrief?.executiveSummary
-    || `${unified.domainName} manual report (${periodStart} to ${periodEnd})`;
+    || `${unified.domainName} manual report (${resolvedStart} to ${resolvedEnd})`;
 
   let saved = await input.repository.saveReport({
     id: reportId,
@@ -580,9 +588,9 @@ export async function generateAndPersistManualReport(input: {
     domainId: unified.domainId,
     domainName: unified.domainName,
     datasetTable: unified.tableName,
-    reportingDate,
-    periodStart,
-    periodEnd,
+    reportingDate: resolvedReportingDate,
+    periodStart: resolvedStart,
+    periodEnd: resolvedEnd,
     comparisonStart: unified.comparisonPeriod?.start ?? null,
     comparisonEnd: unified.comparisonPeriod?.end ?? null,
     comparisonPreset: unified.comparisonPeriod?.preset ?? null,
@@ -676,6 +684,8 @@ export async function runScheduledReports(input: {
   now?: Date;
   forceDue?: boolean;
   organizationIdFilter?: string;
+  anchorToDatasetDates?: boolean;
+  comparisonPresetOverride?: ComparisonPreset;
 }): Promise<SchedulerBatchResult> {
   const now = input.now || new Date();
   const pdfStorage = input.pdfStorage || createDefaultPdfStorage();
@@ -741,12 +751,14 @@ export async function runScheduledReports(input: {
             throw new Error(`No configured read-only source database connector is available for organisation "${settings.organizationId}".`);
           }
 
-          const comparisonPreset: ComparisonPreset = settings.frequency === "daily"
-            ? settings.comparisonPreset || "previous_day"
-            : settings.frequency === "weekly"
-              ? "previous_week"
-              : "previous_month";
+          const comparisonPreset: ComparisonPreset = input.comparisonPresetOverride
+            || (settings.frequency === "daily"
+              ? "previous_day"
+              : settings.frequency === "weekly"
+                ? "previous_week"
+                : "previous_month");
 
+          const anchorDates = input.anchorToDatasetDates === true;
           const unified = await runUnifiedDailyAnalysisWithExecutor(executor, settings.selectedDataset, {
             domainId: settings.selectedDomain,
             periodStart: period.periodStart,
@@ -754,17 +766,24 @@ export async function runScheduledReports(input: {
             timezone: settings.timezone,
             comparisonPreset,
             overrides: settings.columnOverrides,
+            allowMediumConfidence: anchorDates ? true : undefined,
+            includeAllDatasetColumns: anchorDates ? true : undefined,
+            anchorToDatasetDates: anchorDates,
             alertRules: settings.alertRules,
             expectedCadence: settings.expectedCadence,
             now
           });
 
+          const resolvedStart = anchorDates ? unified.analysis.reportingPeriod.start : period.periodStart;
+          const resolvedEnd = anchorDates ? unified.analysis.reportingPeriod.end : period.periodEnd;
+          const resolvedReportingDate = anchorDates ? resolvedEnd : period.reportingDate;
+
           const historicalContext = await buildHistoricalContextForReport({
             executor,
             tableName: settings.selectedDataset,
             domainId: unified.domainId,
-            periodStart: period.periodStart,
-            periodEnd: period.periodEnd,
+            periodStart: resolvedStart,
+            periodEnd: resolvedEnd,
             frequency: settings.frequency,
             timezone: settings.timezone,
             overrides: settings.columnOverrides,
@@ -783,9 +802,9 @@ export async function runScheduledReports(input: {
             domainId: unified.domainId,
             domainName: unified.domainName,
             datasetTable: unified.tableName,
-            reportingDate: period.reportingDate,
-            periodStart: period.periodStart,
-            periodEnd: period.periodEnd,
+            reportingDate: resolvedReportingDate,
+            periodStart: resolvedStart,
+            periodEnd: resolvedEnd,
             comparisonStart: unified.comparisonPeriod?.start ?? null,
             comparisonEnd: unified.comparisonPeriod?.end ?? null,
             comparisonPreset: unified.comparisonPeriod?.preset ?? null,
@@ -794,7 +813,7 @@ export async function runScheduledReports(input: {
             executionKey,
             status: "generated",
             summaryText: unified.tools.intelligenceBrief?.executiveSummary
-              || `${unified.domainName} ${settings.frequency} report (${period.periodStart} to ${period.periodEnd})`,
+              || `${unified.domainName} ${settings.frequency} report (${resolvedStart} to ${resolvedEnd})`,
             reportPayload: reportPayloadWithContext,
             pdfStatus: "not_generated",
             pdfStorageKey: null,

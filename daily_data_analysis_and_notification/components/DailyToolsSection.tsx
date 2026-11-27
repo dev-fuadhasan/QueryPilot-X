@@ -646,8 +646,6 @@ export default function DailyToolsSection({
                     type="date"
                     className={styles.textInput}
                     value={effectiveDraftStart}
-                    min={earliestAvailableDate || undefined}
-                    max={latestAvailableDate || undefined}
                     onChange={event => {
                       setDraftStartDate(event.target.value);
                       setManualDateError(null);
@@ -663,8 +661,6 @@ export default function DailyToolsSection({
                     type="date"
                     className={styles.textInput}
                     value={effectiveDraftEnd}
-                    min={earliestAvailableDate || undefined}
-                    max={latestAvailableDate || undefined}
                     onChange={event => {
                       setDraftEndDate(event.target.value);
                       setManualDateError(null);

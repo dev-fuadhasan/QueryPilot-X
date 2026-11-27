@@ -298,6 +298,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const shouldAnchorToDatasetDates = typeof body.anchorToDatasetDates === "boolean"
+      ? body.anchorToDatasetDates
+      : quickRange !== "custom";
+
     try {
       // First try full repository + shared PDF storage persistence (Postgres in prod or SQLite in dev)
       const repository = getPersistentReportRepository();
@@ -317,6 +321,7 @@ export async function POST(request: NextRequest) {
         overrides: Object.keys(overrides).length ? overrides : undefined,
         earliestAvailableDate,
         latestAvailableDate,
+        anchorToDatasetDates: shouldAnchorToDatasetDates,
         sessionCacheKey
       });
 
@@ -371,12 +376,19 @@ export async function POST(request: NextRequest) {
               ? "none"
               : "previous_30_days",
           overrides: Object.keys(overrides).length ? overrides : undefined,
+          allowMediumConfidence: true,
+          includeAllDatasetColumns: true,
+          anchorToDatasetDates: shouldAnchorToDatasetDates,
           sessionCacheKey
         });
 
+        const resolvedStart = shouldAnchorToDatasetDates ? unified.analysis.reportingPeriod.start : periodStart;
+        const resolvedEnd = shouldAnchorToDatasetDates ? unified.analysis.reportingPeriod.end : periodEnd;
+        const resolvedReportingDate = shouldAnchorToDatasetDates ? resolvedEnd : reportingDate;
+
         const reportId = randomUUID();
         const summaryText = unified.tools.intelligenceBrief?.executiveSummary
-          || `${unified.domainName} manual report (${periodStart} to ${periodEnd})`;
+          || `${unified.domainName} manual report (${resolvedStart} to ${resolvedEnd})`;
 
         const record: PersistentReportRecord = {
           id: `cloud_${reportId.slice(0, 8)}`,
@@ -385,9 +397,9 @@ export async function POST(request: NextRequest) {
           domainId: unified.domainId,
           domainName: unified.domainName,
           datasetTable: unified.tableName,
-          reportingDate,
-          periodStart,
-          periodEnd,
+          reportingDate: resolvedReportingDate,
+          periodStart: resolvedStart,
+          periodEnd: resolvedEnd,
           comparisonStart: unified.comparisonPeriod?.start ?? null,
           comparisonEnd: unified.comparisonPeriod?.end ?? null,
           comparisonPreset: unified.comparisonPeriod?.preset ?? null,
@@ -423,8 +435,8 @@ export async function POST(request: NextRequest) {
             domainName: record.domainName,
             datasetTable: record.datasetTable,
             frequency: "manual",
-            periodStart,
-            periodEnd,
+            periodStart: resolvedStart,
+            periodEnd: resolvedEnd,
             generationType: "manual",
             summaryText
           }

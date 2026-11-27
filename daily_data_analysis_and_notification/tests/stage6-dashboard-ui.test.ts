@@ -371,6 +371,9 @@ test("React UI components render real multi-domain backend intelligence without 
   assert.match(dailyHtml, /All Data \(Full Dataset\)/);
   assert.match(dailyHtml, /Asia\/Dhaka/);
   assert.match(dailyHtml, /Storage not configured/);
+  // Manual date inputs must not lock selectable years with min/max bounds
+  assert.doesNotMatch(dailyHtml, /id="qp-pdf-manual-start"[^>]*\b(?:min|max)=/);
+  assert.doesNotMatch(dailyHtml, /id="qp-pdf-manual-end"[^>]*\b(?:min|max)=/);
 
   // Render ManualReportPanel
   const manualHtml = renderToStaticMarkup(React.createElement(ManualReportPanel, {
@@ -421,6 +424,8 @@ test("React UI components render real multi-domain backend intelligence without 
   assert.match(toolsHtml, /Data Health/);
   assert.match(toolsHtml, /Archive &amp; Compare/);
   assert.match(toolsHtml, /Inventory &amp; Supply Chain/);
+  assert.doesNotMatch(toolsHtml, /id="qp-manual-start"[^>]*\b(?:min|max)=/);
+  assert.doesNotMatch(toolsHtml, /id="qp-manual-end"[^>]*\b(?:min|max)=/);
   assert.equal(getAmbiguousColumnMatches(null).length, 0);
 });
 

@@ -37,11 +37,24 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const ALLOWED_COMPARISON_PRESETS = new Set<ComparisonPreset>([
+  "previous_day",
+  "previous_week",
+  "previous_month",
+  "previous_7_days",
+  "previous_30_days",
+  "previous_90_days",
+  "previous_180_days",
+  "previous_365_days",
+  "same_weekday_previous_weeks",
+  "custom",
+  "none"
+]);
+
 /**
  * Authenticated session-backed runner for due automatic reports.
- * Automatically prioritizes cloud storage when configured, and transparently falls back
- * to temporary gitignored local storage (`daily_data_analysis_and_notification/generated-reports/`)
- * until cloud storage is configured.
+ * Uses the exact same dataset-anchored Smart Comparison date logic so automatic PDFs
+ * always analyze real active dataset periods instead of empty wall-clock dates.
  */
 export async function POST(request: NextRequest) {
   const access = await readDailyAnalysisSession(request, true);
@@ -50,6 +63,7 @@ export async function POST(request: NextRequest) {
   let forceRun = false;
   let requestedDataset: string | null = null;
   let requestedDomain: BusinessDomainId | null = null;
+  let requestedComparisonPreset: ComparisonPreset | undefined;
   try {
     const body = await request.json() as Record<string, unknown>;
     if (typeof body?.forceRun === "boolean") {
@@ -60,6 +74,9 @@ export async function POST(request: NextRequest) {
     }
     if (typeof body?.domain === "string" && (BUSINESS_DOMAIN_IDS as readonly string[]).includes(body.domain)) {
       requestedDomain = body.domain as BusinessDomainId;
+    }
+    if (typeof body?.comparisonPreset === "string" && ALLOWED_COMPARISON_PRESETS.has(body.comparisonPreset as ComparisonPreset)) {
+      requestedComparisonPreset = body.comparisonPreset as ComparisonPreset;
     }
   } catch {
     // Empty body is valid
@@ -100,7 +117,9 @@ export async function POST(request: NextRequest) {
       resolveSourceExecutor: async orgId => (orgId === organizationId ? executor : null),
       storageUserId,
       organizationIdFilter: organizationId,
-      forceDue: forceRun
+      forceDue: forceRun,
+      anchorToDatasetDates: true,
+      comparisonPresetOverride: requestedComparisonPreset
     });
 
     let generated = result.outcomes.some(o => o.status === "generated" || o.status === "retried_pdf");
@@ -142,11 +161,12 @@ export async function POST(request: NextRequest) {
       if (effectiveSettings.selectedDataset && (!existingLatest || !existingPdfValid)) {
         const now = new Date();
         const period = getPreviousCompletedPeriod(effectiveSettings.frequency, effectiveSettings.timezone, now);
-        const comparisonPreset: ComparisonPreset = effectiveSettings.frequency === "daily"
-          ? effectiveSettings.comparisonPreset || "previous_day"
-          : effectiveSettings.frequency === "weekly"
-            ? "previous_week"
-            : "previous_month";
+        const comparisonPreset: ComparisonPreset = requestedComparisonPreset
+          || (effectiveSettings.frequency === "daily"
+            ? "previous_day"
+            : effectiveSettings.frequency === "weekly"
+              ? "previous_week"
+              : "previous_month");
 
         const unified = await runUnifiedDailyAnalysisWithExecutor(executor, effectiveSettings.selectedDataset, {
           domainId: effectiveSettings.selectedDomain,
@@ -155,17 +175,23 @@ export async function POST(request: NextRequest) {
           timezone: effectiveSettings.timezone,
           comparisonPreset,
           overrides: effectiveSettings.columnOverrides,
+          allowMediumConfidence: true,
+          includeAllDatasetColumns: true,
+          anchorToDatasetDates: true,
           alertRules: effectiveSettings.alertRules,
           expectedCadence: effectiveSettings.expectedCadence,
           now
         });
 
+        const resolvedStart = unified.analysis.reportingPeriod.start;
+        const resolvedEnd = unified.analysis.reportingPeriod.end;
+
         const historicalContext = await buildHistoricalContextForReport({
           executor,
           tableName: effectiveSettings.selectedDataset,
           domainId: unified.domainId,
-          periodStart: period.periodStart,
-          periodEnd: period.periodEnd,
+          periodStart: resolvedStart,
+          periodEnd: resolvedEnd,
           frequency: effectiveSettings.frequency,
           timezone: effectiveSettings.timezone,
           overrides: effectiveSettings.columnOverrides,
@@ -184,9 +210,9 @@ export async function POST(request: NextRequest) {
           domainId: unified.domainId,
           domainName: unified.domainName,
           datasetTable: unified.tableName,
-          reportingDate: period.reportingDate,
-          periodStart: period.periodStart,
-          periodEnd: period.periodEnd,
+          reportingDate: resolvedEnd,
+          periodStart: resolvedStart,
+          periodEnd: resolvedEnd,
           comparisonStart: unified.comparisonPeriod?.start ?? null,
           comparisonEnd: unified.comparisonPeriod?.end ?? null,
           comparisonPreset: unified.comparisonPeriod?.preset ?? null,
@@ -195,7 +221,7 @@ export async function POST(request: NextRequest) {
           executionKey: null,
           status: "generated",
           summaryText: unified.tools.intelligenceBrief?.executiveSummary
-            || `${unified.domainName} ${effectiveSettings.frequency} report (${period.periodStart} to ${period.periodEnd})`,
+            || `${unified.domainName} ${effectiveSettings.frequency} report (${resolvedStart} to ${resolvedEnd})`,
           reportPayload: reportPayloadWithContext,
           pdfStatus: "not_generated",
           pdfStorageKey: null,
@@ -334,11 +360,12 @@ export async function POST(request: NextRequest) {
         ));
       }
 
-      const comparisonPreset: ComparisonPreset = settings.frequency === "daily"
-        ? settings.comparisonPreset || "previous_day"
-        : settings.frequency === "weekly"
-          ? "previous_week"
-          : "previous_month";
+      const comparisonPreset: ComparisonPreset = requestedComparisonPreset
+        || (settings.frequency === "daily"
+          ? "previous_day"
+          : settings.frequency === "weekly"
+            ? "previous_week"
+            : "previous_month");
 
       const unified = await runUnifiedDailyAnalysisWithExecutor(executor, settings.selectedDataset, {
         domainId: settings.selectedDomain,
@@ -347,17 +374,23 @@ export async function POST(request: NextRequest) {
         timezone: settings.timezone,
         comparisonPreset,
         overrides: settings.columnOverrides,
+        allowMediumConfidence: true,
+        includeAllDatasetColumns: true,
+        anchorToDatasetDates: true,
         alertRules: settings.alertRules,
         expectedCadence: settings.expectedCadence,
         now
       });
 
+      const resolvedStart = unified.analysis.reportingPeriod.start;
+      const resolvedEnd = unified.analysis.reportingPeriod.end;
+
       const historicalContext = await buildHistoricalContextForReport({
         executor,
         tableName: settings.selectedDataset,
         domainId: unified.domainId,
-        periodStart: period.periodStart,
-        periodEnd: period.periodEnd,
+        periodStart: resolvedStart,
+        periodEnd: resolvedEnd,
         frequency: settings.frequency,
         timezone: settings.timezone,
         overrides: settings.columnOverrides,
@@ -376,9 +409,9 @@ export async function POST(request: NextRequest) {
         domainId: unified.domainId,
         domainName: unified.domainName,
         datasetTable: unified.tableName,
-        reportingDate: period.reportingDate,
-        periodStart: period.periodStart,
-        periodEnd: period.periodEnd,
+        reportingDate: resolvedEnd,
+        periodStart: resolvedStart,
+        periodEnd: resolvedEnd,
         comparisonStart: unified.comparisonPeriod?.start ?? null,
         comparisonEnd: unified.comparisonPeriod?.end ?? null,
         comparisonPreset: unified.comparisonPeriod?.preset ?? null,
@@ -387,7 +420,7 @@ export async function POST(request: NextRequest) {
         executionKey: null,
         status: "generated",
         summaryText: unified.tools.intelligenceBrief?.executiveSummary
-          || `${unified.domainName} ${settings.frequency} report (${period.periodStart} to ${period.periodEnd})`,
+          || `${unified.domainName} ${settings.frequency} report (${resolvedStart} to ${resolvedEnd})`,
         reportPayload: reportPayloadWithContext,
         pdfStatus: "not_generated",
         pdfStorageKey: null,
@@ -416,8 +449,8 @@ export async function POST(request: NextRequest) {
           domainName: record.domainName,
           datasetTable: record.datasetTable,
           frequency: settings.frequency,
-          periodStart: period.periodStart,
-          periodEnd: period.periodEnd,
+          periodStart: resolvedStart,
+          periodEnd: resolvedEnd,
           generationType: "automatic",
           summaryText: record.summaryText
         }

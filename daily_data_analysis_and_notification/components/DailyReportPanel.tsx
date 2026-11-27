@@ -27,7 +27,6 @@ import {
   formatShortTimestamp,
   isReportPdfDownloadable,
   resolveAutoReportDisplayState,
-  validateManualRangeSelection,
   validateScheduleFormInput
 } from "./dashboard-helpers";
 import styles from "./DailyAnalysisDashboard.module.css";
@@ -70,8 +69,6 @@ export default function DailyReportPanel({
   storageStatus,
   scheduleSummary,
   latestStoredReport,
-  earliestAvailableDate = null,
-  latestAvailableDate = null,
   defaultComparisonPreset = "previous_30_days",
   loadingSettings,
   savingSchedule,
@@ -209,26 +206,27 @@ export default function DailyReportPanel({
 
   async function handleGeneratePdfClick() {
     if (!onGeneratePdf || generatingPdf || !selectedDataset) return;
-    const hasStart = Boolean(manualStartDate.trim());
-    const hasEnd = Boolean(manualEndDate.trim());
+    const start = manualStartDate.trim();
+    const end = manualEndDate.trim();
 
-    if (hasStart || hasEnd) {
-      const check = validateManualRangeSelection({
-        quickRange: "custom",
-        startDate: manualStartDate,
-        endDate: manualEndDate,
-        earliestAvailableDate,
-        latestAvailableDate
-      });
-      if (!check.valid) {
-        setManualDateError(check.error);
+    if (start || end) {
+      if (!start || !end) {
+        setManualDateError("Select both a Start Date and an End Date.");
+        return;
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+        setManualDateError("Dates must use YYYY-MM-DD format.");
+        return;
+      }
+      if (start > end) {
+        setManualDateError("Start Date cannot be after End Date.");
         return;
       }
       setManualDateError(null);
       await onGeneratePdf({
         comparisonPreset: referencePreset,
-        startDate: manualStartDate.trim(),
-        endDate: manualEndDate.trim()
+        startDate: start,
+        endDate: end
       });
       return;
     }
@@ -432,8 +430,6 @@ export default function DailyReportPanel({
                         aria-label="Manual PDF start date"
                         className={styles.textInput}
                         value={manualStartDate}
-                        min={earliestAvailableDate || undefined}
-                        max={latestAvailableDate || undefined}
                         disabled={generatingPdf}
                         onChange={event => {
                           setManualStartDate(event.target.value);
@@ -446,8 +442,6 @@ export default function DailyReportPanel({
                         aria-label="Manual PDF end date"
                         className={styles.textInput}
                         value={manualEndDate}
-                        min={manualStartDate || earliestAvailableDate || undefined}
-                        max={latestAvailableDate || undefined}
                         disabled={generatingPdf}
                         onChange={event => {
                           setManualEndDate(event.target.value);
