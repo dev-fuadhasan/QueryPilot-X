@@ -349,7 +349,7 @@ export function resolveAutoReportDisplayState(input: {
     };
   }
 
-  if (input.storageStatus && !input.storageStatus.schedulerProductionReady) {
+  if (input.storageStatus && !input.storageStatus.schedulerProductionReady && input.storageStatus.pdfBackend === "unconfigured") {
     return {
       code: "storage_not_configured",
       label: "Storage not configured",
@@ -360,7 +360,7 @@ export function resolveAutoReportDisplayState(input: {
 
   return {
     code: "scheduled",
-    label: "Scheduled",
+    label: input.storageStatus && !input.storageStatus.pdfProductionReady ? "Scheduled (Local)" : "Scheduled",
     tone: "info",
     detail: input.scheduleSummary?.nextExecution
       ? `Next scheduled target period: ${input.scheduleSummary.nextExecution.targetPeriod.periodStart} to ${input.scheduleSummary.nextExecution.targetPeriod.periodEnd}.`

@@ -15,6 +15,7 @@ import {
   renderValidatedPdfForPayload,
   toArchivedReportFromPersistent
 } from "@/../daily_data_analysis_and_notification/storage";
+import { findLocalDailyPdfByReportId } from "@/../daily_data_analysis_and_notification/storage/shared-cloud-storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,11 +46,46 @@ export async function GET(request: NextRequest, context: RouteContext) {
     return NextResponse.json({ error: "Invalid compareWith report identifier." }, { status: 400 });
   }
 
+  const storageUserId = deriveUserIdFromSession(access.session);
+
+  // Fast path: temporary locally stored PDFs (`local_<fileId>`) scoped strictly to this user
+  if (!compareWithId && reportId.startsWith("local_")) {
+    const localPdf = await findLocalDailyPdfByReportId(storageUserId, reportId);
+    if (localPdf) {
+      return access.applyCookie(new NextResponse(new Uint8Array(localPdf.bytes), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `attachment; filename="${localPdf.filename}"`,
+          "Content-Length": String(localPdf.bytes.byteLength),
+          "Cache-Control": "private, no-store",
+          "X-Content-Type-Options": "nosniff"
+        }
+      }));
+    }
+    return NextResponse.json({ error: "Report PDF not found in local archive." }, { status: 404 });
+  }
+
   try {
     const organizationId = deriveOrganizationId(access.session);
     const repository = getPersistentReportRepository();
     const record = await repository.getReportById(organizationId, reportId);
     if (!record) {
+      if (!compareWithId) {
+        const localPdf = await findLocalDailyPdfByReportId(storageUserId, reportId);
+        if (localPdf) {
+          return access.applyCookie(new NextResponse(new Uint8Array(localPdf.bytes), {
+            status: 200,
+            headers: {
+              "Content-Type": "application/pdf",
+              "Content-Disposition": `attachment; filename="${localPdf.filename}"`,
+              "Content-Length": String(localPdf.bytes.byteLength),
+              "Cache-Control": "private, no-store",
+              "X-Content-Type-Options": "nosniff"
+            }
+          }));
+        }
+      }
       return NextResponse.json({ error: "Report not found." }, { status: 404 });
     }
     if (record.status === "failed") {
@@ -150,6 +186,21 @@ export async function GET(request: NextRequest, context: RouteContext) {
       }
     }));
   } catch (error) {
+    if (!compareWithId) {
+      const localPdf = await findLocalDailyPdfByReportId(storageUserId, reportId).catch(() => null);
+      if (localPdf) {
+        return access.applyCookie(new NextResponse(new Uint8Array(localPdf.bytes), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/pdf",
+            "Content-Disposition": `attachment; filename="${localPdf.filename}"`,
+            "Content-Length": String(localPdf.bytes.byteLength),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff"
+          }
+        }));
+      }
+    }
     const message = error instanceof Error ? error.message : "Could not download the PDF.";
     const status = /development mode|not configured/i.test(message) ? 503 : 500;
     return NextResponse.json({ error: message }, { status });
