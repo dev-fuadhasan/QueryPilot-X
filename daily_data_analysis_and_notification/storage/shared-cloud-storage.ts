@@ -7,7 +7,11 @@ import { downloadFile, listUserFiles, uploadFile } from "@/lib/storage/service";
 import type { StoredFileDescriptor } from "@/lib/storage/types";
 import { validateUserId } from "@/lib/storage/validation";
 import type { BusinessDomainId } from "../profiler/types";
-import { assertValidPdfBuffer, getDefaultLocalReportsDirectory } from "./pdf-storage";
+import {
+  assertValidPdfBuffer,
+  getDefaultLocalReportsDirectory,
+  getServerlessTempReportsDirectory
+} from "./pdf-storage";
 import type {
   PersistentDailySettings,
   PersistentReportSummary,
@@ -56,8 +60,7 @@ function settingsStorageKey(userId: string): string {
   return `${validateUserId(userId)}/general/daily-analysis-settings.json`;
 }
 
-function resolveLocalPath(key: string): string {
-  const root = getLocalStorageRoot();
+function resolvePathInRoot(root: string, key: string): string {
   const normalized = key.replace(/\\/g, "/").replace(/^\/+/, "");
   const target = path.resolve(root, normalized);
   const rel = path.relative(root, target);
@@ -65,6 +68,39 @@ function resolveLocalPath(key: string): string {
     throw new Error("Invalid local storage path.");
   }
   return target;
+}
+
+function resolveLocalPath(key: string): string {
+  return resolvePathInRoot(getLocalStorageRoot(), key);
+}
+
+function getCandidateLocalRoots(): string[] {
+  const primary = path.resolve(getLocalStorageRoot());
+  const fallback = getServerlessTempReportsDirectory();
+  return primary === fallback ? [primary] : [primary, fallback];
+}
+
+function isWritableFallbackError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOENT" || code === "EROFS" || code === "EACCES" || code === "EPERM";
+}
+
+async function writeFileWithTempFallback(key: string, data: Buffer | string): Promise<string> {
+  const primaryPath = resolveLocalPath(key);
+  try {
+    await mkdir(path.dirname(primaryPath), { recursive: true });
+    await writeFile(primaryPath, data);
+    return primaryPath;
+  } catch (error) {
+    const fallbackRoot = getServerlessTempReportsDirectory();
+    if (!isWritableFallbackError(error) || path.resolve(getLocalStorageRoot()) === fallbackRoot) {
+      throw error;
+    }
+    const fallbackPath = resolvePathInRoot(fallbackRoot, key);
+    await mkdir(path.dirname(fallbackPath), { recursive: true });
+    await writeFile(fallbackPath, data);
+    return fallbackPath;
+  }
 }
 
 export function isSharedStorageConfigured(): boolean {
@@ -92,15 +128,17 @@ export async function loadSharedSettingsEnvelope(userId: string): Promise<Stored
     }
   }
 
-  // Priority 2: Temporary local gitignored module storage (`daily_data_analysis_and_notification/generated-reports/`)
-  try {
-    const text = await readFile(resolveLocalPath(key), "utf8");
-    const parsed = JSON.parse(text) as StoredSettingsEnvelope;
-    if (parsed && typeof parsed === "object" && parsed.settings) {
-      return parsed;
+  // Priority 2: Temporary local gitignored module storage (or /tmp on serverless deployments)
+  for (const root of getCandidateLocalRoots()) {
+    try {
+      const text = await readFile(resolvePathInRoot(root, key), "utf8");
+      const parsed = JSON.parse(text) as StoredSettingsEnvelope;
+      if (parsed && typeof parsed === "object" && parsed.settings) {
+        return parsed;
+      }
+    } catch {
+      continue;
     }
-  } catch {
-    return null;
   }
 
   return null;
@@ -142,12 +180,10 @@ export async function saveSharedSettingsEnvelope(
     }
   }
 
-  // Priority 2: Temporary local module storage fallback
+  // Priority 2: Temporary local module storage fallback (auto-falls back to /tmp on read-only serverless FS)
   if (!savedToCloud) {
     try {
-      const localTarget = resolveLocalPath(key);
-      await mkdir(path.dirname(localTarget), { recursive: true });
-      await writeFile(localTarget, payload);
+      await writeFileWithTempFallback(key, payload);
     } catch (localErr) {
       const localMsg = localErr instanceof Error ? localErr.message : String(localErr);
       throw new Error(cloudError || `Unable to save Daily Analysis settings locally: ${localMsg}`);
@@ -169,13 +205,10 @@ async function savePdfToTemporaryLocalFolder(input: {
   const safeFilename = sanitizeFilename(input.filename);
   const fileId = randomUUID().replace(/-/g, "").slice(0, 12);
   const storageKey = `${safeUserId}/reports/${fileId}-${safeFilename}`;
-  const fullPath = resolveLocalPath(storageKey);
-
-  await mkdir(path.dirname(fullPath), { recursive: true });
-  await writeFile(fullPath, input.bytes);
+  const writtenPath = await writeFileWithTempFallback(storageKey, input.bytes);
 
   // Verify the saved PDF can be read back with a valid %PDF- header
-  const verifyBytes = await readFile(fullPath);
+  const verifyBytes = await readFile(writtenPath);
   assertValidPdfBuffer(verifyBytes);
 
   const createdAt = new Date().toISOString();
@@ -200,7 +233,7 @@ async function savePdfToTemporaryLocalFolder(input: {
       : undefined
   };
 
-  await writeFile(`${fullPath}.meta.json`, JSON.stringify(sidecar, null, 2), "utf8");
+  await writeFile(`${writtenPath}.meta.json`, JSON.stringify(sidecar, null, 2), "utf8");
 
   return {
     fileId,
@@ -257,15 +290,18 @@ export async function downloadDailyPdfFromSharedStorage(userId: string, storageK
     }
   }
 
-  // Priority 2: Temporary local module folder
-  try {
-    const localPath = resolveLocalPath(normalizedKey);
-    const bytes = await readFile(localPath);
-    assertValidPdfBuffer(bytes);
-    return bytes;
-  } catch {
-    return null;
+  // Priority 2: Temporary local module folder (or /tmp on serverless deployments)
+  for (const root of getCandidateLocalRoots()) {
+    try {
+      const localPath = resolvePathInRoot(root, normalizedKey);
+      const bytes = await readFile(localPath);
+      assertValidPdfBuffer(bytes);
+      return bytes;
+    } catch {
+      continue;
+    }
   }
+  return null;
 }
 
 export async function findLocalDailyPdfByReportId(
@@ -279,37 +315,40 @@ export async function findLocalDailyPdfByReportId(
   }
 
   const reportsDirKey = `${safeUserId}/reports`;
-  const reportsDir = resolveLocalPath(reportsDirKey);
-  let entries: string[];
-  try {
-    entries = await readdir(reportsDir);
-  } catch {
-    return null;
-  }
-
   const shortPrefix = cleanedId.slice(0, 8);
-  const pdfEntries = entries.filter(name => /\.pdf$/i.test(name));
-  for (const entry of pdfEntries) {
-    const matchesExact = entry.startsWith(`${cleanedId}-`) || entry === `${cleanedId}.pdf`;
-    const matchesShort = shortPrefix.length >= 6 && entry.startsWith(`${shortPrefix}-`);
-    if (!matchesExact && !matchesShort) continue;
 
-    const storageKey = `${reportsDirKey}/${entry}`;
+  for (const root of getCandidateLocalRoots()) {
+    const reportsDir = resolvePathInRoot(root, reportsDirKey);
+    let entries: string[];
     try {
-      const fullPath = resolveLocalPath(storageKey);
-      const bytes = await readFile(fullPath);
-      assertValidPdfBuffer(bytes);
-      let filename = entry.replace(/^[a-f0-9-]{6,36}-/i, "") || entry;
-      try {
-        const metaRaw = await readFile(`${fullPath}.meta.json`, "utf8");
-        const meta = JSON.parse(metaRaw) as LocalPdfSidecarMetadata;
-        if (meta?.filename) filename = meta.filename;
-      } catch {
-        // Sidecar optional
-      }
-      return { bytes, filename, storageKey };
+      entries = await readdir(reportsDir);
     } catch {
       continue;
+    }
+
+    const pdfEntries = entries.filter(name => /\.pdf$/i.test(name));
+    for (const entry of pdfEntries) {
+      const matchesExact = entry.startsWith(`${cleanedId}-`) || entry === `${cleanedId}.pdf`;
+      const matchesShort = shortPrefix.length >= 6 && entry.startsWith(`${shortPrefix}-`);
+      if (!matchesExact && !matchesShort) continue;
+
+      const storageKey = `${reportsDirKey}/${entry}`;
+      try {
+        const fullPath = resolvePathInRoot(root, storageKey);
+        const bytes = await readFile(fullPath);
+        assertValidPdfBuffer(bytes);
+        let filename = entry.replace(/^[a-f0-9-]{6,36}-/i, "") || entry;
+        try {
+          const metaRaw = await readFile(`${fullPath}.meta.json`, "utf8");
+          const meta = JSON.parse(metaRaw) as LocalPdfSidecarMetadata;
+          if (meta?.filename) filename = meta.filename;
+        } catch {
+          // Sidecar optional
+        }
+        return { bytes, filename, storageKey };
+      } catch {
+        continue;
+      }
     }
   }
 
@@ -411,55 +450,61 @@ async function listLocalTemporaryDailyPdfs(
 ): Promise<PersistentReportSummary[]> {
   const safeUserId = validateUserId(userId);
   const reportsDirKey = `${safeUserId}/reports`;
-  const reportsDir = resolveLocalPath(reportsDirKey);
-  let entries: string[];
-  try {
-    entries = await readdir(reportsDir);
-  } catch {
-    return [];
-  }
-
+  const seenKeys = new Set<string>();
   const summaries: PersistentReportSummary[] = [];
-  for (const entry of entries) {
-    if (!/\.pdf$/i.test(entry)) continue;
-    const storageKey = `${reportsDirKey}/${entry}`;
+
+  for (const root of getCandidateLocalRoots()) {
+    const reportsDir = resolvePathInRoot(root, reportsDirKey);
+    let entries: string[];
     try {
-      const fullPath = resolveLocalPath(storageKey);
-      const info = await stat(fullPath);
-      if (!info.isFile() || info.size < 100) continue;
-
-      let sidecar: LocalPdfSidecarMetadata | null = null;
-      try {
-        const raw = await readFile(`${fullPath}.meta.json`, "utf8");
-        sidecar = JSON.parse(raw) as LocalPdfSidecarMetadata;
-      } catch {
-        sidecar = null;
-      }
-
-      const prefixMatch = /^([a-zA-Z0-9_-]{6,36})-(.+\.pdf)$/i.exec(entry);
-      const fileId = sidecar?.fileId || (prefixMatch ? prefixMatch[1] : entry.replace(/\.pdf$/i, ""));
-      const filename = sidecar?.filename || (prefixMatch ? prefixMatch[2] : entry);
-      const createdAt = sidecar?.createdAt || info.mtime.toISOString();
-
-      summaries.push(
-        parsePdfDescriptorToSummary(
-          {
-            fileId,
-            userId: safeUserId,
-            category: "reports",
-            filename,
-            storageKey,
-            mimeType: "application/pdf",
-            sizeBytes: info.size,
-            backend: "local_secure_storage",
-            createdAt
-          },
-          organizationId,
-          sidecar?.metadata
-        )
-      );
+      entries = await readdir(reportsDir);
     } catch {
       continue;
+    }
+
+    for (const entry of entries) {
+      if (!/\.pdf$/i.test(entry)) continue;
+      const storageKey = `${reportsDirKey}/${entry}`;
+      if (seenKeys.has(storageKey)) continue;
+      try {
+        const fullPath = resolvePathInRoot(root, storageKey);
+        const info = await stat(fullPath);
+        if (!info.isFile() || info.size < 100) continue;
+
+        let sidecar: LocalPdfSidecarMetadata | null = null;
+        try {
+          const raw = await readFile(`${fullPath}.meta.json`, "utf8");
+          sidecar = JSON.parse(raw) as LocalPdfSidecarMetadata;
+        } catch {
+          sidecar = null;
+        }
+
+        const prefixMatch = /^([a-zA-Z0-9_-]{6,36})-(.+\.pdf)$/i.exec(entry);
+        const fileId = sidecar?.fileId || (prefixMatch ? prefixMatch[1] : entry.replace(/\.pdf$/i, ""));
+        const filename = sidecar?.filename || (prefixMatch ? prefixMatch[2] : entry);
+        const createdAt = sidecar?.createdAt || info.mtime.toISOString();
+
+        seenKeys.add(storageKey);
+        summaries.push(
+          parsePdfDescriptorToSummary(
+            {
+              fileId,
+              userId: safeUserId,
+              category: "reports",
+              filename,
+              storageKey,
+              mimeType: "application/pdf",
+              sizeBytes: info.size,
+              backend: "local_secure_storage",
+              createdAt
+            },
+            organizationId,
+            sidecar?.metadata
+          )
+        );
+      } catch {
+        continue;
+      }
     }
   }
 

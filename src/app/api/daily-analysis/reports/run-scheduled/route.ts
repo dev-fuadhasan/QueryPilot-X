@@ -248,14 +248,24 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const latestAuto = autoList.items[0] || null;
+    let pdfBase64: string | undefined;
+    if (generated && storageMode !== "cloud" && latestAuto?.pdfStatus === "generated" && latestAuto.pdfStorageKey) {
+      const storedBytes = await createDefaultPdfStorage().readPdf(latestAuto.pdfStorageKey).catch(() => null);
+      if (storedBytes) {
+        pdfBase64 = storedBytes.toString("base64");
+      }
+    }
+
     return access.applyCookie(NextResponse.json(
       {
         scheduler: result,
         generated,
-        latestAutomaticReport: autoList.items[0] || null,
+        latestAutomaticReport: latestAuto,
         error: failedOutcome?.error || null,
         storageStatus,
-        storageMode
+        storageMode,
+        ...(pdfBase64 ? { pdfBase64 } : {})
       },
       { headers: { "Cache-Control": "no-store" } }
     ));
@@ -435,7 +445,8 @@ export async function POST(request: NextRequest) {
           latestAutomaticReport,
           error: null,
           storageStatus,
-          storageMode: isCloud ? "cloud" : "local_temporary"
+          storageMode: isCloud ? "cloud" : "local_temporary",
+          ...(!isCloud ? { pdfBase64: pdfBytes.toString("base64") } : {})
         },
         { headers: { "Cache-Control": "no-store" } }
       ));

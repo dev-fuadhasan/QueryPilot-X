@@ -1,21 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
   CalendarClock,
   CheckCircle2,
   Clock,
-  Cloud,
   Download,
   FilePlus2,
-  FileText,
-  Info,
-  Save
+  FileText
 } from "lucide-react";
+import type { ComparisonPreset } from "../metrics/types";
 import type {
-  ManualQuickRange,
   PersistentDailySettings,
   PersistentReportSummary,
   ReportFrequency,
@@ -24,23 +21,22 @@ import type {
 import type { ScheduleRuntimeSummary } from "../storage/schedule-provider";
 import {
   COMMON_TIMEZONES,
+  COMPARISON_PRESET_OPTIONS,
   DAILY_FREQUENCY_OPTIONS,
   formatFileSize,
   formatShortTimestamp,
-  getFrequencyOption,
   isReportPdfDownloadable,
   resolveAutoReportDisplayState,
+  validateManualRangeSelection,
   validateScheduleFormInput
 } from "./dashboard-helpers";
 import styles from "./DailyAnalysisDashboard.module.css";
 
-const QUICK_EXPORT_RANGES: Array<{ value: Exclude<ManualQuickRange, "custom">; label: string }> = [
-  { value: "last_7_days", label: "Last 7 Days" },
-  { value: "last_30_days", label: "Last 30 Days" },
-  { value: "last_90_days", label: "Last 90 Days" },
-  { value: "last_365_days", label: "Last 365 Days" },
-  { value: "all_history", label: "All Available History" }
-];
+export type UnifiedPdfGenerateRequest = {
+  comparisonPreset: ComparisonPreset;
+  startDate?: string;
+  endDate?: string;
+};
 
 type DailyReportPanelProps = {
   settings: PersistentDailySettings | null;
@@ -48,10 +44,12 @@ type DailyReportPanelProps = {
   storageStatus: StorageCapabilityStatus | null;
   scheduleSummary: ScheduleRuntimeSummary | null;
   latestStoredReport?: PersistentReportSummary | null;
+  earliestAvailableDate?: string | null;
+  latestAvailableDate?: string | null;
+  defaultComparisonPreset?: ComparisonPreset;
   loadingSettings: boolean;
   savingSchedule: boolean;
   generatingPdf?: boolean;
-  runningScheduledNow?: boolean;
   pdfGenerateError?: string | null;
   pdfGenerateNotice?: string | null;
   downloadingReportId: string | null;
@@ -62,8 +60,7 @@ type DailyReportPanelProps = {
     scheduledTime: string;
     timezone: string;
   }) => Promise<void>;
-  onRunScheduledNow?: () => Promise<void>;
-  onGenerateQuickPdf?: (quickRange: Exclude<ManualQuickRange, "custom">) => Promise<void>;
+  onGeneratePdf?: (payload: UnifiedPdfGenerateRequest) => Promise<void>;
   onDownloadPdf: (report: PersistentReportSummary) => Promise<void>;
 };
 
@@ -73,25 +70,31 @@ export default function DailyReportPanel({
   storageStatus,
   scheduleSummary,
   latestStoredReport,
+  earliestAvailableDate = null,
+  latestAvailableDate = null,
+  defaultComparisonPreset = "previous_30_days",
   loadingSettings,
   savingSchedule,
   generatingPdf = false,
-  runningScheduledNow = false,
   pdfGenerateError = null,
   pdfGenerateNotice = null,
   downloadingReportId,
   saveFeedback,
   onSaveSchedule,
-  onRunScheduledNow,
-  onGenerateQuickPdf,
+  onGeneratePdf,
   onDownloadPdf
 }: DailyReportPanelProps) {
   const [frequency, setFrequency] = useState<ReportFrequency>(settings?.frequency || "daily");
   const [scheduledTime, setScheduledTime] = useState<string>(settings?.scheduledTime || "00:15");
   const [timezone, setTimezone] = useState<string>(settings?.timezone || "Asia/Dhaka");
   const [autoReportEnabled, setAutoReportEnabled] = useState<boolean>(settings?.autoReportEnabled ?? true);
-  const [quickRange, setQuickRange] = useState<Exclude<ManualQuickRange, "custom">>("last_30_days");
+  const [referencePreset, setReferencePreset] = useState<ComparisonPreset>(defaultComparisonPreset);
+  const [manualStartDate, setManualStartDate] = useState<string>("");
+  const [manualEndDate, setManualEndDate] = useState<string>("");
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [manualDateError, setManualDateError] = useState<string | null>(null);
+
+  const timeSaveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!settings) return;
@@ -101,7 +104,14 @@ export default function DailyReportPanel({
     setAutoReportEnabled(settings.autoReportEnabled);
   }, [settings]);
 
-  const freqOption = getFrequencyOption(frequency);
+  useEffect(() => {
+    return () => {
+      if (timeSaveTimerRef.current !== null) {
+        window.clearTimeout(timeSaveTimerRef.current);
+      }
+    };
+  }, []);
+
   const latestAuto = scheduleSummary?.latestAutomaticReport || null;
   const latestReport = latestStoredReport || latestAuto;
   const displayState = resolveAutoReportDisplayState({
@@ -124,48 +134,120 @@ export default function DailyReportPanel({
             : styles.badgeNeutral;
 
   const cloudStorageReady = Boolean(storageStatus?.pdfProductionReady);
-  const storageBadgeLabel = cloudStorageReady
-    ? "Cloud PDF Storage Active"
-    : "Temporary Local Storage";
-
   const timezoneOptions = COMMON_TIMEZONES.includes(timezone)
     ? COMMON_TIMEZONES
     : [timezone, ...COMMON_TIMEZONES];
 
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
+  function persistScheduleChange(next: {
+    autoReportEnabled: boolean;
+    frequency: ReportFrequency;
+    scheduledTime: string;
+    timezone: string;
+  }) {
     const check = validateScheduleFormInput({
-      frequency,
-      scheduledTime,
-      timezone,
+      frequency: next.frequency,
+      scheduledTime: next.scheduledTime,
+      timezone: next.timezone,
       selectedDataset: selectedDataset || settings?.selectedDataset || null,
-      autoReportEnabled
+      autoReportEnabled: next.autoReportEnabled
     });
     if (!check.valid) {
       setValidationError(check.error);
       return;
     }
     setValidationError(null);
-    await onSaveSchedule({
-      autoReportEnabled,
+    void onSaveSchedule(next);
+  }
+
+  function handleToggleAutoReport(checked: boolean) {
+    setAutoReportEnabled(checked);
+    persistScheduleChange({
+      autoReportEnabled: checked,
       frequency,
       scheduledTime,
       timezone
     });
   }
 
+  function handleSelectFrequency(nextFrequency: ReportFrequency) {
+    setFrequency(nextFrequency);
+    persistScheduleChange({
+      autoReportEnabled,
+      frequency: nextFrequency,
+      scheduledTime,
+      timezone
+    });
+  }
+
+  function handleChangeTime(nextTime: string) {
+    setScheduledTime(nextTime);
+    setValidationError(null);
+    if (timeSaveTimerRef.current !== null) {
+      window.clearTimeout(timeSaveTimerRef.current);
+    }
+    if (/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(nextTime)) {
+      timeSaveTimerRef.current = window.setTimeout(() => {
+        persistScheduleChange({
+          autoReportEnabled,
+          frequency,
+          scheduledTime: nextTime,
+          timezone
+        });
+      }, 450);
+    }
+  }
+
+  function handleChangeTimezone(nextTimezone: string) {
+    setTimezone(nextTimezone);
+    persistScheduleChange({
+      autoReportEnabled,
+      frequency,
+      scheduledTime,
+      timezone: nextTimezone
+    });
+  }
+
+  async function handleGeneratePdfClick() {
+    if (!onGeneratePdf || generatingPdf || !selectedDataset) return;
+    const hasStart = Boolean(manualStartDate.trim());
+    const hasEnd = Boolean(manualEndDate.trim());
+
+    if (hasStart || hasEnd) {
+      const check = validateManualRangeSelection({
+        quickRange: "custom",
+        startDate: manualStartDate,
+        endDate: manualEndDate,
+        earliestAvailableDate,
+        latestAvailableDate
+      });
+      if (!check.valid) {
+        setManualDateError(check.error);
+        return;
+      }
+      setManualDateError(null);
+      await onGeneratePdf({
+        comparisonPreset: referencePreset,
+        startDate: manualStartDate.trim(),
+        endDate: manualEndDate.trim()
+      });
+      return;
+    }
+
+    setManualDateError(null);
+    await onGeneratePdf({ comparisonPreset: referencePreset });
+  }
+
+  const hasManualDates = Boolean(manualStartDate.trim() || manualEndDate.trim());
+
   return (
-    <section className={styles.twoCol} aria-label="Automatic Daily Report configuration">
-      {/* Left column: Schedule controls */}
-      <form className={styles.card} onSubmit={handleSubmit} noValidate>
+    <section className={styles.twoCol} aria-label="Report Automation">
+      {/* Left column: Unified Report Automation (Schedule + Reference Period & Manual Date PDF Generator) */}
+      <div className={styles.card}>
         <div className={styles.cardHeader}>
           <div className={styles.cardTitleGroup}>
             <h2 className={styles.cardTitle}>
-              <CalendarClock size={17} /> Daily Report Automation
+              <CalendarClock size={17} /> Report Automation
             </h2>
-            <p className={styles.cardSub}>
-              Configure recurring automatic report generation and private cloud PDF archiving for the connected dataset.
-            </p>
           </div>
           <span className={`${styles.badge} ${badgeToneClass}`} role="status">
             {displayState.label}
@@ -186,9 +268,9 @@ export default function DailyReportPanel({
                 <small>
                   {autoReportEnabled
                     ? cloudStorageReady
-                      ? "Enabled — runs on completed periods and stores PDFs in private cloud storage."
-                      : "Enabled — runs on completed periods and saves PDFs locally in generated-reports/ (auto-switches to Cloud when configured)."
-                    : "Paused — disabling cancels future scheduled execution until re-enabled."}
+                      ? "Active — generates automatically at the scheduled time and stores PDFs in Cloud Storage."
+                      : "Active — generates automatically at the scheduled time (temporary storage active; auto-switches to Cloud when configured)."
+                    : "Paused — automatic scheduled PDF generation is currently turned off."}
                 </small>
               </div>
               <input
@@ -196,7 +278,7 @@ export default function DailyReportPanel({
                 className={styles.toggleCheckbox}
                 aria-label="Enable automatic report generation"
                 checked={autoReportEnabled}
-                onChange={event => setAutoReportEnabled(event.target.checked)}
+                onChange={event => handleToggleAutoReport(event.target.checked)}
               />
             </div>
 
@@ -212,23 +294,12 @@ export default function DailyReportPanel({
                       role="radio"
                       aria-checked={active}
                       className={`${styles.segmentedBtn} ${active ? styles.segmentedBtnActive : ""}`}
-                      onClick={() => {
-                        setFrequency(option.value);
-                        setValidationError(null);
-                      }}
+                      onClick={() => handleSelectFrequency(option.value)}
                     >
                       {option.label}
                     </button>
                   );
                 })}
-              </div>
-            </div>
-
-            <div className={styles.infoBanner}>
-              <Info size={16} style={{ flexShrink: 0, marginTop: 1 }} />
-              <div>
-                <strong>{freqOption.explanation}</strong>
-                <div style={{ marginTop: 3, fontSize: 11.5 }}>{freqOption.incompleteNote}</div>
               </div>
             </div>
 
@@ -242,10 +313,7 @@ export default function DailyReportPanel({
                   type="time"
                   className={styles.textInput}
                   value={scheduledTime}
-                  onChange={event => {
-                    setScheduledTime(event.target.value);
-                    setValidationError(null);
-                  }}
+                  onChange={event => handleChangeTime(event.target.value)}
                 />
               </div>
 
@@ -257,7 +325,7 @@ export default function DailyReportPanel({
                   id="qp-schedule-timezone"
                   className={styles.selectInput}
                   value={timezone}
-                  onChange={event => setTimezone(event.target.value)}
+                  onChange={event => handleChangeTimezone(event.target.value)}
                 >
                   {timezoneOptions.map(tz => (
                     <option key={tz} value={tz}>
@@ -266,6 +334,24 @@ export default function DailyReportPanel({
                   ))}
                 </select>
               </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", fontSize: 11.5, color: "var(--muted, #657c8a)" }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                <Clock size={12} /> Timezone: <strong>{timezone}</strong>
+                {scheduleSummary?.nextExecution && (
+                  <>
+                    {" · "}Next run: <strong>{scheduleSummary.nextExecution.nextNominalRunDate} {scheduleSummary.nextExecution.nextNominalRunTime}</strong>
+                  </>
+                )}
+              </span>
+              <span style={{ fontSize: 11 }}>
+                {savingSchedule
+                  ? "Saving schedule..."
+                  : cloudStorageReady
+                    ? "Cloud PDF Storage Active"
+                    : "Temporary Local Storage"}
+              </span>
             </div>
 
             {validationError && (
@@ -286,210 +372,216 @@ export default function DailyReportPanel({
               </div>
             )}
 
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 11, color: "var(--muted, #657c8a)", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                <Clock size={12} /> Configured timezone: <strong>{timezone}</strong>
-              </span>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                {onRunScheduledNow && (
+            {/* Integrated PDF Generation: Reference Period (Smart Comparison options) + Manual Date Selection */}
+            {onGeneratePdf && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 14, borderTop: "1px solid #e6eeec" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#153243" }}>
+                    Generate PDF Report
+                  </span>
+                  {hasManualDates && (
+                    <button
+                      type="button"
+                      className={styles.ghostBtn}
+                      style={{ fontSize: 11, padding: "2px 8px" }}
+                      onClick={() => {
+                        setManualStartDate("");
+                        setManualEndDate("");
+                        setManualDateError(null);
+                      }}
+                    >
+                      Clear Manual Dates
+                    </button>
+                  )}
+                </div>
+
+                <div className={styles.formGrid}>
+                  <div className={styles.fieldGroup}>
+                    <label htmlFor="qp-pdf-reference-period" className={styles.fieldLabel}>
+                      Reference Period
+                    </label>
+                    <select
+                      id="qp-pdf-reference-period"
+                      className={styles.selectInput}
+                      value={referencePreset}
+                      disabled={generatingPdf}
+                      onChange={event => {
+                        const nextPreset = event.target.value as ComparisonPreset;
+                        setReferencePreset(nextPreset);
+                        if (nextPreset === "none" && hasManualDates) {
+                          setManualStartDate("");
+                          setManualEndDate("");
+                          setManualDateError(null);
+                        }
+                      }}
+                    >
+                      {COMPARISON_PRESET_OPTIONS.map(opt => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className={styles.fieldGroup}>
+                    <span className={styles.fieldLabel}>Manual Date Range (Optional)</span>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <input
+                        id="qp-pdf-manual-start"
+                        type="date"
+                        aria-label="Manual PDF start date"
+                        className={styles.textInput}
+                        value={manualStartDate}
+                        min={earliestAvailableDate || undefined}
+                        max={latestAvailableDate || undefined}
+                        disabled={generatingPdf}
+                        onChange={event => {
+                          setManualStartDate(event.target.value);
+                          setManualDateError(null);
+                        }}
+                      />
+                      <input
+                        id="qp-pdf-manual-end"
+                        type="date"
+                        aria-label="Manual PDF end date"
+                        className={styles.textInput}
+                        value={manualEndDate}
+                        min={manualStartDate || earliestAvailableDate || undefined}
+                        max={latestAvailableDate || undefined}
+                        disabled={generatingPdf}
+                        onChange={event => {
+                          setManualEndDate(event.target.value);
+                          setManualDateError(null);
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {manualDateError && (
+                  <div className={styles.errorBanner} role="alert">
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      <AlertCircle size={14} /> {manualDateError}
+                    </span>
+                  </div>
+                )}
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11.5, color: "var(--muted, #657c8a)" }}>
+                    {manualStartDate && manualEndDate
+                      ? `Custom range selected: ${manualStartDate} to ${manualEndDate}`
+                      : `Using Reference Period: ${COMPARISON_PRESET_OPTIONS.find(o => o.value === referencePreset)?.label || referencePreset}`}
+                  </span>
                   <button
                     type="button"
-                    className={styles.secondaryBtn}
-                    disabled={runningScheduledNow || savingSchedule || loadingSettings || !selectedDataset}
-                    onClick={() => void onRunScheduledNow()}
+                    className={styles.primaryBtn}
+                    disabled={generatingPdf || !selectedDataset}
+                    onClick={() => void handleGeneratePdfClick()}
                   >
                     <FilePlus2 size={14} />
-                    {runningScheduledNow ? "Generating Auto PDF..." : "Run Auto PDF Now"}
+                    {generatingPdf ? "Generating PDF..." : "Generate & Save PDF"}
                   </button>
+                </div>
+
+                {pdfGenerateError && (
+                  <div className={styles.errorBanner} role="alert">
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      <AlertCircle size={14} /> {pdfGenerateError}
+                    </span>
+                  </div>
                 )}
-                <button
-                  type="submit"
-                  className={styles.primaryBtn}
-                  disabled={savingSchedule || loadingSettings}
-                >
-                  <Save size={14} />
-                  {savingSchedule ? "Saving Schedule..." : "Save Schedule"}
-                </button>
+
+                {pdfGenerateNotice && (
+                  <div className={styles.successBanner} role="status">
+                    <CheckCircle2 size={14} />
+                    <span>{pdfGenerateNotice}</span>
+                  </div>
+                )}
               </div>
-            </div>
+            )}
           </div>
         )}
-      </form>
+      </div>
 
-      {/* Right column: Cloud PDF Storage & Instant Export + Latest Stored PDF */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <div className={styles.card}>
-          <div className={styles.cardHeader}>
-            <div className={styles.cardTitleGroup}>
-              <h3 className={styles.cardTitle}>
-                <Cloud size={15} /> {cloudStorageReady ? "Cloud PDF Archive & Export" : "PDF Archive & Export"}
-              </h3>
-              <p className={styles.cardSub}>
-                {cloudStorageReady
-                  ? "Generated PDFs are stored privately in shared cloud storage and synced across every device."
-                  : "Temporary local storage is active in generated-reports/ (gitignored) and automatically switches to Cloud once configured."}
-              </p>
-            </div>
-            <span className={`${styles.badge} ${cloudStorageReady ? styles.badgePositive : styles.badgeInfo}`}>
-              {storageBadgeLabel}
-            </span>
+      {/* Right column: Latest Stored PDF Report */}
+      <div className={styles.card}>
+        <div className={styles.cardHeader}>
+          <div className={styles.cardTitleGroup}>
+            <h3 className={styles.cardTitle}>
+              <FileText size={15} /> Latest Stored PDF Report
+            </h3>
+            <p className={styles.cardSub}>Most recent automatic or manual PDF saved in your archive.</p>
           </div>
+        </div>
 
+        {latestReport ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div className={styles.kvList}>
               <div className={styles.kvRow}>
-                <span>PDF Storage Backend</span>
-                <strong>{cloudStorageReady ? "Supabase Private Storage (Synced)" : "Temporary Local (generated-reports/)"}</strong>
+                <span>Reporting Period</span>
+                <strong>{latestReport.periodStart} to {latestReport.periodEnd}</strong>
               </div>
               <div className={styles.kvRow}>
-                <span>Cloud Storage Auto-Switch</span>
-                <strong>{cloudStorageReady ? "Active via Shared Cloud Storage" : "Auto-switches when Cloud configured"}</strong>
+                <span>Report Type</span>
+                <strong style={{ textTransform: "capitalize" }}>
+                  {latestReport.generationType} · {latestReport.frequency}
+                </strong>
               </div>
-              {scheduleSummary?.nextExecution && (
-                <div className={styles.kvRow}>
-                  <span>Next Scheduled Run</span>
-                  <strong>
-                    {scheduleSummary.nextExecution.nextNominalRunDate} at {scheduleSummary.nextExecution.nextNominalRunTime}
-                  </strong>
-                </div>
-              )}
+              <div className={styles.kvRow}>
+                <span>Generated At</span>
+                <strong>{formatShortTimestamp(latestReport.generatedAt, timezone)}</strong>
+              </div>
+              <div className={styles.kvRow}>
+                <span>Domain &amp; Dataset</span>
+                <strong>{latestReport.domainName} · {latestReport.datasetTable}</strong>
+              </div>
+              <div className={styles.kvRow}>
+                <span>PDF Status</span>
+                <strong>
+                  {latestReport.pdfStatus === "generated"
+                    ? `Stored ${latestReport.pdfSizeBytes ? `(${formatFileSize(latestReport.pdfSizeBytes)})` : ""}`
+                    : latestReport.pdfStatus === "failed"
+                      ? "PDF storage failed"
+                      : "Not generated yet"}
+                </strong>
+              </div>
             </div>
 
-            {onGenerateQuickPdf && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 10, borderTop: "1px solid #edf3f2" }}>
-                <div className={styles.fieldGroup}>
-                  <label htmlFor="qp-quick-pdf-range" className={styles.fieldLabel}>
-                    Generate &amp; Store PDF Now
-                  </label>
-                  <select
-                    id="qp-quick-pdf-range"
-                    className={styles.selectInput}
-                    value={quickRange}
-                    disabled={generatingPdf}
-                    onChange={event => setQuickRange(event.target.value as Exclude<ManualQuickRange, "custom">)}
-                  >
-                    {QUICK_EXPORT_RANGES.map(opt => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <button
-                  type="button"
-                  className={styles.primaryBtn}
-                  disabled={generatingPdf || !selectedDataset}
-                  onClick={() => void onGenerateQuickPdf(quickRange)}
-                >
-                  <FilePlus2 size={14} />
-                  {generatingPdf
-                    ? "Generating & Storing PDF..."
-                    : cloudStorageReady
-                      ? "Generate & Save PDF to Cloud"
-                      : "Generate & Save PDF"}
-                </button>
+            {(latestReport.errorMessage || latestReport.pdfError) && (
+              <div className={styles.errorBanner} role="alert">
+                <span>{latestReport.errorMessage || latestReport.pdfError}</span>
               </div>
             )}
 
-            {pdfGenerateError && (
-              <div className={styles.errorBanner} role="alert">
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  <AlertCircle size={14} /> {pdfGenerateError}
+            {isReportPdfDownloadable(latestReport) ? (
+              <button
+                type="button"
+                className={styles.primaryBtn}
+                disabled={downloadingReportId === latestReport.id}
+                onClick={() => void onDownloadPdf(latestReport)}
+              >
+                <Download size={14} />
+                {downloadingReportId === latestReport.id
+                  ? "Preparing PDF..."
+                  : "Download Latest PDF"}
+              </button>
+            ) : (
+              <div className={styles.warnBanner} role="status">
+                <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span>
+                  PDF download is unavailable until a verified PDF artifact is stored for this report.
                 </span>
               </div>
             )}
-
-            {pdfGenerateNotice && (
-              <div className={styles.successBanner} role="status">
-                <CheckCircle2 size={14} />
-                <span>{pdfGenerateNotice}</span>
-              </div>
-            )}
           </div>
-        </div>
-
-        <div className={styles.card}>
-          <div className={styles.cardHeader}>
-            <div className={styles.cardTitleGroup}>
-              <h3 className={styles.cardTitle}>
-                <FileText size={15} /> Latest Stored PDF Report
-              </h3>
-              <p className={styles.cardSub}>Most recent automatic or manual PDF saved in your archive.</p>
-            </div>
+        ) : (
+          <div className={styles.emptyBox}>
+            <strong>No stored PDF report yet</strong>
+            <p>
+              Select a Reference Period or Manual Date Range in Report Automation and click &ldquo;Generate &amp; Save PDF&rdquo;, or wait for your scheduled automatic report.
+            </p>
           </div>
-
-          {latestReport ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div className={styles.kvList}>
-                <div className={styles.kvRow}>
-                  <span>Reporting Period</span>
-                  <strong>{latestReport.periodStart} to {latestReport.periodEnd}</strong>
-                </div>
-                <div className={styles.kvRow}>
-                  <span>Report Type</span>
-                  <strong style={{ textTransform: "capitalize" }}>
-                    {latestReport.generationType} · {latestReport.frequency}
-                  </strong>
-                </div>
-                <div className={styles.kvRow}>
-                  <span>Generated At</span>
-                  <strong>{formatShortTimestamp(latestReport.generatedAt, timezone)}</strong>
-                </div>
-                <div className={styles.kvRow}>
-                  <span>Domain &amp; Dataset</span>
-                  <strong>{latestReport.domainName} · {latestReport.datasetTable}</strong>
-                </div>
-                <div className={styles.kvRow}>
-                  <span>PDF Status</span>
-                  <strong>
-                    {latestReport.pdfStatus === "generated"
-                      ? `Stored ${latestReport.pdfSizeBytes ? `(${formatFileSize(latestReport.pdfSizeBytes)})` : ""}`
-                      : latestReport.pdfStatus === "failed"
-                        ? "PDF storage failed"
-                        : "Not generated yet"}
-                  </strong>
-                </div>
-              </div>
-
-              {(latestReport.errorMessage || latestReport.pdfError) && (
-                <div className={styles.errorBanner} role="alert">
-                  <span>{latestReport.errorMessage || latestReport.pdfError}</span>
-                </div>
-              )}
-
-              {isReportPdfDownloadable(latestReport) ? (
-                <button
-                  type="button"
-                  className={styles.primaryBtn}
-                  disabled={downloadingReportId === latestReport.id}
-                  onClick={() => void onDownloadPdf(latestReport)}
-                >
-                  <Download size={14} />
-                  {downloadingReportId === latestReport.id
-                    ? "Preparing PDF..."
-                    : "Download Latest PDF"}
-                </button>
-              ) : (
-                <div className={styles.warnBanner} role="status">
-                  <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-                  <span>
-                    PDF download is unavailable until a verified PDF artifact is stored for this report.
-                  </span>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className={styles.emptyBox}>
-              <strong>No stored PDF report yet</strong>
-              <p>
-                {cloudStorageReady
-                  ? 'Click "Generate & Save PDF to Cloud" above or enable Daily Report Automation to persist PDFs across all devices.'
-                  : 'Click "Generate & Save PDF" above or run Daily Report Automation to store PDFs locally in generated-reports/ (auto-switches to Cloud once configured).'}
-              </p>
-            </div>
-          )}
-        </div>
+        )}
       </div>
     </section>
   );

@@ -7,7 +7,6 @@ import type { ComparisonPreset } from "../metrics/types";
 import type { ReportArchiveComparisonResult, UnifiedDailyAnalysisResult } from "../intelligence/types";
 import { DEFAULT_ALERT_RULES, sanitizeAlertRules, type AlertRules } from "../notifications";
 import type {
-  ManualQuickRange,
   PersistentDailySettings,
   PersistentReportRecord,
   PersistentReportSummary,
@@ -23,7 +22,7 @@ import {
   mergeToolAlertsWithReadState
 } from "./dashboard-helpers";
 import DomainDatasetBar from "./DomainDatasetBar";
-import DailyReportPanel from "./DailyReportPanel";
+import DailyReportPanel, { type UnifiedPdfGenerateRequest } from "./DailyReportPanel";
 import DailyToolsSection from "./DailyToolsSection";
 import styles from "./DailyAnalysisDashboard.module.css";
 
@@ -65,6 +64,32 @@ function saveReadAlertIds(ids: Set<string>) {
   } catch {
     // ignore quota errors
   }
+}
+
+function addIsoDays(isoDate: string, deltaDays: number): string {
+  const dt = new Date(`${isoDate}T00:00:00.000Z`);
+  dt.setUTCDate(dt.getUTCDate() + deltaDays);
+  return dt.toISOString().slice(0, 10);
+}
+
+function base64ToPdfBlob(base64: string): Blob {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: "application/pdf" });
+}
+
+function triggerPdfBlobDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 function getCurrentClockInTz(tz: string): { date: string; time: string } {
@@ -125,7 +150,6 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   const [readAlertIds, setReadAlertIds] = useState<Set<string>>(() => new Set());
   const [savingAlertRules, setSavingAlertRules] = useState<boolean>(false);
   const [generatingPdf, setGeneratingPdf] = useState<boolean>(false);
-  const [runningScheduledNow, setRunningScheduledNow] = useState<boolean>(false);
   const [pdfGenerateError, setPdfGenerateError] = useState<string | null>(null);
   const [pdfGenerateNotice, setPdfGenerateNotice] = useState<string | null>(null);
   const [downloadingReportId, setDownloadingReportId] = useState<string | null>(null);
@@ -138,6 +162,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   const initializedRef = useRef(false);
   const lastScheduledCheckKeyRef = useRef<string>("");
   const runningScheduledRef = useRef(false);
+  const pdfCacheRef = useRef<Map<string, { base64: string; filename: string }>>(new Map());
 
   const timezone = settings?.timezone || "Asia/Dhaka";
   const alertRules: AlertRules = useMemo(
@@ -529,11 +554,6 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
   const triggerScheduledRun = useCallback(async (forceRun = false) => {
     if (runningScheduledRef.current) return;
     runningScheduledRef.current = true;
-    setRunningScheduledNow(true);
-    if (forceRun) {
-      setPdfGenerateError(null);
-      setPdfGenerateNotice(null);
-    }
     try {
       const response = await fetch("/api/daily-analysis/reports/run-scheduled", {
         method: "POST",
@@ -546,41 +566,33 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       });
       const data = await response.json();
       if (!response.ok) {
-        if (forceRun) {
-          setPdfGenerateError(data.error || "Could not run scheduled automatic report.");
-        }
         return;
       }
       if (data.storageStatus) {
         setStorageStatus(data.storageStatus as StorageCapabilityStatus);
       }
       if (data.generated) {
-        const isCloudMode = data.storageMode === "cloud" || Boolean(data.storageStatus?.pdfProductionReady);
-        const locationLabel = isCloudMode
-          ? "cloud archive"
-          : "local temporary archive (daily_data_analysis_and_notification/generated-reports/)";
-        setSaveFeedback({
-          type: "success",
-          text: `Automatic scheduled PDF generated and saved to ${locationLabel}.`
-        });
-        setPdfGenerateNotice(`Automatic scheduled PDF generated and stored in ${locationLabel}.`);
-        await loadArchiveReports();
-        if (data.latestAutomaticReport) {
-          setScheduleSummary(prev => (prev ? { ...prev, latestAutomaticReport: data.latestAutomaticReport } : prev));
+        const latestAuto = data.latestAutomaticReport as PersistentReportSummary | null;
+        if (latestAuto && typeof data.pdfBase64 === "string" && data.pdfBase64.length > 0) {
+          pdfCacheRef.current.set(latestAuto.id, {
+            base64: data.pdfBase64,
+            filename: latestAuto.pdfFilename || `querypilot-x-${latestAuto.domainId}-${latestAuto.periodStart}-to-${latestAuto.periodEnd}.pdf`
+          });
         }
-      } else if (data.error && forceRun) {
-        setPdfGenerateError(data.error);
-      } else if (forceRun) {
-        setPdfGenerateNotice("The latest completed period already has a stored automatic PDF in your archive.");
-        await loadArchiveReports();
+        const periodSummary = latestAuto ? ` (${latestAuto.periodStart} to ${latestAuto.periodEnd})` : "";
+        const confirmText = `Automatic PDF generated successfully${periodSummary} and ready to download.`;
+        setSaveFeedback({ type: "success", text: confirmText });
+        setPdfGenerateNotice(confirmText);
+        if (latestAuto) {
+          setArchivedReports(prev => [latestAuto, ...prev.filter(item => item.id !== latestAuto.id)]);
+          setScheduleSummary(prev => (prev ? { ...prev, latestAutomaticReport: latestAuto } : prev));
+        }
+        void loadArchiveReports();
       }
-    } catch (error) {
-      if (forceRun) {
-        setPdfGenerateError(error instanceof Error ? error.message : "Could not run scheduled automatic report.");
-      }
+    } catch {
+      // Background scheduled check errors are non-blocking
     } finally {
       runningScheduledRef.current = false;
-      setRunningScheduledNow(false);
     }
   }, [loadArchiveReports, selectedDataset, selectedDomain]);
 
@@ -637,14 +649,11 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       if (data.scheduleSummary) setScheduleSummary(data.scheduleSummary as ScheduleRuntimeSummary);
       lastScheduledCheckKeyRef.current = "";
 
-      const cloudReadyNow = Boolean(data.storageStatus?.pdfProductionReady);
       setSaveFeedback({
         type: "success",
         text: savedSettings.autoReportEnabled
-          ? cloudReadyNow
-            ? `Schedule saved (${savedSettings.frequency} at ${savedSettings.scheduledTime} ${savedSettings.timezone}). PDF will auto-generate and save to cloud storage when due.`
-            : `Schedule saved (${savedSettings.frequency} at ${savedSettings.scheduledTime} ${savedSettings.timezone}). PDF will auto-generate and save locally (generated-reports/) until cloud storage is configured.`
-          : "Automatic report generation paused and saved."
+          ? `Schedule updated (${savedSettings.frequency} at ${savedSettings.scheduledTime} ${savedSettings.timezone}). Automatic PDF will generate when due.`
+          : "Automatic report generation paused."
       });
       if (savedSettings.autoReportEnabled) {
         const clock = getCurrentClockInTz(savedSettings.timezone || "Asia/Dhaka");
@@ -662,12 +671,46 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     }
   }
 
-  async function handleGenerateQuickPdf(quickRange: Exclude<ManualQuickRange, "custom">) {
+  async function handleGeneratePdf(requestPayload: UnifiedPdfGenerateRequest) {
     if (generatingPdf || !selectedDataset) return;
     setGeneratingPdf(true);
     setPdfGenerateError(null);
     setPdfGenerateNotice(null);
     try {
+      const earliest = currentTableProfile?.freshness.earliestDate?.slice(0, 10) || null;
+      const latest = currentTableProfile?.freshness.latestDate?.slice(0, 10) || null;
+      const today = getCurrentClockInTz(timezone).date;
+      const anchorEnd = latest && latest <= today ? latest : today;
+
+      let quickRange: "all_history" | "custom" = "custom";
+      let startDate = requestPayload.startDate?.trim() || "";
+      let endDate = requestPayload.endDate?.trim() || "";
+
+      if (startDate && endDate) {
+        quickRange = "custom";
+      } else if (requestPayload.comparisonPreset === "none") {
+        quickRange = "all_history";
+        startDate = "";
+        endDate = "";
+      } else {
+        const lookbackByPreset: Partial<Record<ComparisonPreset, number>> = {
+          previous_day: 0,
+          same_weekday_previous_weeks: 0,
+          previous_week: 6,
+          previous_7_days: 6,
+          previous_month: 29,
+          previous_30_days: 29,
+          previous_90_days: 89,
+          previous_180_days: 179,
+          previous_365_days: 364
+        };
+        const lookback = lookbackByPreset[requestPayload.comparisonPreset] ?? 29;
+        endDate = anchorEnd;
+        const computedStart = addIsoDays(anchorEnd, -lookback);
+        startDate = earliest && computedStart < earliest ? earliest : computedStart;
+        quickRange = "custom";
+      }
+
       const response = await fetch("/api/daily-analysis/reports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -676,10 +719,12 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
           table: selectedDataset,
           domain: selectedDomain,
           quickRange,
+          ...(quickRange === "custom" ? { startDate, endDate } : {}),
+          comparisonPreset: requestPayload.comparisonPreset,
           timezone,
           overrides: Object.keys(columnOverrides).length ? columnOverrides : undefined,
-          earliestAvailableDate: currentTableProfile?.freshness.earliestDate?.slice(0, 10) || undefined,
-          latestAvailableDate: currentTableProfile?.freshness.latestDate?.slice(0, 10) || undefined
+          earliestAvailableDate: earliest || undefined,
+          latestAvailableDate: latest || undefined
         })
       });
       const data = await response.json();
@@ -688,13 +733,17 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       }
       const created = data.report as PersistentReportRecord;
       if (created.pdfStatus === "generated") {
-        const isCloudSaved = data.storageMode === "cloud" || created.id.startsWith("cloud_");
+        const filename = created.pdfFilename || `querypilot-x-${created.domainId}-${created.periodStart}-to-${created.periodEnd}.pdf`;
+        if (typeof data.pdfBase64 === "string" && data.pdfBase64.length > 0) {
+          pdfCacheRef.current.set(created.id, {
+            base64: data.pdfBase64,
+            filename
+          });
+        }
         setPdfGenerateNotice(
-          isCloudSaved
-            ? `PDF saved to cloud archive (${created.periodStart} to ${created.periodEnd}).`
-            : `PDF saved locally in generated-reports/ (${created.periodStart} to ${created.periodEnd}).`
+          `PDF generated successfully (${created.periodStart} to ${created.periodEnd}) and ready to download.`
         );
-        // Immediately reflect the new PDF in Archive without waiting for a full bucket re-list
+        // Immediately reflect the new PDF in Latest Stored PDF & Archive
         setArchivedReports(prev => [created, ...prev.filter(item => item.id !== created.id)]);
       } else {
         setPdfGenerateError(created.pdfError || "Report metadata saved, but PDF storage did not complete.");
@@ -712,6 +761,18 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     setDownloadingReportId(report.id);
     setPdfDownloadError(null);
     try {
+      const suffix = compareWithId ? "-comparison" : "";
+      const fallbackFilename = report.pdfFilename || `querypilot-x-${report.domainId}-${report.periodStart}-to-${report.periodEnd}${suffix}.pdf`;
+
+      // Fast, serverless-safe download from verified in-session PDF cache when available
+      if (!compareWithId) {
+        const cached = pdfCacheRef.current.get(report.id);
+        if (cached) {
+          triggerPdfBlobDownload(base64ToPdfBlob(cached.base64), cached.filename || fallbackFilename);
+          return;
+        }
+      }
+
       const isCloudDirect = !compareWithId && report.id.startsWith("cloud_") && Boolean(report.pdfStorageKey);
       const endpoint = isCloudDirect && report.pdfStorageKey
         ? `/api/storage/download?key=${encodeURIComponent(report.pdfStorageKey)}`
@@ -731,15 +792,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         throw new Error(message);
       }
       const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      const suffix = compareWithId ? "-comparison" : "";
-      anchor.download = report.pdfFilename || `querypilot-x-${report.domainId}-${report.periodStart}-to-${report.periodEnd}${suffix}.pdf`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
+      triggerPdfBlobDownload(blob, fallbackFilename);
     } catch (error) {
       setPdfDownloadError(error instanceof Error ? error.message : "Could not download the PDF.");
     } finally {
@@ -823,7 +876,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
           <button type="button" className={styles.backLink} onClick={onBack}>
             <ArrowLeft size={13} /> Back to Smart Dashboard
           </button>
-          <span className={styles.eyebrow}>DAILY REPORT AUTOMATION &amp; LIVE INTELLIGENCE</span>
+          <span className={styles.eyebrow}>REPORT AUTOMATION &amp; LIVE INTELLIGENCE</span>
           <h1 className={styles.pageTitle}>Daily Analysis</h1>
           <p className={styles.pageSubtitle}>
             Automated Daily/Weekly/Monthly PDF reporting and all 7 live Daily Analysis tools displayed directly in one unified view.
@@ -907,24 +960,25 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         onRefreshAll={() => void handleRefreshAll()}
       />
 
-      {/* Daily Report Automation & Cloud PDF Storage */}
+      {/* Report Automation & Integrated PDF Generator */}
       <DailyReportPanel
         settings={settings}
         selectedDataset={selectedDataset}
         storageStatus={storageStatus}
         scheduleSummary={scheduleSummary}
         latestStoredReport={archivedReports[0] || scheduleSummary?.latestAutomaticReport || null}
+        earliestAvailableDate={currentTableProfile?.freshness.earliestDate?.slice(0, 10) || null}
+        latestAvailableDate={currentTableProfile?.freshness.latestDate?.slice(0, 10) || null}
+        defaultComparisonPreset={comparisonPreset}
         loadingSettings={loadingSettings}
         savingSchedule={savingSchedule}
         generatingPdf={generatingPdf}
-        runningScheduledNow={runningScheduledNow}
         pdfGenerateError={pdfGenerateError}
         pdfGenerateNotice={pdfGenerateNotice}
         downloadingReportId={downloadingReportId}
         saveFeedback={saveFeedback}
         onSaveSchedule={handleSaveSchedule}
-        onRunScheduledNow={() => triggerScheduledRun(true)}
-        onGenerateQuickPdf={handleGenerateQuickPdf}
+        onGeneratePdf={handleGeneratePdf}
         onDownloadPdf={report => handleDownloadPdf(report)}
       />
 

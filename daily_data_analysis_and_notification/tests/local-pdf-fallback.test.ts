@@ -7,6 +7,7 @@ import {
   createDefaultPdfStorage,
   getDefaultDailySettings,
   getDefaultLocalReportsDirectory,
+  getServerlessTempReportsDirectory,
   LocalPrivatePdfStorage,
   SupabasePrivatePdfStorage
 } from "../storage";
@@ -201,6 +202,14 @@ test("Manual and scheduled PDFs + schedule settings save, list, download, and is
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("Vercel serverless environment automatically uses writable OS tmpdir instead of read-only /var/task", async () => {
+  await withCleanEnv({ VERCEL: "1", NODE_ENV: "production" }, () => {
+    const dir = getDefaultLocalReportsDirectory();
+    assert.equal(dir, getServerlessTempReportsDirectory());
+    assert.ok(!dir.replace(/\\/g, "/").includes("/var/task"), `Must never target read-only /var/task, got: ${dir}`);
+  });
 });
 
 test("UI helper shows Scheduled (Local) instead of Storage not configured when local_private_fs is active", () => {
