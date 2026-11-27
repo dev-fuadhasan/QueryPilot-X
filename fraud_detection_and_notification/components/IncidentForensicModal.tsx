@@ -14,7 +14,9 @@ import {
   ArrowRight,
   Database,
   Calendar,
-  UserCheck
+  UserCheck,
+  Mail,
+  Send
 } from "lucide-react";
 import type { ChangeNotification } from "../types";
 
@@ -25,6 +27,8 @@ interface IncidentForensicModalProps {
 
 export default function IncidentForensicModal({ incident, onClose }: IncidentForensicModalProps) {
   const [copied, setCopied] = useState(false);
+  const [emailing, setEmailing] = useState(false);
+  const [emailSuccess, setEmailSuccess] = useState<string | null>(null);
 
   if (!incident) return null;
 
@@ -39,6 +43,29 @@ export default function IncidentForensicModal({ incident, onClose }: IncidentFor
     navigator.clipboard.writeText(JSON.stringify(incident, null, 2));
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
+  };
+
+  const handleEmailIncident = async () => {
+    setEmailing(true);
+    setEmailSuccess(null);
+    try {
+      const res = await fetch("/api/notifications/email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "fraud-alert", incident }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setEmailSuccess("Alert Dispatched via Email!");
+        setTimeout(() => setEmailSuccess(null), 4000);
+      } else {
+        alert(data.error || "Failed to dispatch email. Please configure recipient email in Profile.");
+      }
+    } catch {
+      alert("Network error sending incident email.");
+    } finally {
+      setEmailing(false);
+    }
   };
 
   const severityColors = {
@@ -329,28 +356,54 @@ export default function IncidentForensicModal({ incident, onClose }: IncidentFor
             background: "#f8fafc",
             display: "flex",
             justifyContent: "space-between",
-            alignItems: "center"
+            alignItems: "center",
+            gap: "10px",
+            flexWrap: "wrap"
           }}
         >
-          <button
-            onClick={copyJson}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              background: "#ffffff",
-              border: "1px solid #cbd5e1",
-              borderRadius: "8px",
-              padding: "8px 14px",
-              fontSize: "12px",
-              fontWeight: 600,
-              color: "#334155",
-              cursor: "pointer"
-            }}
-          >
-            {copied ? <Check size={14} color="#16a34a" /> : <Copy size={14} />}
-            {copied ? "Incident JSON Copied!" : "Export Incident JSON"}
-          </button>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <button
+              onClick={copyJson}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                borderRadius: "8px",
+                padding: "8px 14px",
+                fontSize: "12px",
+                fontWeight: 600,
+                color: "#334155",
+                cursor: "pointer"
+              }}
+            >
+              {copied ? <Check size={14} color="#16a34a" /> : <Copy size={14} />}
+              {copied ? "Incident JSON Copied!" : "Export Incident JSON"}
+            </button>
+
+            <button
+              onClick={handleEmailIncident}
+              disabled={emailing}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                background: emailSuccess ? "#ecfdf5" : "#eff6ff",
+                border: `1px solid ${emailSuccess ? "#a7f3d0" : "#bfdbfe"}`,
+                borderRadius: "8px",
+                padding: "8px 14px",
+                fontSize: "12px",
+                fontWeight: 600,
+                color: emailSuccess ? "#065f46" : "#1d4ed8",
+                cursor: "pointer"
+              }}
+              title="Send instant security alert email to client email via Resend"
+            >
+              {emailSuccess ? <Check size={14} color="#16a34a" /> : <Mail size={14} />}
+              {emailing ? "Dispatching..." : emailSuccess ? emailSuccess : "Email Incident Alert"}
+            </button>
+          </div>
 
           <button
             onClick={onClose}

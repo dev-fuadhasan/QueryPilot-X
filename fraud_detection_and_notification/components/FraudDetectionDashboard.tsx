@@ -21,6 +21,7 @@ import {
   Cloud,
   UploadCloud,
   Flame,
+  Mail,
   Play,
   Pause
 } from "lucide-react";
@@ -105,6 +106,14 @@ export default function FraudDetectionDashboard() {
   // Live Incident Simulation Studio State
   const [showSimulationStudio, setShowSimulationStudio] = useState(false);
 
+  // Automated Email Alert State
+  const [emailSettings, setEmailSettings] = useState<{
+    recipientEmail: string;
+    fraudAlertsEnabled: boolean;
+    minSeverity: string;
+  } | null>(null);
+  const dispatchedEmailKeysRef = useRef<Set<string>>(new Set());
+
   // Change Notifications List
   const [notifications, setNotifications] = useState<ChangeNotification[]>([]);
   const [isLiveActive, setIsLiveActive] = useState(true);
@@ -175,6 +184,16 @@ export default function FraudDetectionDashboard() {
       if (storedSnapshot) {
         snapshotRef.current = JSON.parse(storedSnapshot);
       }
+
+      // Load active email notification preferences
+      fetch("/api/notifications/email", { cache: "no-store" })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.settings?.recipientEmail) {
+            setEmailSettings(data.settings);
+          }
+        })
+        .catch(() => {});
     } catch {
       // Ignored
     }
@@ -401,6 +420,31 @@ export default function FraudDetectionDashboard() {
               );
               setTimeout(() => setNewAlertNotice(null), 5000);
 
+              // Automated Resend Email Alert Dispatch for high-risk mutations
+              if (emailSettings?.fraudAlertsEnabled && emailSettings.recipientEmail) {
+                const highRiskIncidents = fresh.filter((d) => {
+                  const sev = d.riskSeverity || d.riskAssessment?.severity || "LOW";
+                  const meetsThreshold =
+                    emailSettings.minSeverity === "CRITICAL"
+                      ? sev === "CRITICAL"
+                      : sev === "CRITICAL" || sev === "HIGH";
+                  return meetsThreshold && !dispatchedEmailKeysRef.current.has(d.id);
+                });
+
+                for (const inc of highRiskIncidents) {
+                  dispatchedEmailKeysRef.current.add(inc.id);
+                  void fetch("/api/notifications/email", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      action: "fraud-alert",
+                      incident: inc,
+                      recipientEmail: emailSettings.recipientEmail,
+                    }),
+                  }).catch(() => {});
+                }
+              }
+
               const combined = [...fresh, ...prev];
               try {
                 localStorage.setItem(HISTORY_KEY, JSON.stringify(combined.slice(0, 500)));
@@ -587,10 +631,28 @@ export default function FraudDetectionDashboard() {
       persistNotifications(combined);
       return combined;
     });
-    setNewAlertNotice(
-      `🚨 Incident Injected: ${incident.columnName} (${incident.riskSeverity})`
-    );
-    setTimeout(() => setNewAlertNotice(null), 5000);
+
+    if (emailSettings?.fraudAlertsEnabled && emailSettings.recipientEmail) {
+      dispatchedEmailKeysRef.current.add(incident.id);
+      void fetch("/api/notifications/email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "fraud-alert",
+          incident,
+          recipientEmail: emailSettings.recipientEmail,
+        }),
+      }).catch(() => {});
+
+      setNewAlertNotice(
+        `🚨 Incident Injected & Email Alert Dispatched to ${emailSettings.recipientEmail} (${incident.riskSeverity})`
+      );
+    } else {
+      setNewAlertNotice(
+        `🚨 Incident Injected: ${incident.columnName} (${incident.riskSeverity})`
+      );
+    }
+    setTimeout(() => setNewAlertNotice(null), 6000);
   };
 
   return (
@@ -609,6 +671,24 @@ export default function FraudDetectionDashboard() {
         </div>
 
         <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+          {/* EMAIL ALERT CHANNEL BADGE */}
+          {emailSettings?.recipientEmail && (
+            <div
+              className="connection-status"
+              style={{
+                background: "#eff6ff",
+                borderColor: "#bfdbfe",
+                color: "#1d4ed8",
+                fontWeight: 600,
+                fontSize: "11px",
+              }}
+              title={`Automated alert dispatch configured for ${emailSettings.recipientEmail}`}
+            >
+              <Mail size={12} style={{ color: "#2563eb" }} />
+              <span>Alerts: {emailSettings.recipientEmail}</span>
+            </div>
+          )}
+
           {/* LIVE STATUS PILL */}
           <div
             className="connection-status"
