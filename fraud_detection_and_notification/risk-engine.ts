@@ -242,3 +242,124 @@ export function evaluateChangeRisk(
     recommendation,
   };
 }
+
+/**
+ * Generates an automated, safe, deterministic SQL Rollback statement for any audited mutation.
+ * Enables 1-click remediation without manual SQL drafting.
+ */
+export function generateSafeSqlRollback(
+  tableName: string,
+  recordId: string,
+  columnName: string,
+  oldValue: unknown,
+  newValue: unknown,
+  eventType = "UPDATE",
+  pkColumn = "id"
+): {
+  sql: string;
+  isDestructive: boolean;
+  summary: string;
+} {
+  const safeTable = tableName.replace(/[^a-zA-Z0-9_]/g, "");
+  const safeCol = columnName.replace(/[^a-zA-Z0-9_]/g, "");
+  const safePk = pkColumn.replace(/[^a-zA-Z0-9_]/g, "");
+  const safeId = String(recordId).replace(/'/g, "''");
+
+  if (eventType === "INSERT") {
+    return {
+      sql: `DELETE FROM "${safeTable}" WHERE "${safePk}" = '${safeId}';`,
+      isDestructive: true,
+      summary: `Removes inserted record #${recordId} from table '${tableName}'.`,
+    };
+  }
+
+  // UPDATE rollback: Revert current column back to oldValue
+  let formattedOldVal: string;
+  if (oldValue === null || oldValue === undefined || String(oldValue).toUpperCase() === "NULL") {
+    formattedOldVal = "NULL";
+  } else if (typeof oldValue === "number") {
+    formattedOldVal = String(oldValue);
+  } else if (typeof oldValue === "boolean") {
+    formattedOldVal = oldValue ? "TRUE" : "FALSE";
+  } else {
+    formattedOldVal = `'${String(oldValue).replace(/'/g, "''")}'`;
+  }
+
+  return {
+    sql: `UPDATE "${safeTable}"\nSET "${safeCol}" = ${formattedOldVal}\nWHERE "${safePk}" = '${safeId}';`,
+    isDestructive: false,
+    summary: `Reverts column '${columnName}' from '${String(newValue)}' back to previous value: ${formattedOldVal}.`,
+  };
+}
+
+export interface BlastRadiusEstimate {
+  impactScope: "SYSTEM_WIDE" | "CROSS_TABLE" | "LOCAL_RECORD";
+  estimatedDownstreamCount: number;
+  cascadingEntities: string[];
+  isolationAdvice: string;
+}
+
+/**
+ * Calculates the relational blast radius and downstream dependency impact
+ * when a table record or column is altered.
+ */
+export function estimateBlastRadius(
+  tableName: string,
+  columnName: string,
+  knownTables: string[] = []
+): BlastRadiusEstimate {
+  const tLower = tableName.toLowerCase();
+  const cLower = columnName.toLowerCase();
+
+  // 1. Identity & Auth Tables (Highest blast radius)
+  if (tLower === "users" || tLower === "accounts" || tLower === "auth_users" || tLower === "profiles") {
+    const dependents = knownTables.filter(t => {
+      const tl = t.toLowerCase();
+      return tl !== tLower && (tl.includes("order") || tl.includes("sale") || tl.includes("invoice") || tl.includes("session") || tl.includes("wallet") || tl.includes("log"));
+    });
+    const defaultDeps = ["orders", "user_sessions", "wallets", "invoices", "audit_trail"];
+    const entities = dependents.length > 0 ? dependents : defaultDeps;
+
+    return {
+      impactScope: "SYSTEM_WIDE",
+      estimatedDownstreamCount: Math.max(5, entities.length),
+      cascadingEntities: entities.slice(0, 5),
+      isolationAdvice: "Critical identity node altered. Recommend session token revocation and cross-checking linked transaction ledgers.",
+    };
+  }
+
+  // 2. Financial / Transaction Ledgers (High cross-table cascade)
+  if (tLower === "orders" || tLower === "sales" || tLower === "transactions" || tLower === "wallets" || tLower === "payments") {
+    const dependents = knownTables.filter(t => {
+      const tl = t.toLowerCase();
+      return tl !== tLower && (tl.includes("item") || tl.includes("invoice") || tl.includes("ledger") || tl.includes("payout") || tl.includes("balance"));
+    });
+    const defaultDeps = ["order_items", "tax_records", "ledger_journal", "payouts"];
+    const entities = dependents.length > 0 ? dependents : defaultDeps;
+
+    return {
+      impactScope: "CROSS_TABLE",
+      estimatedDownstreamCount: Math.max(3, entities.length),
+      cascadingEntities: entities.slice(0, 4),
+      isolationAdvice: "Fiscal mutation detected. Verify double-entry ledger balance and review downstream invoice states.",
+    };
+  }
+
+  // 3. Products / Pricing (Catalog cascade)
+  if (tLower === "products" || tLower === "items" || tLower === "plans") {
+    return {
+      impactScope: "CROSS_TABLE",
+      estimatedDownstreamCount: 2,
+      cascadingEntities: ["order_items", "cart_sessions", "price_history"],
+      isolationAdvice: "Catalog pricing modified. Validate checkout cache and actively open shopping sessions.",
+    };
+  }
+
+  // 4. Default: Local Record Mutation
+  return {
+    impactScope: "LOCAL_RECORD",
+    estimatedDownstreamCount: 1,
+    cascadingEntities: ["audit_log"],
+    isolationAdvice: "Localized record modification. Standard operational monitoring applies.",
+  };
+}

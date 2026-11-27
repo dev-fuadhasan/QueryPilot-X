@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { evaluateChangeRisk } from "./risk-engine";
+import { evaluateChangeRisk, generateSafeSqlRollback, estimateBlastRadius } from "./risk-engine";
 
 test("Risk Engine: assesses baseline low-risk mutation", () => {
   const result = evaluateChangeRisk("products", "description", "Red shoes", "Blue shoes");
@@ -44,4 +44,39 @@ test("Risk Engine: adjusts severity threshold with aggressive high sensitivity",
   const normalResult = evaluateChangeRisk("orders", "discount", 10, 20, new Date(), "universal", "medium");
   const aggressiveResult = evaluateChangeRisk("orders", "discount", 10, 20, new Date(), "universal", "high");
   assert.ok(aggressiveResult.severity === "HIGH" || aggressiveResult.severity === "CRITICAL");
+});
+
+test("Rollback Engine: generates safe UPDATE rollback SQL for modified column", () => {
+  const plan = generateSafeSqlRollback("users", "usr_100", "role", "member", "admin", "UPDATE", "id");
+  assert.equal(plan.isDestructive, false);
+  assert.ok(plan.sql.includes('UPDATE "users"'));
+  assert.ok(plan.sql.includes('SET "role" = \'member\''));
+  assert.ok(plan.sql.includes('WHERE "id" = \'usr_100\''));
+});
+
+test("Rollback Engine: generates safe DELETE rollback SQL for unauthorized insert", () => {
+  const plan = generateSafeSqlRollback("wallets", "wlt_999", "New Record", null, { balance: 5000 }, "INSERT", "wallet_id");
+  assert.equal(plan.isDestructive, true);
+  assert.equal(plan.sql, 'DELETE FROM "wallets" WHERE "wallet_id" = \'wlt_999\';');
+});
+
+test("Blast Radius: identifies SYSTEM_WIDE impact for users table", () => {
+  const result = estimateBlastRadius("users", "role");
+  assert.equal(result.impactScope, "SYSTEM_WIDE");
+  assert.ok(result.estimatedDownstreamCount >= 5);
+  assert.ok(result.cascadingEntities.length > 0);
+  assert.ok(result.isolationAdvice.length > 0);
+});
+
+test("Blast Radius: identifies CROSS_TABLE cascade for orders table", () => {
+  const result = estimateBlastRadius("orders", "amount");
+  assert.equal(result.impactScope, "CROSS_TABLE");
+  assert.ok(result.estimatedDownstreamCount >= 3);
+  assert.ok(result.cascadingEntities.some(e => e.includes("ledger") || e.includes("item") || e.includes("invoice") || e.includes("tax") || e.includes("payout")));
+});
+
+test("Blast Radius: defaults to LOCAL_RECORD for unknown table", () => {
+  const result = estimateBlastRadius("audit_metadata", "created_at");
+  assert.equal(result.impactScope, "LOCAL_RECORD");
+  assert.equal(result.estimatedDownstreamCount, 1);
 });

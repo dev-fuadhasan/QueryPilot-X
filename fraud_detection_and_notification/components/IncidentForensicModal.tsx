@@ -14,9 +14,15 @@ import {
   ArrowRight,
   Database,
   Calendar,
-  UserCheck
+  UserCheck,
+  Mail,
+  Send,
+  RotateCcw,
+  Share2,
+  Layers
 } from "lucide-react";
 import type { ChangeNotification } from "../types";
+import { generateSafeSqlRollback, estimateBlastRadius } from "../risk-engine";
 
 interface IncidentForensicModalProps {
   incident: ChangeNotification | null;
@@ -25,6 +31,9 @@ interface IncidentForensicModalProps {
 
 export default function IncidentForensicModal({ incident, onClose }: IncidentForensicModalProps) {
   const [copied, setCopied] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
+  const [emailing, setEmailing] = useState(false);
+  const [emailSuccess, setEmailSuccess] = useState<string | null>(null);
 
   if (!incident) return null;
 
@@ -35,10 +44,50 @@ export default function IncidentForensicModal({ incident, onClose }: IncidentFor
     recommendation: "Routine database modification. Standard operational monitoring applies."
   };
 
+  const rollbackPlan = generateSafeSqlRollback(
+    incident.tableName,
+    incident.recordId,
+    incident.columnName,
+    incident.oldValue,
+    incident.newValue,
+    incident.changeType || "UPDATE"
+  );
+
+  const blastRadius = estimateBlastRadius(incident.tableName, incident.columnName);
+
   const copyJson = () => {
     navigator.clipboard.writeText(JSON.stringify(incident, null, 2));
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
+  };
+
+  const handleCopySql = () => {
+    navigator.clipboard.writeText(rollbackPlan.sql);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 2500);
+  };
+
+  const handleEmailIncident = async () => {
+    setEmailing(true);
+    setEmailSuccess(null);
+    try {
+      const res = await fetch("/api/notifications/email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "fraud-alert", incident }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setEmailSuccess("Alert Dispatched via Email!");
+        setTimeout(() => setEmailSuccess(null), 4000);
+      } else {
+        alert(data.error || "Failed to dispatch email. Please configure recipient email in Profile.");
+      }
+    } catch {
+      alert("Network error sending incident email.");
+    } finally {
+      setEmailing(false);
+    }
   };
 
   const severityColors = {
@@ -319,6 +368,124 @@ export default function IncidentForensicModal({ incident, onClose }: IncidentFor
               <strong>Timestamp:</strong> {incident.timestamp}
             </div>
           </div>
+
+          {/* RELATIONAL BLAST RADIUS MATRIX */}
+          <div
+            style={{
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderRadius: "10px",
+              padding: "16px 20px",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", flexWrap: "wrap", gap: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <Share2 size={15} color="#2563eb" />
+                <h4 style={{ margin: 0, fontSize: "12px", fontWeight: 700, color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Relational Blast Radius & Cascading Impact
+                </h4>
+              </div>
+              <span
+                style={{
+                  fontSize: "10px",
+                  fontWeight: 800,
+                  padding: "3px 8px",
+                  borderRadius: "6px",
+                  background: blastRadius.impactScope === "SYSTEM_WIDE" ? "#fef2f2" : blastRadius.impactScope === "CROSS_TABLE" ? "#fff7ed" : "#f0fdf4",
+                  color: blastRadius.impactScope === "SYSTEM_WIDE" ? "#dc2626" : blastRadius.impactScope === "CROSS_TABLE" ? "#c2410c" : "#16a34a",
+                  border: `1px solid ${blastRadius.impactScope === "SYSTEM_WIDE" ? "#fecaca" : blastRadius.impactScope === "CROSS_TABLE" ? "#fed7aa" : "#bbf7d0"}`,
+                }}
+              >
+                {blastRadius.impactScope === "SYSTEM_WIDE" ? "🌐 SYSTEM-WIDE IMPACT" : blastRadius.impactScope === "CROSS_TABLE" ? "⚡ CROSS-TABLE CASCADE" : "🔒 LOCAL RECORD ISOLATION"}
+              </span>
+            </div>
+
+            <p style={{ margin: "0 0 10px", fontSize: "12px", color: "#475569", lineHeight: 1.5 }}>
+              {blastRadius.isolationAdvice}
+            </p>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: "11px", fontWeight: 700, color: "#64748b" }}>
+                Dependent Entities ({blastRadius.estimatedDownstreamCount}):
+              </span>
+              {blastRadius.cascadingEntities.map((ent, idx) => (
+                <span
+                  key={idx}
+                  style={{
+                    fontSize: "11px",
+                    fontFamily: "monospace",
+                    background: "#f1f5f9",
+                    color: "#334155",
+                    padding: "2px 8px",
+                    borderRadius: "4px",
+                    border: "1px solid #e2e8f0",
+                  }}
+                >
+                  {ent}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {/* 1-CLICK SAFE SQL ROLLBACK PLAYBOOK */}
+          <div
+            style={{
+              background: "#0f172a",
+              color: "#f8fafc",
+              borderRadius: "10px",
+              padding: "16px 20px",
+              boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", flexWrap: "wrap", gap: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <RotateCcw size={15} color="#38bdf8" />
+                <strong style={{ fontSize: "12px", textTransform: "uppercase", letterSpacing: "0.05em", color: "#38bdf8" }}>
+                  1-Click Safe SQL Rollback Playbook
+                </strong>
+              </div>
+              <button
+                type="button"
+                onClick={handleCopySql}
+                style={{
+                  background: copiedSql ? "#16a34a" : "#1e293b",
+                  border: "1px solid #334155",
+                  borderRadius: "6px",
+                  padding: "4px 10px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  color: "#ffffff",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "4px",
+                }}
+              >
+                {copiedSql ? <Check size={12} /> : <Copy size={12} />}
+                {copiedSql ? "Rollback SQL Copied!" : "Copy Rollback SQL"}
+              </button>
+            </div>
+
+            <pre
+              style={{
+                background: "#020617",
+                padding: "10px 14px",
+                borderRadius: "6px",
+                fontFamily: "ui-monospace, monospace",
+                fontSize: "12px",
+                color: "#7dd3fc",
+                margin: "0 0 8px",
+                overflowX: "auto",
+                whiteSpace: "pre-wrap",
+                border: "1px solid #1e293b",
+              }}
+            >
+              {rollbackPlan.sql}
+            </pre>
+            <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+              {rollbackPlan.summary}
+            </span>
+          </div>
         </div>
 
         {/* MODAL FOOTER */}
@@ -329,28 +496,54 @@ export default function IncidentForensicModal({ incident, onClose }: IncidentFor
             background: "#f8fafc",
             display: "flex",
             justifyContent: "space-between",
-            alignItems: "center"
+            alignItems: "center",
+            gap: "10px",
+            flexWrap: "wrap"
           }}
         >
-          <button
-            onClick={copyJson}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              background: "#ffffff",
-              border: "1px solid #cbd5e1",
-              borderRadius: "8px",
-              padding: "8px 14px",
-              fontSize: "12px",
-              fontWeight: 600,
-              color: "#334155",
-              cursor: "pointer"
-            }}
-          >
-            {copied ? <Check size={14} color="#16a34a" /> : <Copy size={14} />}
-            {copied ? "Incident JSON Copied!" : "Export Incident JSON"}
-          </button>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <button
+              onClick={copyJson}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                background: "#ffffff",
+                border: "1px solid #cbd5e1",
+                borderRadius: "8px",
+                padding: "8px 14px",
+                fontSize: "12px",
+                fontWeight: 600,
+                color: "#334155",
+                cursor: "pointer"
+              }}
+            >
+              {copied ? <Check size={14} color="#16a34a" /> : <Copy size={14} />}
+              {copied ? "Incident JSON Copied!" : "Export Incident JSON"}
+            </button>
+
+            <button
+              onClick={handleEmailIncident}
+              disabled={emailing}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                background: emailSuccess ? "#ecfdf5" : "#eff6ff",
+                border: `1px solid ${emailSuccess ? "#a7f3d0" : "#bfdbfe"}`,
+                borderRadius: "8px",
+                padding: "8px 14px",
+                fontSize: "12px",
+                fontWeight: 600,
+                color: emailSuccess ? "#065f46" : "#1d4ed8",
+                cursor: "pointer"
+              }}
+              title="Send instant security alert email to client email via Resend"
+            >
+              {emailSuccess ? <Check size={14} color="#16a34a" /> : <Mail size={14} />}
+              {emailing ? "Dispatching..." : emailSuccess ? emailSuccess : "Email Incident Alert"}
+            </button>
+          </div>
 
           <button
             onClick={onClose}
