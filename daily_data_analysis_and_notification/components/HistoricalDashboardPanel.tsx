@@ -38,7 +38,6 @@ import {
   formatSignedPercent,
   getDomainUiMeta,
   MANUAL_QUICK_RANGE_OPTIONS,
-  todayIsoInTimezone,
   validateManualRangeSelection
 } from "./dashboard-helpers";
 import styles from "./DailyAnalysisDashboard.module.css";
@@ -103,7 +102,6 @@ export default function HistoricalDashboardPanel({
   }, [customStart, customEnd]);
 
   const domainMeta = getDomainUiMeta(selectedDomain);
-  const maxDate = todayIsoInTimezone(timezone);
 
   const seriesOptions = useMemo(() => extractHistoricalSeriesOptions(analysis), [analysis]);
   const activeMetricKey = useMemo(() => {
@@ -241,8 +239,6 @@ export default function HistoricalDashboardPanel({
                   type="date"
                   className={styles.textInput}
                   value={draftStart}
-                  min={earliestAvailableDate?.slice(0, 10) || undefined}
-                  max={draftEnd || maxDate}
                   onChange={e => { setDraftStart(e.target.value); setRangeError(null); }}
                 />
               </div>
@@ -253,8 +249,6 @@ export default function HistoricalDashboardPanel({
                   type="date"
                   className={styles.textInput}
                   value={draftEnd}
-                  min={draftStart || earliestAvailableDate?.slice(0, 10) || undefined}
-                  max={maxDate}
                   onChange={e => { setDraftEnd(e.target.value); setRangeError(null); }}
                 />
               </div>

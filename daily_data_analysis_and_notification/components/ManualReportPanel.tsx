@@ -19,7 +19,6 @@ import {
   getDomainUiMeta,
   isReportPdfDownloadable,
   MANUAL_QUICK_RANGE_OPTIONS,
-  todayIsoInTimezone,
   validateManualRangeSelection
 } from "./dashboard-helpers";
 import styles from "./DailyAnalysisDashboard.module.css";
@@ -61,7 +60,6 @@ export default function ManualReportPanel({
   const [validationError, setValidationError] = useState<string | null>(null);
 
   const domainMeta = getDomainUiMeta(selectedDomain);
-  const maxDate = todayIsoInTimezone(timezone);
   const liveValidation = validateManualRangeSelection({
     quickRange,
     startDate,
@@ -153,8 +151,6 @@ export default function ManualReportPanel({
                   type="date"
                   className={styles.textInput}
                   value={startDate}
-                  min={earliestAvailableDate?.slice(0, 10) || undefined}
-                  max={endDate || maxDate}
                   onChange={event => {
                     setStartDate(event.target.value);
                     setValidationError(null);
@@ -171,8 +167,6 @@ export default function ManualReportPanel({
                   type="date"
                   className={styles.textInput}
                   value={endDate}
-                  min={startDate || earliestAvailableDate?.slice(0, 10) || undefined}
-                  max={maxDate}
                   onChange={event => {
                     setEndDate(event.target.value);
                     setValidationError(null);

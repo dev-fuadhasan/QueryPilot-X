@@ -66,12 +66,6 @@ function saveReadAlertIds(ids: Set<string>) {
   }
 }
 
-function addIsoDays(isoDate: string, deltaDays: number): string {
-  const dt = new Date(`${isoDate}T00:00:00.000Z`);
-  dt.setUTCDate(dt.getUTCDate() + deltaDays);
-  return dt.toISOString().slice(0, 10);
-}
-
 function base64ToPdfBlob(base64: string): Blob {
   const binary = window.atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -561,7 +555,8 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         body: JSON.stringify({
           forceRun,
           dataset: selectedDataset || undefined,
-          domain: selectedDomain || undefined
+          domain: selectedDomain || undefined,
+          comparisonPreset
         })
       });
       const data = await response.json();
@@ -594,7 +589,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     } finally {
       runningScheduledRef.current = false;
     }
-  }, [loadArchiveReports, selectedDataset, selectedDomain]);
+  }, [comparisonPreset, loadArchiveReports, selectedDataset, selectedDomain]);
 
   // Watch the configured schedule clock while the dashboard is open and auto-generate when due
   useEffect(() => {
@@ -679,37 +674,15 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
     try {
       const earliest = currentTableProfile?.freshness.earliestDate?.slice(0, 10) || null;
       const latest = currentTableProfile?.freshness.latestDate?.slice(0, 10) || null;
-      const today = getCurrentClockInTz(timezone).date;
-      const anchorEnd = latest && latest <= today ? latest : today;
+      const startDate = requestPayload.startDate?.trim() || "";
+      const endDate = requestPayload.endDate?.trim() || "";
+      const hasManualDates = Boolean(startDate && endDate);
 
-      let quickRange: "all_history" | "custom" = "custom";
-      let startDate = requestPayload.startDate?.trim() || "";
-      let endDate = requestPayload.endDate?.trim() || "";
-
-      if (startDate && endDate) {
-        quickRange = "custom";
-      } else if (requestPayload.comparisonPreset === "none") {
-        quickRange = "all_history";
-        startDate = "";
-        endDate = "";
-      } else {
-        const lookbackByPreset: Partial<Record<ComparisonPreset, number>> = {
-          previous_day: 0,
-          same_weekday_previous_weeks: 0,
-          previous_week: 6,
-          previous_7_days: 6,
-          previous_month: 29,
-          previous_30_days: 29,
-          previous_90_days: 89,
-          previous_180_days: 179,
-          previous_365_days: 364
-        };
-        const lookback = lookbackByPreset[requestPayload.comparisonPreset] ?? 29;
-        endDate = anchorEnd;
-        const computedStart = addIsoDays(anchorEnd, -lookback);
-        startDate = earliest && computedStart < earliest ? earliest : computedStart;
-        quickRange = "custom";
-      }
+      const quickRange: "all_history" | "last_30_days" | "custom" = hasManualDates
+        ? "custom"
+        : requestPayload.comparisonPreset === "none"
+          ? "all_history"
+          : "last_30_days";
 
       const response = await fetch("/api/daily-analysis/reports", {
         method: "POST",
@@ -719,8 +692,9 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
           table: selectedDataset,
           domain: selectedDomain,
           quickRange,
-          ...(quickRange === "custom" ? { startDate, endDate } : {}),
+          ...(hasManualDates ? { startDate, endDate } : {}),
           comparisonPreset: requestPayload.comparisonPreset,
+          anchorToDatasetDates: !hasManualDates,
           timezone,
           overrides: Object.keys(columnOverrides).length ? columnOverrides : undefined,
           earliestAvailableDate: earliest || undefined,
