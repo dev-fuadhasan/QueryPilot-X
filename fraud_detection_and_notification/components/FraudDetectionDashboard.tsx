@@ -110,8 +110,10 @@ export default function FraudDetectionDashboard() {
   const [emailSettings, setEmailSettings] = useState<{
     recipientEmail: string;
     fraudAlertsEnabled: boolean;
+    dailyAnalysisEnabled?: boolean;
     minSeverity: string;
   } | null>(null);
+  const [sendingDigest, setSendingDigest] = useState(false);
   const dispatchedEmailKeysRef = useRef<Set<string>>(new Set());
 
   // Change Notifications List
@@ -623,6 +625,66 @@ export default function FraudDetectionDashboard() {
     }
   };
 
+  // Dispatch Daily Analysis Email Digest
+  const handleSendDailyDigest = async () => {
+    if (!emailSettings?.recipientEmail) {
+      setNewAlertNotice("ℹ️ Configure your notification email in Profile Settings first to send a Daily Digest.");
+      setTimeout(() => setNewAlertNotice(null), 5000);
+      return;
+    }
+
+    setSendingDigest(true);
+    try {
+      const highRiskCount = notifications.filter((n) => {
+        const sev = n.riskSeverity || n.riskAssessment?.severity;
+        return sev === "CRITICAL" || sev === "HIGH";
+      }).length;
+
+      const topFindings =
+        notifications.slice(0, 3).map(
+          (n) =>
+            `[${n.riskSeverity || "INFO"}] ${n.tableName}.${n.columnName} (#${n.recordId}): ${n.reason}`
+        );
+
+      const res = await fetch("/api/notifications/email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "daily-digest",
+          recipientEmail: emailSettings.recipientEmail,
+          summary: {
+            projectName: "QueryPilot-X Workspace",
+            date: new Date().toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            }),
+            metricsAnalyzed: Math.max(monitoredTables.length, 1),
+            anomaliesFound: highRiskCount,
+            topFindings:
+              topFindings.length > 0
+                ? topFindings
+                : ["All monitored tables and records are operating within normal baselines."],
+          },
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setNewAlertNotice(`📧 Daily Analysis Digest sent to ${emailSettings.recipientEmail}`);
+        setTimeout(() => setNewAlertNotice(null), 5000);
+      } else {
+        setNewAlertNotice(`⚠️ Failed to send Daily Digest: ${data.error || "Unknown error"}`);
+        setTimeout(() => setNewAlertNotice(null), 5000);
+      }
+    } catch {
+      setNewAlertNotice("⚠️ Network error while sending Daily Digest.");
+      setTimeout(() => setNewAlertNotice(null), 5000);
+    } finally {
+      setSendingDigest(false);
+    }
+  };
+
   // Inject Simulated Incident from Simulation Studio
   const handleInjectSimulatedIncident = (incident: ChangeNotification) => {
     seenHashesRef.current.add(incident.id);
@@ -734,6 +796,17 @@ export default function FraudDetectionDashboard() {
             title="Browse reports archived in Supabase Storage"
           >
             <Cloud size={14} style={{ color: "#2563eb" }} /> Cloud Archives
+          </button>
+
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={handleSendDailyDigest}
+            disabled={sendingDigest}
+            title="Send Daily Analysis & Fraud Digest to your configured client email"
+          >
+            <Mail size={14} style={{ color: "#0ea5e9" }} />
+            {sendingDigest ? "Sending..." : "Send Digest"}
           </button>
 
           <button
