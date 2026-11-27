@@ -17,10 +17,12 @@ import {
   UserCheck,
   Mail,
   Send,
-  RotateCcw
+  RotateCcw,
+  Share2,
+  Layers
 } from "lucide-react";
 import type { ChangeNotification } from "../types";
-import { generateSafeSqlRollback } from "../risk-engine";
+import { generateSafeSqlRollback, estimateBlastRadius } from "../risk-engine";
 
 interface IncidentForensicModalProps {
   incident: ChangeNotification | null;
@@ -50,6 +52,8 @@ export default function IncidentForensicModal({ incident, onClose }: IncidentFor
     incident.newValue,
     incident.changeType || "UPDATE"
   );
+
+  const blastRadius = estimateBlastRadius(incident.tableName, incident.columnName);
 
   const copyJson = () => {
     navigator.clipboard.writeText(JSON.stringify(incident, null, 2));
@@ -362,6 +366,64 @@ export default function IncidentForensicModal({ incident, onClose }: IncidentFor
             </div>
             <div>
               <strong>Timestamp:</strong> {incident.timestamp}
+            </div>
+          </div>
+
+          {/* RELATIONAL BLAST RADIUS MATRIX */}
+          <div
+            style={{
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderRadius: "10px",
+              padding: "16px 20px",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px", flexWrap: "wrap", gap: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <Share2 size={15} color="#2563eb" />
+                <h4 style={{ margin: 0, fontSize: "12px", fontWeight: 700, color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Relational Blast Radius & Cascading Impact
+                </h4>
+              </div>
+              <span
+                style={{
+                  fontSize: "10px",
+                  fontWeight: 800,
+                  padding: "3px 8px",
+                  borderRadius: "6px",
+                  background: blastRadius.impactScope === "SYSTEM_WIDE" ? "#fef2f2" : blastRadius.impactScope === "CROSS_TABLE" ? "#fff7ed" : "#f0fdf4",
+                  color: blastRadius.impactScope === "SYSTEM_WIDE" ? "#dc2626" : blastRadius.impactScope === "CROSS_TABLE" ? "#c2410c" : "#16a34a",
+                  border: `1px solid ${blastRadius.impactScope === "SYSTEM_WIDE" ? "#fecaca" : blastRadius.impactScope === "CROSS_TABLE" ? "#fed7aa" : "#bbf7d0"}`,
+                }}
+              >
+                {blastRadius.impactScope === "SYSTEM_WIDE" ? "🌐 SYSTEM-WIDE IMPACT" : blastRadius.impactScope === "CROSS_TABLE" ? "⚡ CROSS-TABLE CASCADE" : "🔒 LOCAL RECORD ISOLATION"}
+              </span>
+            </div>
+
+            <p style={{ margin: "0 0 10px", fontSize: "12px", color: "#475569", lineHeight: 1.5 }}>
+              {blastRadius.isolationAdvice}
+            </p>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: "11px", fontWeight: 700, color: "#64748b" }}>
+                Dependent Entities ({blastRadius.estimatedDownstreamCount}):
+              </span>
+              {blastRadius.cascadingEntities.map((ent, idx) => (
+                <span
+                  key={idx}
+                  style={{
+                    fontSize: "11px",
+                    fontFamily: "monospace",
+                    background: "#f1f5f9",
+                    color: "#334155",
+                    padding: "2px 8px",
+                    borderRadius: "4px",
+                    border: "1px solid #e2e8f0",
+                  }}
+                >
+                  {ent}
+                </span>
+              ))}
             </div>
           </div>
 
