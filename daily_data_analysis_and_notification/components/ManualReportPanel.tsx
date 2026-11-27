@@ -106,7 +106,7 @@ export default function ManualReportPanel({
               <FileSpreadsheet size={17} /> Manual Report Generation
             </h2>
             <p className={styles.cardSub}>
-              Generate an on-demand report for any rolling window or custom date range. Independent of your Automatic Daily Report schedule.
+              Generate an on-demand report for any rolling window or custom date range. Independent of your Report Automation schedule.
             </p>
           </div>
           <span className={`${styles.badge} ${styles.badgeInfo}`}>

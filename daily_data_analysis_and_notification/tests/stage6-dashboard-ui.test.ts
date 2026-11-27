@@ -417,7 +417,12 @@ test("React UI components render real multi-domain backend intelligence without 
     onCompareArchivedReports: async () => undefined,
     onDownloadReportPdf: async () => undefined
   }));
-  assert.match(toolsHtml, /Intelligence Brief/);
+  assert.match(toolsHtml, /Smart Analysis Tools/);
+  assert.match(toolsHtml, /Findings &amp; Intelligence Brief/);
+  assert.match(toolsHtml, /Alerts &amp; Notifications/);
+  assert.doesNotMatch(toolsHtml, /Daily Analysis Tools/);
+  assert.doesNotMatch(toolsHtml, /Daily Intelligence Brief/);
+  assert.doesNotMatch(toolsHtml, /Daily Alerts/);
   assert.match(toolsHtml, /Smart Comparison/);
   assert.match(toolsHtml, /Root Cause/);
   assert.match(toolsHtml, /Recommendations/);
