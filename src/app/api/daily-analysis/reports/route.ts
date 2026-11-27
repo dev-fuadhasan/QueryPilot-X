@@ -23,6 +23,7 @@ import {
   getStorageCapabilityStatus,
   renderValidatedPdfForPayload,
   resolveManualReportPeriod,
+  resolveSharedPdfStorageEnv,
   type ManualQuickRange,
   type PersistentReportPdfStatus,
   type PersistentReportRecord,
@@ -319,7 +320,11 @@ export async function POST(request: NextRequest) {
       });
 
       return access.applyCookie(NextResponse.json(
-        { report: record, downloadUrl },
+        {
+          report: record,
+          downloadUrl,
+          storageMode: resolveSharedPdfStorageEnv().configured ? "cloud" : "local_temporary"
+        },
         { status: 201, headers: { "Cache-Control": "no-store" } }
       ));
     } catch (repoError) {
@@ -404,14 +409,18 @@ export async function POST(request: NextRequest) {
           bytes: pdfBytes,
           metadata: {
             domainId: record.domainId,
+            domainName: record.domainName,
             datasetTable: record.datasetTable,
+            frequency: "manual",
             periodStart,
             periodEnd,
-            generationType: "manual"
+            generationType: "manual",
+            summaryText
           }
         });
 
-        record.id = `cloud_${uploaded.fileId}`;
+        const isCloud = uploaded.backend === "supabase_storage";
+        record.id = `${isCloud ? "cloud" : "local"}_${uploaded.fileId}`;
         record.pdfStatus = "generated";
         record.pdfStorageKey = uploaded.storageKey;
         record.pdfFilename = uploaded.filename;
@@ -421,7 +430,10 @@ export async function POST(request: NextRequest) {
         return access.applyCookie(NextResponse.json(
           {
             report: record,
-            downloadUrl: `/api/storage/download?key=${encodeURIComponent(uploaded.storageKey)}`
+            downloadUrl: isCloud
+              ? `/api/storage/download?key=${encodeURIComponent(uploaded.storageKey)}`
+              : `/api/daily-analysis/reports/${encodeURIComponent(record.id)}/pdf`,
+            storageMode: isCloud ? "cloud" : "local_temporary"
           },
           { status: 201, headers: { "Cache-Control": "no-store" } }
         ));

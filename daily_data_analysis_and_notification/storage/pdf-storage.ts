@@ -27,6 +27,13 @@ export function assertValidPdfBuffer(bytes: Buffer): void {
 
 export const DEFAULT_SHARED_STORAGE_BUCKET = "querypilotx-storage";
 
+export function getDefaultLocalReportsDirectory(): string {
+  return path.resolve(
+    process.env.QUERYPILOT_REPORT_DIRECTORY
+    || path.join(process.cwd(), "daily_data_analysis_and_notification", "generated-reports")
+  );
+}
+
 export function buildPrivatePdfStorageKey(
   organizationId: string,
   reportId: string,
@@ -42,8 +49,9 @@ export function buildPrivatePdfStorageKey(
 }
 
 /**
- * Local filesystem private storage adapter — intended for local development and tests ONLY.
- * Never exposes public URLs and enforces strict base-directory containment against path traversal.
+ * Local filesystem private storage adapter — stores generated PDFs temporarily inside
+ * `daily_data_analysis_and_notification/generated-reports/` (gitignored) until cloud
+ * storage is configured. Enforces strict base-directory containment against path traversal.
  */
 export class LocalPrivatePdfStorage implements PdfStorageAdapter {
   readonly backendName = "local_private_fs" as const;
@@ -51,9 +59,7 @@ export class LocalPrivatePdfStorage implements PdfStorageAdapter {
   private readonly baseDirectory: string;
 
   constructor(baseDirectory?: string) {
-    this.baseDirectory = path.resolve(
-      baseDirectory || process.env.QUERYPILOT_REPORT_DIRECTORY || path.join(process.cwd(), ".local-data", "private-pdfs")
-    );
+    this.baseDirectory = path.resolve(baseDirectory || getDefaultLocalReportsDirectory());
   }
 
   private resolveSafePath(storageKey: string): string {
@@ -249,6 +255,7 @@ export function resolveAppDatabaseUrl(): string {
 export function createDefaultPdfStorage(): PdfStorageAdapter {
   const storageEnv = resolveSharedPdfStorageEnv();
 
+  // Priority 1: Cloud private object storage automatically whenever configured
   if (storageEnv.configured) {
     return new SupabasePrivatePdfStorage({
       url: storageEnv.url,
@@ -256,9 +263,7 @@ export function createDefaultPdfStorage(): PdfStorageAdapter {
       bucket: storageEnv.bucket
     });
   }
-  if (isServerlessProduction() && !process.env.QUERYPILOT_ALLOW_LOCAL_PDF_STORAGE) {
-    return new UnconfiguredProductionPdfStorage();
-  }
+  // Priority 2: Temporary gitignored local module folder (`daily_data_analysis_and_notification/generated-reports/`)
   return new LocalPrivatePdfStorage();
 }
 

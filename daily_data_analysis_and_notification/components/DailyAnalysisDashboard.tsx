@@ -538,7 +538,11 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       const response = await fetch("/api/daily-analysis/reports/run-scheduled", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ forceRun })
+        body: JSON.stringify({
+          forceRun,
+          dataset: selectedDataset || undefined,
+          domain: selectedDomain || undefined
+        })
       });
       const data = await response.json();
       if (!response.ok) {
@@ -551,11 +555,15 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
         setStorageStatus(data.storageStatus as StorageCapabilityStatus);
       }
       if (data.generated) {
+        const isCloudMode = data.storageMode === "cloud" || Boolean(data.storageStatus?.pdfProductionReady);
+        const locationLabel = isCloudMode
+          ? "cloud archive"
+          : "local temporary archive (daily_data_analysis_and_notification/generated-reports/)";
         setSaveFeedback({
           type: "success",
-          text: "Automatic scheduled PDF generated and saved to cloud archive."
+          text: `Automatic scheduled PDF generated and saved to ${locationLabel}.`
         });
-        setPdfGenerateNotice("Automatic scheduled PDF generated and stored in cloud archive.");
+        setPdfGenerateNotice(`Automatic scheduled PDF generated and stored in ${locationLabel}.`);
         await loadArchiveReports();
         if (data.latestAutomaticReport) {
           setScheduleSummary(prev => (prev ? { ...prev, latestAutomaticReport: data.latestAutomaticReport } : prev));
@@ -574,7 +582,7 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       runningScheduledRef.current = false;
       setRunningScheduledNow(false);
     }
-  }, [loadArchiveReports]);
+  }, [loadArchiveReports, selectedDataset, selectedDomain]);
 
   // Watch the configured schedule clock while the dashboard is open and auto-generate when due
   useEffect(() => {
@@ -629,10 +637,13 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       if (data.scheduleSummary) setScheduleSummary(data.scheduleSummary as ScheduleRuntimeSummary);
       lastScheduledCheckKeyRef.current = "";
 
+      const cloudReadyNow = Boolean(data.storageStatus?.pdfProductionReady);
       setSaveFeedback({
         type: "success",
         text: savedSettings.autoReportEnabled
-          ? `Schedule saved (${savedSettings.frequency} at ${savedSettings.scheduledTime} ${savedSettings.timezone}). PDF will auto-generate and save to cloud storage when due.`
+          ? cloudReadyNow
+            ? `Schedule saved (${savedSettings.frequency} at ${savedSettings.scheduledTime} ${savedSettings.timezone}). PDF will auto-generate and save to cloud storage when due.`
+            : `Schedule saved (${savedSettings.frequency} at ${savedSettings.scheduledTime} ${savedSettings.timezone}). PDF will auto-generate and save locally (generated-reports/) until cloud storage is configured.`
           : "Automatic report generation paused and saved."
       });
       if (savedSettings.autoReportEnabled) {
@@ -677,11 +688,16 @@ export default function DailyAnalysisDashboard({ onBack }: Props) {
       }
       const created = data.report as PersistentReportRecord;
       if (created.pdfStatus === "generated") {
-        setPdfGenerateNotice(`PDF saved to cloud archive (${created.periodStart} to ${created.periodEnd}).`);
+        const isCloudSaved = data.storageMode === "cloud" || created.id.startsWith("cloud_");
+        setPdfGenerateNotice(
+          isCloudSaved
+            ? `PDF saved to cloud archive (${created.periodStart} to ${created.periodEnd}).`
+            : `PDF saved locally in generated-reports/ (${created.periodStart} to ${created.periodEnd}).`
+        );
         // Immediately reflect the new PDF in Archive without waiting for a full bucket re-list
         setArchivedReports(prev => [created, ...prev.filter(item => item.id !== created.id)]);
       } else {
-        setPdfGenerateError(created.pdfError || "Report metadata saved, but PDF upload did not complete.");
+        setPdfGenerateError(created.pdfError || "Report metadata saved, but PDF storage did not complete.");
       }
       void loadArchiveReports();
     } catch (error) {

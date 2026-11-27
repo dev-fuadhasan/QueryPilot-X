@@ -14,7 +14,6 @@ import {
   type ScheduleRuntimeSummary
 } from "@/../daily_data_analysis_and_notification/storage";
 import {
-  isSharedStorageConfigured,
   listDailyPdfsFromSharedStorage,
   loadSharedSettingsEnvelope,
   saveSharedSettingsEnvelope
@@ -62,7 +61,7 @@ async function buildScheduleSummary(input: {
   }
 
   return {
-    active: Boolean(input.settings.autoReportEnabled && (input.storageStatus.pdfProductionReady || isSharedStorageConfigured())),
+    active: Boolean(input.settings.autoReportEnabled),
     persisted: input.persisted,
     providerStatus,
     nextExecution: computeNextScheduledExecution(input.settings, lastCompletedPeriodEnd),

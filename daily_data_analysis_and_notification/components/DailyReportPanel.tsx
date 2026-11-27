@@ -124,11 +124,9 @@ export default function DailyReportPanel({
             : styles.badgeNeutral;
 
   const cloudStorageReady = Boolean(storageStatus?.pdfProductionReady);
-  const storageBadgeLabel = storageStatus?.pdfProductionReady
+  const storageBadgeLabel = cloudStorageReady
     ? "Cloud PDF Storage Active"
-    : storageStatus?.pdfBackend === "local_private_fs"
-      ? "Local Dev Storage"
-      : "Storage Not Configured";
+    : "Temporary Local Storage";
 
   const timezoneOptions = COMMON_TIMEZONES.includes(timezone)
     ? COMMON_TIMEZONES
@@ -187,7 +185,9 @@ export default function DailyReportPanel({
                 <strong>Automatic Report Generation</strong>
                 <small>
                   {autoReportEnabled
-                    ? "Enabled — runs on completed periods and stores PDFs in private cloud storage."
+                    ? cloudStorageReady
+                      ? "Enabled — runs on completed periods and stores PDFs in private cloud storage."
+                      : "Enabled — runs on completed periods and saves PDFs locally in generated-reports/ (auto-switches to Cloud when configured)."
                     : "Paused — disabling cancels future scheduled execution until re-enabled."}
                 </small>
               </div>
@@ -322,10 +322,12 @@ export default function DailyReportPanel({
           <div className={styles.cardHeader}>
             <div className={styles.cardTitleGroup}>
               <h3 className={styles.cardTitle}>
-                <Cloud size={15} /> Cloud PDF Archive &amp; Export
+                <Cloud size={15} /> {cloudStorageReady ? "Cloud PDF Archive & Export" : "PDF Archive & Export"}
               </h3>
               <p className={styles.cardSub}>
-                Generated PDFs are stored privately in shared cloud storage and synced across every device.
+                {cloudStorageReady
+                  ? "Generated PDFs are stored privately in shared cloud storage and synced across every device."
+                  : "Temporary local storage is active in generated-reports/ (gitignored) and automatically switches to Cloud once configured."}
               </p>
             </div>
             <span className={`${styles.badge} ${cloudStorageReady ? styles.badgePositive : styles.badgeInfo}`}>
@@ -336,12 +338,12 @@ export default function DailyReportPanel({
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div className={styles.kvList}>
               <div className={styles.kvRow}>
-                <span>PDF Cloud Bucket</span>
-                <strong>{storageStatus?.pdfProductionReady ? "Supabase Private Storage (Synced)" : "Local Dev Storage"}</strong>
+                <span>PDF Storage Backend</span>
+                <strong>{cloudStorageReady ? "Supabase Private Storage (Synced)" : "Temporary Local (generated-reports/)"}</strong>
               </div>
               <div className={styles.kvRow}>
-                <span>Cross-Device Archive</span>
-                <strong>{storageStatus?.pdfProductionReady ? "Enabled via Shared Storage" : "Local Dev Mode"}</strong>
+                <span>Cloud Storage Auto-Switch</span>
+                <strong>{cloudStorageReady ? "Active via Shared Cloud Storage" : "Auto-switches when Cloud configured"}</strong>
               </div>
               {scheduleSummary?.nextExecution && (
                 <div className={styles.kvRow}>
@@ -381,7 +383,11 @@ export default function DailyReportPanel({
                   onClick={() => void onGenerateQuickPdf(quickRange)}
                 >
                   <FilePlus2 size={14} />
-                  {generatingPdf ? "Generating & Storing PDF..." : "Generate & Save PDF to Cloud"}
+                  {generatingPdf
+                    ? "Generating & Storing PDF..."
+                    : cloudStorageReady
+                      ? "Generate & Save PDF to Cloud"
+                      : "Generate & Save PDF"}
                 </button>
               </div>
             )}
@@ -477,7 +483,9 @@ export default function DailyReportPanel({
             <div className={styles.emptyBox}>
               <strong>No stored PDF report yet</strong>
               <p>
-                Click &ldquo;Generate &amp; Save PDF to Cloud&rdquo; above or enable Daily Report Automation to persist PDFs across all devices.
+                {cloudStorageReady
+                  ? 'Click "Generate & Save PDF to Cloud" above or enable Daily Report Automation to persist PDFs across all devices.'
+                  : 'Click "Generate & Save PDF" above or run Daily Report Automation to store PDFs locally in generated-reports/ (auto-switches to Cloud once configured).'}
               </p>
             </div>
           )}
