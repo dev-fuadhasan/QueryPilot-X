@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import type {
   PdfStorageAdapter,
@@ -27,10 +28,29 @@ export function assertValidPdfBuffer(bytes: Buffer): void {
 
 export const DEFAULT_SHARED_STORAGE_BUCKET = "querypilotx-storage";
 
+export function getServerlessTempReportsDirectory(): string {
+  return path.resolve(path.join(tmpdir(), "querypilot-generated-reports"));
+}
+
+function isReadOnlyServerlessCwd(): boolean {
+  const cwd = process.cwd().replace(/\\/g, "/");
+  return Boolean(process.env.VERCEL || cwd.startsWith("/var/task"));
+}
+
+function isReadOnlyFsError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "ENOENT" || code === "EROFS" || code === "EACCES" || code === "EPERM";
+}
+
 export function getDefaultLocalReportsDirectory(): string {
+  if (process.env.QUERYPILOT_REPORT_DIRECTORY?.trim()) {
+    return path.resolve(process.env.QUERYPILOT_REPORT_DIRECTORY.trim());
+  }
+  if (isReadOnlyServerlessCwd()) {
+    return getServerlessTempReportsDirectory();
+  }
   return path.resolve(
-    process.env.QUERYPILOT_REPORT_DIRECTORY
-    || path.join(process.cwd(), "daily_data_analysis_and_notification", "generated-reports")
+    path.join(process.cwd(), "daily_data_analysis_and_notification", "generated-reports")
   );
 }
 
@@ -62,14 +82,18 @@ export class LocalPrivatePdfStorage implements PdfStorageAdapter {
     this.baseDirectory = path.resolve(baseDirectory || getDefaultLocalReportsDirectory());
   }
 
-  private resolveSafePath(storageKey: string): string {
+  private resolveSafePathIn(rootDir: string, storageKey: string): string {
     const normalizedKey = storageKey.replace(/\\/g, "/").replace(/^\/+/, "");
-    const target = path.resolve(this.baseDirectory, normalizedKey);
-    const relative = path.relative(this.baseDirectory, target);
+    const target = path.resolve(rootDir, normalizedKey);
+    const relative = path.relative(rootDir, target);
     if (relative.startsWith("..") || path.isAbsolute(relative)) {
       throw new Error("Storage key escapes private storage root.");
     }
     return target;
+  }
+
+  private resolveSafePath(storageKey: string): string {
+    return this.resolveSafePathIn(this.baseDirectory, storageKey);
   }
 
   async savePdf(input: {
@@ -87,8 +111,18 @@ export class LocalPrivatePdfStorage implements PdfStorageAdapter {
       input.storageUserId
     );
     const fullPath = this.resolveSafePath(storageKey);
-    await mkdir(path.dirname(fullPath), { recursive: true });
-    await writeFile(fullPath, input.bytes);
+    try {
+      await mkdir(path.dirname(fullPath), { recursive: true });
+      await writeFile(fullPath, input.bytes);
+    } catch (error) {
+      const fallbackRoot = getServerlessTempReportsDirectory();
+      if (!isReadOnlyFsError(error) || path.resolve(this.baseDirectory) === fallbackRoot) {
+        throw error;
+      }
+      const fallbackPath = this.resolveSafePathIn(fallbackRoot, storageKey);
+      await mkdir(path.dirname(fallbackPath), { recursive: true });
+      await writeFile(fallbackPath, input.bytes);
+    }
     return {
       storageKey,
       filename: safePathSegment(input.filename),
@@ -103,7 +137,17 @@ export class LocalPrivatePdfStorage implements PdfStorageAdapter {
       const bytes = await readFile(fullPath);
       return bytes;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        const fallbackRoot = getServerlessTempReportsDirectory();
+        if (path.resolve(this.baseDirectory) !== fallbackRoot) {
+          try {
+            return await readFile(this.resolveSafePathIn(fallbackRoot, storageKey));
+          } catch {
+            return null;
+          }
+        }
+        return null;
+      }
       throw error;
     }
   }

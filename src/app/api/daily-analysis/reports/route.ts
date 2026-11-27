@@ -18,6 +18,7 @@ import {
   assertValidPdfBuffer,
   buildPdfMetadataFromRecord,
   buildReportPdfFilename,
+  createDefaultPdfStorage,
   generateAndPersistManualReport,
   getPersistentReportRepository,
   getStorageCapabilityStatus,
@@ -319,11 +320,21 @@ export async function POST(request: NextRequest) {
         sessionCacheKey
       });
 
+      const isCloud = resolveSharedPdfStorageEnv().configured;
+      let pdfBase64: string | undefined;
+      if (!isCloud && record.pdfStatus === "generated" && record.pdfStorageKey) {
+        const storedBytes = await createDefaultPdfStorage().readPdf(record.pdfStorageKey).catch(() => null);
+        if (storedBytes) {
+          pdfBase64 = storedBytes.toString("base64");
+        }
+      }
+
       return access.applyCookie(NextResponse.json(
         {
           report: record,
           downloadUrl,
-          storageMode: resolveSharedPdfStorageEnv().configured ? "cloud" : "local_temporary"
+          storageMode: isCloud ? "cloud" : "local_temporary",
+          ...(pdfBase64 ? { pdfBase64 } : {})
         },
         { status: 201, headers: { "Cache-Control": "no-store" } }
       ));
@@ -433,7 +444,8 @@ export async function POST(request: NextRequest) {
             downloadUrl: isCloud
               ? `/api/storage/download?key=${encodeURIComponent(uploaded.storageKey)}`
               : `/api/daily-analysis/reports/${encodeURIComponent(record.id)}/pdf`,
-            storageMode: isCloud ? "cloud" : "local_temporary"
+            storageMode: isCloud ? "cloud" : "local_temporary",
+            ...(!isCloud ? { pdfBase64: pdfBytes.toString("base64") } : {})
           },
           { status: 201, headers: { "Cache-Control": "no-store" } }
         ));

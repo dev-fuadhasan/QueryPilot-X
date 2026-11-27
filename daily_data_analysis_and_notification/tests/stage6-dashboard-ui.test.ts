@@ -357,10 +357,18 @@ test("React UI components render real multi-domain backend intelligence without 
     downloadingReportId: null,
     saveFeedback: null,
     onSaveSchedule: async () => undefined,
+    onGeneratePdf: async () => undefined,
     onDownloadPdf: async () => undefined
   }));
-  assert.match(dailyHtml, /Daily Report Automation/);
-  assert.match(dailyHtml, /The report will contain the previous completed day&#x27;s data\./);
+  assert.match(dailyHtml, /Report Automation/);
+  assert.doesNotMatch(dailyHtml, /Daily Report Automation/);
+  assert.doesNotMatch(dailyHtml, /Save Schedule/);
+  assert.doesNotMatch(dailyHtml, /Run Auto PDF Now/);
+  assert.doesNotMatch(dailyHtml, /Configure recurring automatic report generation/);
+  assert.match(dailyHtml, /Reference Period/);
+  assert.match(dailyHtml, /Manual Date Range/);
+  assert.match(dailyHtml, /Previous 6 Months/);
+  assert.match(dailyHtml, /All Data \(Full Dataset\)/);
   assert.match(dailyHtml, /Asia\/Dhaka/);
   assert.match(dailyHtml, /Storage not configured/);
 
