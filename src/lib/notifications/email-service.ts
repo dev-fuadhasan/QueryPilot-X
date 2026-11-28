@@ -22,9 +22,6 @@ export interface EmailDispatchResult {
   simulated?: boolean;
 }
 
-const DEFAULT_RESEND_KEY = process.env.RESEND_API_KEY || "";
-const DEFAULT_FROM = process.env.RESEND_FROM_EMAIL || "QueryPilot-X <onboarding@resend.dev>";
-
 /**
  * Sends a raw email using the Resend API.
  */
@@ -35,8 +32,12 @@ export async function sendResendEmail(params: {
   apiKey?: string;
   from?: string;
 }): Promise<EmailDispatchResult> {
-  const key = params.apiKey || DEFAULT_RESEND_KEY;
-  const from = params.from || DEFAULT_FROM;
+  const key = (params.apiKey || process.env.RESEND_API_KEY || "").trim();
+  const from = (
+    params.from ||
+    process.env.RESEND_FROM_EMAIL ||
+    "QueryPilot-X <onboarding@resend.dev>"
+  ).trim();
 
   if (!params.to || !params.to.includes("@")) {
     return { success: false, error: "Invalid recipient email address." };
